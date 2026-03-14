@@ -1,0 +1,8 @@
+# Nim build artifacts
+nimcache/
+*.out
+
+# Compiled binaries (no extension)
+examples/basic
+examples/test_route
+src/ssr.out
