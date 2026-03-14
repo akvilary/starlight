@@ -13,14 +13,14 @@ import std/macros
 
 proc methodIdent(name: string): NimNode =
   case name
-  of "get": ident"HttpGet"
-  of "post": ident"HttpPost"
-  of "put": ident"HttpPut"
-  of "patch": ident"HttpPatch"
-  of "delete": ident"HttpDelete"
-  of "head": ident"HttpHead"
-  of "options": ident"HttpOptions"
-  else: ident"HttpGet"
+  of "get": ident"MethodGet"
+  of "post": ident"MethodPost"
+  of "put": ident"MethodPut"
+  of "patch": ident"MethodPatch"
+  of "delete": ident"MethodDelete"
+  of "head": ident"MethodHead"
+  of "options": ident"MethodOptions"
+  else: ident"MethodGet"
 
 macro route*(name: untyped, body: untyped): untyped =
   ## Define a route group.

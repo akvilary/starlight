@@ -1,11 +1,12 @@
 ## Context helpers and response builders.
 
-import std/[httpcore, tables, json]
+import std/[tables, json]
+import chronos/apps/http/httpserver
 import types
 
 proc newContext*(): Context =
   Context(
-    headers: newHttpHeaders(),
+    headers: HttpTable.init(),
     query: initTable[string, string](),
     pathParams: initTable[string, string](),
   )
@@ -21,16 +22,20 @@ proc jsonBody*[T](ctx: Context, t: typedesc[T]): T =
 
 proc answer*(body: string, code: HttpCode = Http200): Response =
   Response(code: code, body: body,
-           headers: newHttpHeaders({"Content-Type": "text/html; charset=utf-8"}))
+           headers: HttpTable.init([("Content-Type", "text/html; charset=utf-8")]))
 
-proc answer*(body: JsonNode, code: HttpCode = Http200): Response =
+proc answerJson*(body: string, code: HttpCode = Http200): Response =
+  Response(code: code, body: body,
+           headers: HttpTable.init([("Content-Type", "application/json; charset=utf-8")]))
+
+proc answerJson*(body: JsonNode, code: HttpCode = Http200): Response =
   Response(code: code, body: $body,
-           headers: newHttpHeaders({"Content-Type": "application/json; charset=utf-8"}))
+           headers: HttpTable.init([("Content-Type", "application/json; charset=utf-8")]))
 
 proc answer*(code: HttpCode): Response =
   Response(code: code, body: "",
-           headers: newHttpHeaders())
+           headers: HttpTable.init())
 
 proc redirect*(url: string, code: HttpCode = Http302): Response =
   Response(code: code, body: "",
-           headers: newHttpHeaders({"Location": url}))
+           headers: HttpTable.init([("Location", url)]))

@@ -37,7 +37,7 @@ layout HomePage():
     body:
       h1: "It works!"
 
-response home() -> htmlResponse:
+response home() -> ofHtml:
   HomePage()
 
 route Main:
@@ -98,7 +98,7 @@ layout Page(pageTitle: string, content: string):
 Layouts are called like regular functions. `ctx` is passed implicitly:
 
 ```nim
-response home() -> htmlResponse:
+response home() -> ofHtml:
   Page(pageTitle="Home", content=Card(title="Welcome", body="Hello!"))
 ```
 
@@ -169,20 +169,50 @@ Some HTML tags conflict with Nim keywords. Use prefixed aliases:
 
 ## Handlers
 
-The `response` macro generates async handler procs. Use `-> htmlResponse` for HTML or `-> jsonResponse` for JSON:
+The `response` macro generates async handler procs. Use `-> ofHtml` for HTML or `-> ofJson` for JSON.
+
+The macro is syntactic sugar — without it, use `answer()` and `answerJson()` procs directly.
 
 ### HTML Handler
 
 ```nim
-response home() -> htmlResponse:
+# With macro:
+response home() -> ofHtml:
   Page(pageTitle="Home", content=HomePage())
+
+# Without macro (equivalent):
+proc home(ctx: Context): Future[Response] {.async, gcsafe.} =
+  return answer(Page(pageTitle="Home", content=HomePage()))
 ```
 
 ### JSON Handler
 
 ```nim
-response getStatus() -> jsonResponse:
+# With macro:
+response getStatus() -> ofJson:
   %*{"status": "ok", "version": "0.1.0"}
+
+# Without macro (equivalent):
+proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
+  return answerJson(%*{"status": "ok", "version": "0.1.0"})
+```
+
+### JSON from Pre-Serialized String
+
+`answerJson` accepts both `JsonNode` (serializes automatically) and `string` (sends as-is). This is useful when you have cached or pre-built JSON:
+
+```nim
+# JsonNode — serialized by the framework:
+response getStatus() -> ofJson:
+  %*{"status": "ok"}
+
+# Pre-serialized string — zero serialization overhead:
+response getCached() -> ofJson:
+  cachedJsonString
+
+# Without macro:
+proc getCached(ctx: Context): Future[Response] {.async, gcsafe.} =
+  return answerJson(cachedJsonString)
 ```
 
 ### Path Parameters
@@ -191,12 +221,12 @@ Path parameters are declared in the handler signature with their types. They are
 
 ```nim
 # Route: get "/{name}", getUser
-response getUser(name: string) -> htmlResponse:
+response getUser(name: string) -> ofHtml:
   # name is automatically bound from ctx.pathParams["name"]
   Page(pageTitle=name, content=UserProfile(name=name))
 
 # Route: get "/{id:int}", getItem
-response getItem(id: int) -> jsonResponse:
+response getItem(id: int) -> ofJson:
   # id is automatically parsed as int from ctx.pathParams["id"]
   let item = fetchItem(id)
   %*{"id": id, "name": item.name}
@@ -207,7 +237,7 @@ response getItem(id: int) -> jsonResponse:
 The `ctx` object is available in every handler:
 
 ```nim
-response search() -> jsonResponse:
+response search() -> ofJson:
   let query = ctx.getQuery("q")
   let token = ctx.headers["Authorization"]
   let data = parseJson(ctx.body)
@@ -274,7 +304,7 @@ proc authMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.async.}
   if ctx.headers.hasKey("Authorization"):
     result = await next(ctx)
   else:
-    result = answer(%*{"error": "Unauthorized"}, Http401)
+    result = answerJson(%*{"error": "Unauthorized"}, Http401)
 ```
 
 Register middleware globally:
@@ -354,17 +384,17 @@ layout HomePage():
 
 # --- Handlers ---
 
-response listUsers() -> htmlResponse:
+response listUsers() -> ofHtml:
   let users = @["Alice", "Bob", "Charlie"]
   Page(pageTitle="Users", content=UserList(users=users))
 
-response getUser(name: string) -> htmlResponse:
+response getUser(name: string) -> ofHtml:
   Page(pageTitle=name, content=UserProfile(name=name))
 
-response getStatus() -> jsonResponse:
+response getStatus() -> ofJson:
   %*{"status": "ok"}
 
-response home() -> htmlResponse:
+response home() -> ofHtml:
   Page(pageTitle="Home", content=HomePage())
 
 # --- Routes ---
@@ -406,7 +436,8 @@ app.serve("127.0.0.1", 5000)
 | `app.mount(prefix, group)` | proc | Mounts a route group at prefix |
 | `app.use(middleware)` | proc | Adds global middleware |
 | `app.serve(host, port)` | proc | Starts the HTTP server |
-| `answer(body, code)` | proc | Builds a Response object |
+| `answer(body, code)` | proc | Builds an HTML Response |
+| `answerJson(body, code)` | proc | Builds a JSON Response (accepts string or JsonNode) |
 | `redirect(url, code)` | proc | Builds a redirect Response |
 | `ctx.body` | field | Request body |
 | `ctx.headers` | field | Request headers |

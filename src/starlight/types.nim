@@ -1,7 +1,10 @@
 ## Core types for the SSR framework.
 
-import std/[httpcore, tables, asyncdispatch]
-export httpcore, tables, asyncdispatch
+import std/tables
+import chronos
+import chronos/apps/http/httpserver
+
+export tables, chronos, httpserver
 
 type
   ParamKind* = enum
@@ -18,7 +21,7 @@ type
   Context* = ref object
     path*: string
     httpMethod*: HttpMethod
-    headers*: HttpHeaders
+    headers*: HttpTable
     body*: string
     query*: Table[string, string]
     pathParams*: Table[string, string]
@@ -27,11 +30,13 @@ type
   Response* = object
     code*: HttpCode
     body*: string
-    headers*: HttpHeaders
+    headers*: HttpTable
 
-  HandlerProc* = proc(ctx: Context): Future[Response] {.gcsafe.}
+  HandlerProc* = proc(ctx: Context): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.}
 
-  MiddlewareProc* = proc(ctx: Context, next: HandlerProc): Future[Response] {.gcsafe.}
+  MiddlewareProc* = proc(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.}
 
   HandlerEntry* = object
     handler*: HandlerProc

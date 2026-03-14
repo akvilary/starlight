@@ -1,6 +1,6 @@
 ## PrefixTree-based router with typed path parameters.
 
-import std/[httpcore, tables, options, strutils]
+import std/[tables, options, strutils]
 import types
 
 proc newRouter*(): Router =
@@ -105,10 +105,13 @@ proc match*(router: Router, httpMethod: HttpMethod, path: string): Option[MatchR
   let matched = matchRec(router.root, 0)
   if matched.isSome:
     let node = matched.get
-    let entry = node.handlers[httpMethod]
-    return some(MatchResult(
-      handler: entry.handler,
-      params: params,
-      middlewares: entry.middlewares,
-    ))
+    try:
+      let entry = node.handlers[httpMethod]
+      return some(MatchResult(
+        handler: entry.handler,
+        params: params,
+        middlewares: entry.middlewares,
+      ))
+    except KeyError:
+      discard
   return none(MatchResult)

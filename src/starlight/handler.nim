@@ -1,10 +1,10 @@
 ## Handler macro for generating async handler procs.
 ##
 ## Usage:
-##   response homePage() -> htmlResponse:
-##     Layout(ctx, title="Home", content="Hello")
+##   response home() -> ofHtml:
+##     Page(title="Home")
 ##
-##   response getStatus() -> jsonResponse:
+##   response getStatus() -> ofJson:
 ##     %*{"status": "ok"}
 
 import std/macros
@@ -42,8 +42,8 @@ proc generateParamBindings(nameAndParams: NimNode): seq[NimNode] =
 macro response*(signature: untyped, body: untyped): untyped =
   ## Generates an async handler proc returning Future[Response].
   ##
-  ## response name(params) -> htmlResponse:   last expression is string
-  ## response name(params) -> jsonResponse:   last expression is JsonNode
+  ## response name(params) -> ofHtml:   last expression wrapped in answer()
+  ## response name(params) -> ofJson:   last expression wrapped in answerJson()
 
   var nameAndParams: NimNode
   var respType: string
@@ -52,13 +52,15 @@ macro response*(signature: untyped, body: untyped): untyped =
     nameAndParams = signature[1]
     respType = signature[2].strVal
   else:
-    error("response handler must specify type: -> htmlResponse or -> jsonResponse")
+    error("response handler must specify type: -> ofhtml or -> ofjson")
 
-  if respType notin ["htmlResponse", "jsonResponse"]:
+  if respType notin ["ofHtml", "ofJson"]:
     error("Unknown response type: " & respType &
-          ". Use htmlResponse or jsonResponse.")
+          ". Use ofHtml or ofJson.")
 
   let name = nameAndParams[0]
+  let answerProc = if respType == "ofJson": ident"answerJson"
+                   else: ident"answer"
 
   var procBody = newStmtList()
 
@@ -66,11 +68,11 @@ macro response*(signature: untyped, body: untyped): untyped =
     procBody.add binding
 
   # All statements except the last are added as-is.
-  # The last expression is wrapped in return response(...).
+  # The last expression is wrapped in return answer/answerJson(...).
   for i in 0..<body.len - 1:
     procBody.add body[i]
   procBody.add newNimNode(nnkReturnStmt).add(
-    newCall(ident"answer", body[body.len - 1]))
+    newCall(answerProc, body[body.len - 1]))
 
   # proc name*(ctx: Context): Future[Response] {.async, gcsafe.}
   let ctxParam = newIdentDefs(ident"ctx", ident"Context")
@@ -81,5 +83,14 @@ macro response*(signature: untyped, body: untyped): untyped =
     params = [retType, ctxParam],
     body = procBody,
   )
-  result.addPragma(ident"async")
+  # {.async: (raises: [CatchableError]), gcsafe.}
+  result.addPragma(newNimNode(nnkExprColonExpr).add(
+    ident"async",
+    newNimNode(nnkTupleConstr).add(
+      newNimNode(nnkExprColonExpr).add(
+        ident"raises",
+        newNimNode(nnkBracket).add(ident"CatchableError")
+      )
+    )
+  ))
   result.addPragma(ident"gcsafe")

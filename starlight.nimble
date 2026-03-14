@@ -7,4 +7,4 @@ srcDir        = "src"
 
 # Dependencies
 requires "nim >= 2.0.0"
-requires "httpx >= 0.3.7"
+requires "chronos >= 4.0.3"

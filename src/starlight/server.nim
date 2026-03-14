@@ -1,7 +1,8 @@
-## HTTP server adapter using httpx.
+## HTTP server adapter using chronos.
 
-import std/[asyncdispatch, httpcore, tables, options, strutils, uri]
-import httpx except Settings
+import std/[tables, options, strutils, uri]
+import chronos
+import chronos/apps/http/httpserver
 import types, router, middleware, context
 
 proc parseQueryString(qs: string): Table[string, string] =
@@ -14,29 +15,21 @@ proc parseQueryString(qs: string): Table[string, string] =
     else:
       result[decodeUrl(pair)] = ""
 
-proc formatResponseHeaders(headers: HttpHeaders): string =
-  result = ""
-  if headers == nil: return
-  for key, val in headers:
-    if result.len > 0:
-      result.add "\c\L"
-    result.add key & ": " & val
-
-proc newContextFromRequest(req: httpx.Request): Context =
+proc newContextFromRequest(req: HttpRequestRef): Context =
   let ctx = newContext()
-  let fullPath = req.path.get("/")
+  let fullPath = req.rawPath
   let qIdx = fullPath.find('?')
   if qIdx >= 0:
     ctx.path = fullPath[0..<qIdx]
     ctx.query = parseQueryString(fullPath[qIdx + 1..^1])
   else:
     ctx.path = fullPath
-  ctx.httpMethod = req.httpMethod.get(HttpGet)
-  let reqHeaders = req.headers
-  if reqHeaders.isSome:
-    ctx.headers = reqHeaders.get
-  ctx.body = req.body.get("")
-  ctx.ip = req.ip
+  ctx.httpMethod = req.meth
+  ctx.headers = req.headers
+  ctx.ip = try:
+    $req.remote().get()
+  except:
+    ""
   ctx
 
 proc newApp*(): App =
@@ -50,7 +43,6 @@ proc use*(app: App, mw: MiddlewareProc) =
   app.globalMiddlewares.add mw
 
 proc mount*(app: App, prefix: string, group: RouteGroup) =
-  ## Mount a route group at the given prefix.
   for entry in group.entries:
     let fullPattern = if prefix == "/": entry.pattern
                       elif entry.pattern == "": prefix
@@ -59,25 +51,28 @@ proc mount*(app: App, prefix: string, group: RouteGroup) =
                         entry.handler, entry.middlewares)
 
 proc finalizeResponse(res: var Response) =
-  ## Apply defaults to a Response before sending.
-  # Default status code to 200
   if res.code == HttpCode(0):
     res.code = Http200
 
-  # Ensure headers exist
-  if res.headers == nil:
-    res.headers = newHttpHeaders()
-
-  # Default Content-Type to text/html for non-empty body
-  if not res.headers.hasKey("Content-Type") and res.body.len > 0:
-    res.headers["Content-Type"] = "text/html; charset=utf-8"
-
 proc serve*(app: App, host: string, port: int) =
-  let settings = httpx.initSettings(Port(port), host)
+  proc onRequest(reqFence: RequestFence): Future[HttpResponseRef] {.
+      async: (raises: [CancelledError]).} =
+    if reqFence.isErr():
+      return defaultResponse()
 
-  proc onRequest(req: httpx.Request): Future[void] {.async, gcsafe.} =
-    if req.closed: return
+    let req = reqFence.get()
     var ctx = newContextFromRequest(req)
+
+    # Read body for POST/PUT/PATCH
+    if req.hasBody():
+      try:
+        let bodyBytes = await req.getBody()
+        ctx.body = cast[string](bodyBytes)
+      except CancelledError as exc:
+        raise exc
+      except CatchableError:
+        ctx.body = ""
+
     var res: Response
 
     let matched = app.router.match(ctx.httpMethod, ctx.path)
@@ -88,27 +83,40 @@ proc serve*(app: App, host: string, port: int) =
       let chain = buildChain(m.handler, allMw)
       try:
         res = await chain(ctx)
+      except CancelledError as exc:
+        raise exc
       except CatchableError:
         res = Response(code: Http500, body: "Internal Server Error",
-                       
-headers: newHttpHeaders({"Content-Type": "text/plain"}))
+                       headers: HttpTable.init([("Content-Type", "text/plain")]))
     else:
       if app.notFoundHandler != nil:
         try:
           res = await app.notFoundHandler(ctx)
+        except CancelledError as exc:
+          raise exc
         except CatchableError:
           res = Response(code: Http500, body: "Internal Server Error",
-                         
-  headers: newHttpHeaders({"Content-Type": "text/plain"}))
+                         headers: HttpTable.init([("Content-Type", "text/plain")]))
       else:
         res = Response(code: Http404, body: "Not Found",
-                       
-headers: newHttpHeaders({"Content-Type": "text/plain"}))
+                       headers: HttpTable.init([("Content-Type", "text/plain")]))
 
     finalizeResponse(res)
 
-    let respHeaders = formatResponseHeaders(res.headers)
-    req.send(res.code, res.body, respHeaders)
+    try:
+      return await req.respond(res.code, res.body, res.headers)
+    except HttpWriteError:
+      return defaultResponse()
 
+  let address = initTAddress(host, port)
+  let cb: HttpProcessCallback2 = onRequest
+  let serverResult = HttpServerRef.new(address, cb)
+
+  if serverResult.isErr():
+    echo "Failed to start server: ", serverResult.error()
+    return
+
+  let server = serverResult.get()
+  server.start()
   echo "Starlight listening on http://", host, ":", port
-  httpx.run(onRequest, settings)
+  waitFor server.join()

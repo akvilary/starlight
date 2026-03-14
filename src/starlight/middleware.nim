@@ -1,6 +1,5 @@
 ## Middleware chain builder.
 
-import std/asyncdispatch
 import types
 
 proc buildChain*(handler: HandlerProc,
@@ -10,5 +9,6 @@ proc buildChain*(handler: HandlerProc,
   for i in countdown(middlewares.high, 0):
     let mw = middlewares[i]
     let inner = result
-    result = proc(ctx: Context): Future[Response] {.async, gcsafe.} =
+    result = proc(ctx: Context): Future[Response] {.
+        async: (raises: [CatchableError]), gcsafe.} =
       return await mw(ctx, inner)

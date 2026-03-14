@@ -1,4 +1,4 @@
-import std/[json, strutils]
+import std/json
 import ../src/starlight
 
 # --- Layouts ---
@@ -48,23 +48,23 @@ layout AboutPage():
 
 # --- Handlers ---
 
-response listUsers() -> htmlResponse:
+response listUsers() -> ofHtml:
   let users = @["Alice", "Bob", "Charlie"]
   Page(title="Users", content=UserList(users=users))
 
-response getUser(name: string) -> htmlResponse:
+response getUser(name: string) -> ofHtml:
   Page(title=name, content=UserProfile(name=name))
 
-response getStatus() -> jsonResponse:
+response getStatus() -> ofJson:
   %*{"status": "ok", "version": "0.1.0"}
 
-response echoBody() -> jsonResponse:
+response echoBody() -> ofJson:
   parseJson(ctx.body)
 
-response homePage() -> htmlResponse:
+response homePage() -> ofHtml:
   Page(title="Starlight", content=HomePage())
 
-response aboutPage() -> htmlResponse:
+response aboutPage() -> ofHtml:
   Page(title="About", content=AboutPage())
 
 # --- Route groups ---
@@ -83,7 +83,8 @@ route MainPage:
 
 # --- Middleware ---
 
-proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.async.} =
+proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
