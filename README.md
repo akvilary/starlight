@@ -37,8 +37,8 @@ layout HomePage():
     body:
       h1: "It works!"
 
-response home() -> ofHtml:
-  HomePage()
+responseHtml home():
+  return HomePage()
 
 route Main:
   get "", home
@@ -98,8 +98,8 @@ layout Page(pageTitle: string, content: string):
 Layouts are called like regular functions. `ctx` is passed implicitly:
 
 ```nim
-response home() -> ofHtml:
-  Page(pageTitle="Home", content=Card(title="Welcome", body="Hello!"))
+responseHtml home():
+  return Page(pageTitle="Home", content=Card(title="Welcome", body="Hello!"))
 ```
 
 ### HTML Tags
@@ -169,16 +169,20 @@ Some HTML tags conflict with Nim keywords. Use prefixed aliases:
 
 ## Handlers
 
-The `response` macro generates async handler procs. Use `-> ofHtml` for HTML or `-> ofJson` for JSON.
+Three macros generate async handler procs:
 
-The macro is syntactic sugar — without it, use `answer()` and `answerJson()` procs directly.
+- `responseHtml` — wraps `return` expressions in `answer()` (Content-Type: text/html)
+- `responseJson` — wraps `return` expressions in `answerJson()` (Content-Type: application/json)
+- `response` — no wrapping, `return` must provide a `Response` directly
+
+If no `return` is specified, the handler returns `Http200` with an empty body.
 
 ### HTML Handler
 
 ```nim
 # With macro:
-response home() -> ofHtml:
-  Page(pageTitle="Home", content=HomePage())
+responseHtml home():
+  return Page(pageTitle="Home", content=HomePage())
 
 # Without macro (equivalent):
 proc home(ctx: Context): Future[Response] {.async, gcsafe.} =
@@ -189,12 +193,19 @@ proc home(ctx: Context): Future[Response] {.async, gcsafe.} =
 
 ```nim
 # With macro:
-response getStatus() -> ofJson:
-  %*{"status": "ok", "version": "0.1.0"}
+responseJson getStatus():
+  return %*{"status": "ok", "version": "0.1.0"}
 
 # Without macro (equivalent):
 proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
   return answerJson(%*{"status": "ok", "version": "0.1.0"})
+```
+
+### Raw Response Handler
+
+```nim
+response customHandler():
+  return answer("plain text", Http200)
 ```
 
 ### JSON from Pre-Serialized String
@@ -203,12 +214,12 @@ proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
 
 ```nim
 # JsonNode — serialized by the framework:
-response getStatus() -> ofJson:
-  %*{"status": "ok"}
+responseJson getStatus():
+  return %*{"status": "ok"}
 
 # Pre-serialized string — zero serialization overhead:
-response getCached() -> ofJson:
-  cachedJsonString
+responseJson getCached():
+  return cachedJsonString
 
 # Without macro:
 proc getCached(ctx: Context): Future[Response] {.async, gcsafe.} =
@@ -221,15 +232,15 @@ Path parameters are declared in the handler signature with their types. They are
 
 ```nim
 # Route: get "/{name}", getUser
-response getUser(name: string) -> ofHtml:
+responseHtml getUser(name: string):
   # name is automatically bound from ctx.pathParams["name"]
-  Page(pageTitle=name, content=UserProfile(name=name))
+  return Page(pageTitle=name, content=UserProfile(name=name))
 
 # Route: get "/{id:int}", getItem
-response getItem(id: int) -> ofJson:
+responseJson getItem(id: int):
   # id is automatically parsed as int from ctx.pathParams["id"]
   let item = fetchItem(id)
-  %*{"id": id, "name": item.name}
+  return %*{"id": id, "name": item.name}
 ```
 
 ### Accessing Request Context
@@ -237,11 +248,11 @@ response getItem(id: int) -> ofJson:
 The `ctx` object is available in every handler:
 
 ```nim
-response search() -> ofJson:
+responseJson search():
   let query = ctx.getQuery("q")
   let token = ctx.headers["Authorization"]
   let data = parseJson(ctx.body)
-  %*{"query": query, "ip": ctx.ip}
+  return %*{"query": query, "ip": ctx.ip}
 ```
 
 ## Routing
@@ -384,18 +395,18 @@ layout HomePage():
 
 # --- Handlers ---
 
-response listUsers() -> ofHtml:
+responseHtml listUsers():
   let users = @["Alice", "Bob", "Charlie"]
-  Page(pageTitle="Users", content=UserList(users=users))
+  return Page(pageTitle="Users", content=UserList(users=users))
 
-response getUser(name: string) -> ofHtml:
-  Page(pageTitle=name, content=UserProfile(name=name))
+responseHtml getUser(name: string):
+  return Page(pageTitle=name, content=UserProfile(name=name))
 
-response getStatus() -> ofJson:
-  %*{"status": "ok"}
+responseJson getStatus():
+  return %*{"status": "ok"}
 
-response home() -> ofHtml:
-  Page(pageTitle="Home", content=HomePage())
+responseHtml home():
+  return Page(pageTitle="Home", content=HomePage())
 
 # --- Routes ---
 
@@ -430,7 +441,9 @@ app.serve("127.0.0.1", 5000)
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `layout Name(params):` | macro | Defines a reusable HTML layout |
-| `response Name(params) -> type:` | macro | Defines an async handler proc |
+| `responseHtml Name(params):` | macro | Defines an HTML handler (wraps return in `answer()`) |
+| `responseJson Name(params):` | macro | Defines a JSON handler (wraps return in `answerJson()`) |
+| `response Name(params):` | macro | Defines a raw handler (return must be `Response`) |
 | `route Name:` | macro | Defines a route group |
 | `newApp()` | proc | Creates a new application |
 | `app.mount(prefix, group)` | proc | Mounts a route group at prefix |

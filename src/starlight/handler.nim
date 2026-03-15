@@ -1,11 +1,14 @@
-## Handler macro for generating async handler procs.
+## Handler macros for generating async handler procs.
 ##
 ## Usage:
-##   response home() -> ofHtml:
-##     Page(title="Home")
+##   responseHtml home():
+##     return Page(title="Home")
 ##
-##   response getStatus() -> ofJson:
-##     %*{"status": "ok"}
+##   responseJson getStatus():
+##     return %*{"status": "ok"}
+##
+##   response custom():
+##     return answer("hello", Http200)
 
 import std/macros
 
@@ -39,40 +42,33 @@ proc generateParamBindings(nameAndParams: NimNode): seq[NimNode] =
     else:
       result.add newLetStmt(paramName, accessor)
 
-macro response*(signature: untyped, body: untyped): untyped =
-  ## Generates an async handler proc returning Future[Response].
-  ##
-  ## response name(params) -> ofHtml:   last expression wrapped in answer()
-  ## response name(params) -> ofJson:   last expression wrapped in answerJson()
+proc transformReturns(node: NimNode, wrapProc: string): NimNode =
+  ## Recursively walks the AST and wraps return expressions
+  ## with wrapProc (answer/answerJson). Empty wrapProc = no wrapping.
+  if node.kind == nnkReturnStmt and node[0].kind != nnkEmpty:
+    if wrapProc.len == 0:
+      return node
+    return newNimNode(nnkReturnStmt).add(
+      newCall(ident(wrapProc), node[0]))
 
-  var nameAndParams: NimNode
-  var respType: string
+  result = node.copyNimNode()
+  for child in node:
+    result.add transformReturns(child, wrapProc)
 
-  if signature.kind == nnkInfix and signature[0].strVal == "->":
-    nameAndParams = signature[1]
-    respType = signature[2].strVal
-  else:
-    error("response handler must specify type: -> ofhtml or -> ofjson")
-
-  if respType notin ["ofHtml", "ofJson"]:
-    error("Unknown response type: " & respType &
-          ". Use ofHtml or ofJson.")
-
+proc buildHandler(nameAndParams: NimNode, body: NimNode,
+                  wrapProc: string): NimNode =
+  ## Shared logic for all response macros.
+  ## wrapProc: "" = no wrapping, "answer" = HTML, "answerJson" = JSON
   let name = nameAndParams[0]
-  let answerProc = if respType == "ofJson": ident"answerJson"
-                   else: ident"answer"
 
   var procBody = newStmtList()
 
   for binding in generateParamBindings(nameAndParams):
     procBody.add binding
 
-  # All statements except the last are added as-is.
-  # The last expression is wrapped in return answer/answerJson(...).
-  for i in 0..<body.len - 1:
-    procBody.add body[i]
-  procBody.add newNimNode(nnkReturnStmt).add(
-    newCall(answerProc, body[body.len - 1]))
+  let transformed = transformReturns(body, wrapProc)
+  for child in transformed:
+    procBody.add child
 
   # proc name*(ctx: Context): Future[Response] {.async, gcsafe.}
   let ctxParam = newIdentDefs(ident"ctx", ident"Context")
@@ -94,3 +90,15 @@ macro response*(signature: untyped, body: untyped): untyped =
     )
   ))
   result.addPragma(ident"gcsafe")
+
+macro response*(nameAndParams: untyped, body: untyped): untyped =
+  ## Generates an async handler. Use return to return a Response directly.
+  buildHandler(nameAndParams, body, "")
+
+macro responseHtml*(nameAndParams: untyped, body: untyped): untyped =
+  ## Generates an async handler. return expr is wrapped in answer().
+  buildHandler(nameAndParams, body, "answer")
+
+macro responseJson*(nameAndParams: untyped, body: untyped): untyped =
+  ## Generates an async handler. return expr is wrapped in answerJson().
+  buildHandler(nameAndParams, body, "answerJson")

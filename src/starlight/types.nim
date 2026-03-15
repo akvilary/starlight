@@ -28,7 +28,7 @@ type
     ip*: string
 
   Response* = object
-    code*: HttpCode
+    code*: HttpCode = Http200
     body*: string
     headers*: HttpTable
 

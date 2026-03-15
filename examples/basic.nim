@@ -48,24 +48,24 @@ layout AboutPage():
 
 # --- Handlers ---
 
-response listUsers() -> ofHtml:
+responseHtml listUsers():
   let users = @["Alice", "Bob", "Charlie"]
-  Page(title="Users", content=UserList(users=users))
+  return Page(title="Users", content=UserList(users=users))
 
-response getUser(name: string) -> ofHtml:
-  Page(title=name, content=UserProfile(name=name))
+responseHtml getUser(name: string):
+  return Page(title=name, content=UserProfile(name=name))
 
-response getStatus() -> ofJson:
-  %*{"status": "ok", "version": "0.1.0"}
+responseJson getStatus():
+  return %*{"status": "ok", "version": "0.1.0"}
 
-response echoBody() -> ofJson:
-  parseJson(ctx.body)
+responseJson echoBody():
+  return parseJson(ctx.body)
 
-response homePage() -> ofHtml:
-  Page(title="Starlight", content=HomePage())
+responseHtml homePage():
+  return Page(title="Starlight", content=HomePage())
 
-response aboutPage() -> ofHtml:
-  Page(title="About", content=AboutPage())
+responseHtml aboutPage():
+  return Page(title="About", content=AboutPage())
 
 # --- Route groups ---
 
