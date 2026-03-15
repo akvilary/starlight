@@ -1,12 +1,12 @@
 import ../src/starlight
 
-# --- Depth 2: inner layout with S1 slot ---
+# --- Depth 2: inner layout with S1 inject block ---
 
 layout Inner() {.buf.}:
   Div(class="inner"):
     <-S1
 
-# --- Depth 1: outer layout with S1 slot ---
+# --- Depth 1: outer layout with S1 inject block ---
 
 layout Outer() {.buf.}:
   Div(class="outer"):

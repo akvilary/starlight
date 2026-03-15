@@ -1,12 +1,12 @@
 import ../src/starlight
 
-# --- Simple buffered layout (no slots) ---
+# --- Simple buffered layout (no inject blocks) ---
 
 layout SiteHeader() {.buf.}:
   Header:
     H1: "My Site"
 
-# --- Buffered layout with named slots ---
+# --- Buffered layout with named inject blocks ---
 
 layout Wrapper(title: string) {.buf.}:
   Html:

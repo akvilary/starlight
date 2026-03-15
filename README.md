@@ -76,7 +76,7 @@ layout Card(title: string, body: string, footer = ""):
 
 ### Nested Layouts
 
-Layouts can call other layouts using `raw`:
+For nesting, prefer `{.buf.}` layouts — all nested `{.buf.}` layouts write to a single shared buffer with zero intermediate allocations (see [Shared Buffer Mode](#shared-buffer-mode)). Regular layouts (without `{.buf.}`) also work but each creates its own buffer; use `raw` to embed them:
 
 ```nim
 layout NavBar():
@@ -108,7 +108,7 @@ response home() {.html.}:
 
 ### HTML Tags
 
-Tags are written in TitleCase (`Div`, `H1`, `P`, `A`) and output as lowercase HTML (`<div>`, `<h1>`, `<p>`, `<a>`). Attributes are passed as named parameters. Void tags (`Br`, `Hr`, `Img`, `Input`, etc.) self-close automatically.
+HTML tags are only available inside `layout` bodies. Tags are written in TitleCase (`Div`, `H1`, `P`, `A`) and output as lowercase HTML (`<div>`, `<h1>`, `<p>`, `<a>`). Attributes are passed as named parameters. Void tags (`Br`, `Hr`, `Img`, `Input`, etc.) self-close automatically.
 
 ```nim
 layout MyPage():
@@ -433,9 +433,13 @@ The nested layout writes to the parent's buffer and returns an empty string (whi
 
 **Regular layouts** (without `{.buf.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
 
-### Named Slots
+### Inject Blocks
 
-For page wrappers that need to accept arbitrary content, use `<-Sn` to define named slots and `inject` + `->Sn:` to fill them:
+**Why inject blocks exist.** A `{.buf.}` layout that takes a `content: string` parameter and embeds it via `raw content` has a problem: the parameter is evaluated **before** the layout body runs. If `content` is another `{.buf.}` layout call, it writes to the buffer too early — before the parent's `<html><body>` tags. The result is broken HTML.
+
+Inject blocks solve this by deferring the content to the exact position in the buffer where it belongs. The content is passed as a closure and called at the `<-Sn` marker — guaranteeing correct write order. The tradeoff is slightly more verbose syntax (`inject` + `->Sn:` + `<-Sn`), but in return you get **correct buffer ordering** and **zero intermediate allocations** for the entire page tree.
+
+Use `<-Sn` to define named inject blocks and `inject` + `->Sn:` to fill them:
 
 ```nim
 layout Shell(title: string) {.buf.}:
@@ -444,20 +448,20 @@ layout Shell(title: string) {.buf.}:
       Title: title
       Style: "body { font-family: system-ui; }"
     Body:
-      <-S1         # ← named slot: caller's content is injected here
+      <-S1         # ← inject block: caller's content is injected here
       Footer:
         P: "Powered by Starlight"
 
 layout HomePage(title: string) {.buf.}:
   inject Shell(title=title):
-    ->S1:                            # fill Shell's S1 slot
+    ->S1:                            # fill Shell's S1 inject block
       SiteHeader()                   # {.buf.} → shared buffer
       Main:
         H1: "Welcome"
         P: "Fast SSR for Nim."
 ```
 
-Multiple slots are supported:
+Multiple inject blocks are supported:
 
 ```nim
 layout TwoColumnLayout() {.buf.}:
@@ -521,7 +525,7 @@ Result: **1 allocation, 0 copies** for the entire render-to-response pipeline.
 |---------|------------------|-----------------------|
 | Buffer | Own buffer per layout | Shared with parent |
 | Nesting | `raw Inner()` (copy) | `Inner()` (direct write) |
-| Slots | Not supported | `<-Sn` / `inject` + `->Sn:` |
+| Inject blocks | Not supported | `<-Sn` / `inject` + `->Sn:` |
 | Buffer sizing | `staticLen + 256` | `staticLen + dynamic*64 + nested + 256` |
 | Hint override | No | `{.buf:N.}` (KB) |
 
@@ -534,14 +538,14 @@ import starlight
 # --- Shared buffer layouts ---
 # All {.buf.} layouts write to a single buffer — zero intermediate allocations.
 
-# Simple buffered component (no slots)
+# Simple buffered component (no inject blocks)
 layout SiteNav() {.buf.}:
   Nav:
     A(href="/"): "Home"
     text " | "
     A(href="/users"): "Users"
 
-# Page shell with a named slot
+# Page shell with a named inject block
 layout Shell(pageTitle: string) {.buf.}:
   Html:
     Head:
@@ -551,9 +555,9 @@ layout Shell(pageTitle: string) {.buf.}:
     Body:
       SiteNav()        # {.buf.} → writes to the same buffer
       Hr
-      <-S1             # ← named slot: page content is injected here
+      <-S1             # ← inject block: page content is injected here
 
-# Pages use inject to fill Shell's slot
+# Pages use inject to fill Shell's inject block
 layout HomePage(pageTitle: string) {.buf.}:
   inject Shell(pageTitle=pageTitle):
     ->S1:
@@ -625,7 +629,7 @@ In this example, every HTML page shares the same `Shell` layout via `inject`. Wh
 
 1. One buffer is created with compile-time estimated capacity
 2. `Shell` writes `<html><head>...</head><body>`, then `SiteNav()` writes `<nav>...</nav>` to the **same buffer**
-3. The `<-S1` slot is filled with the page content — also written to the same buffer
+3. The `<-S1` inject block is filled with the page content — also written to the same buffer
 4. The completed string is **moved** (not copied) into `Response.body` via ORC move semantics
 5. Result: **1 allocation, 0 copies** for the entire page
 
@@ -656,9 +660,9 @@ In this example, every HTML page shares the same `Shell` layout via `inject`. Wh
 | `ctx.httpMethod` | field | HTTP method |
 | `raw expr` | keyword | Insert HTML without escaping (inside layout) |
 | `text expr` | keyword | Insert text with escaping (inside layout) |
-| `<-Sn` | keyword | Define a named slot inside `{.buf.}` layout |
-| `inject Name(args):` | keyword | Call a `{.buf.}` layout and fill its slots |
-| `->Sn:` | keyword | Provide content for slot Sn inside `inject` block |
+| `<-Sn` | keyword | Define a named inject block inside `{.buf.}` layout |
+| `inject Name(args):` | keyword | Call a `{.buf.}` layout and fill its inject blocks |
+| `->Sn:` | keyword | Provide content for inject block Sn inside `inject` call |
 
 ## License
 

@@ -19,7 +19,7 @@
 ##   layout Shell(title: string) {.buf.}:
 ##     Html:
 ##       Body:
-##         <-S1            # named slot
+##         <-S1            # named inject block
 ##
 ##   layout Page(title: string) {.buf.}:
 ##     inject Shell(title=title):
@@ -34,8 +34,8 @@ import private/naming
 
 export naming
 
-proc collectSlotNames(node: NimNode, result: var seq[string]) =
-  ## Recursively finds <-Sn slot markers and collects their names.
+proc collectInjectBlockNames(node: NimNode, result: var seq[string]) =
+  ## Recursively finds <-Sn inject block markers and collects their names.
   case node.kind
   of nnkPrefix:
     if node[0].kind == nnkIdent and node[0].strVal == "<-":
@@ -44,7 +44,7 @@ proc collectSlotNames(node: NimNode, result: var seq[string]) =
         result.add name
   else:
     for child in node:
-      collectSlotNames(child, result)
+      collectInjectBlockNames(child, result)
 
 proc extractParams(signature: NimNode): tuple[
   procParams, tmplParams, callArgs: seq[NimNode]] =
@@ -97,9 +97,9 @@ proc generateBuffered(name: NimNode, body: NimNode,
   ## Generate buffered layout code (with {.buf.} pragma).
   let implName = layoutImplName(name.strVal)
   let staticCapName = ident(name.strVal & "_staticCap")
-  var slotNames: seq[string] = @[]
-  collectSlotNames(body, slotNames)
-  let hasSlots = slotNames.len > 0
+  var injectBlockNames: seq[string] = @[]
+  collectInjectBlockNames(body, injectBlockNames)
+  let hasInjectBlocks = injectBlockNames.len > 0
   let bufIdent = ident"buf"
   let htmlStmts = generateHtmlBlockBuffered(body, bufIdent)
   let capExpr = buildCapExpr(htmlStmts, body, hintKb)
@@ -118,7 +118,7 @@ proc generateBuffered(name: NimNode, body: NimNode,
   # Always proc-based _impl:
   # proc __layout__Name*(ctx: Context, buf: var string, params...,
   #                      S1Body: proc(ctx: Context, buf: var string), ...) {.inline.} =
-  let slotProcType = newNimNode(nnkProcTy).add(
+  let injectBlockProcType = newNimNode(nnkProcTy).add(
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),
       newIdentDefs(ident"ctx", ident"Context"),
@@ -139,8 +139,8 @@ proc generateBuffered(name: NimNode, body: NimNode,
   implParams.add newIdentDefs(bufIdent, newNimNode(nnkVarTy).add(ident"string"))
   for p in procParams:
     implParams.add p
-  for slot in slotNames:
-    implParams.add newIdentDefs(injectSlotName(slot), slotProcType)
+  for injectBlk in injectBlockNames:
+    implParams.add newIdentDefs(injectBlockName(injectBlk), injectBlockProcType)
 
   let implProc = newProc(
     name = postfix(implName, "*"),
@@ -151,8 +151,8 @@ proc generateBuffered(name: NimNode, body: NimNode,
   implProc.addPragma(ident"inline")
   result.add implProc
 
-  # No-op closure for empty slots: proc(ctx: Context, buf: var string) = discard
-  let noopSlot = newNimNode(nnkLambda).add(
+  # No-op closure for empty inject blocks: proc(ctx: Context, buf: var string) = discard
+  let noopInjectBlock = newNimNode(nnkLambda).add(
     newEmptyNode(), newEmptyNode(), newEmptyNode(),
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),
@@ -169,14 +169,14 @@ proc generateBuffered(name: NimNode, body: NimNode,
   for p in tmplParams:
     wrapperParams.add p
 
-  # Build _impl call args (slots get no-op closures in the wrapper)
+  # Build _impl call args (inject blocks get no-op closures in the wrapper)
   var fwdArgs: seq[NimNode] = @[]
   fwdArgs.add ident"ctx"
   fwdArgs.add bufIdent
   for arg in callArgs:
     fwdArgs.add arg
-  for slot in slotNames:
-    fwdArgs.add noopSlot
+  for injectBlk in injectBlockNames:
+    fwdArgs.add noopInjectBlock
 
   var fwdCallBuf = newCall(implName)
   for arg in fwdArgs:

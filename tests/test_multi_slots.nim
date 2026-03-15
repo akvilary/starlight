@@ -1,21 +1,21 @@
 import ../src/starlight
 
-# --- Layout with two named slots ---
+# --- Layout with two named inject blocks ---
 
-layout TwoSlots() {.buf.}:
+layout TwoBlocks() {.buf.}:
   Div(class="page"):
     <-S1
     Hr
     <-S2
 
 layout Page() {.buf.}:
-  inject TwoSlots():
+  inject TwoBlocks():
     ->S1:
       H1: "Header content"
     ->S2:
       P: "Footer content"
 
-proc testMultiSlots() =
+proc testMultiInjectBlocks() =
   let ctx = newContext()
   let html = Page()
   let expected = "<div class=\"page\">" &
@@ -25,5 +25,5 @@ proc testMultiSlots() =
                  "</div>"
   doAssert html == expected, "\nGot:\n" & html & "\nExpected:\n" & expected
 
-testMultiSlots()
-echo "test_multi_slots: OK"
+testMultiInjectBlocks()
+echo "test_multi_inject_blocks: OK"

@@ -138,7 +138,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
                     else: newStrLitNode("")
       addDynamic(stmts, buf, content)
     elif node[0].kind == nnkIdent and node[0].strVal == "inject":
-      # inject — call a {.toBuffer.} layout, filling its named slots
+      # inject — call a {.buf.} layout, filling its named inject blocks
       # AST: Command("inject", Call(Name, args...), StmtList(->S1: body, ->S2: body, ...))
       # Body is a sibling of the Call node (node[2])
       flushLit(stmts, buf, lit)
@@ -149,18 +149,18 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
         # Add all call arguments
         for i in 1..<call.len:
           implCall.add call[i]
-        # Parse named slots from body: ->S1: body, ->S2: body, ...
-        # Each slot becomes a closure: proc(ctx: Context, buf: var string)
+        # Parse named inject blocks from body: ->S1: body, ->S2: body, ...
+        # Each inject block becomes a closure: proc(ctx: Context, buf: var string)
         if node.len > 2 and node[2].kind == nnkStmtList:
-          for slotNode in node[2]:
-            if slotNode.kind == nnkPrefix and slotNode[0].strVal == "->":
+          for injectBlkNode in node[2]:
+            if injectBlkNode.kind == nnkPrefix and injectBlkNode[0].strVal == "->":
               # ->Sn: body — process body through DSL, wrap in lambda
-              var slotStmts = newStmtList()
-              var slotLit = ""
-              let slotBuf = ident"buf"
-              if slotNode.len > 2 and slotNode[2].kind == nnkStmtList:
-                processNode(slotNode[2], slotStmts, slotBuf, slotLit)
-                flushLit(slotStmts, slotBuf, slotLit)
+              var injectBlkStmts = newStmtList()
+              var injectBlkLit = ""
+              let injectBlkBuf = ident"buf"
+              if injectBlkNode.len > 2 and injectBlkNode[2].kind == nnkStmtList:
+                processNode(injectBlkNode[2], injectBlkStmts, injectBlkBuf, injectBlkLit)
+                flushLit(injectBlkStmts, injectBlkBuf, injectBlkLit)
               let lambda = newNimNode(nnkLambda).add(
                 newEmptyNode(),  # name
                 newEmptyNode(),  # patterns
@@ -168,16 +168,16 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
                 newNimNode(nnkFormalParams).add(
                   newEmptyNode(),  # void return
                   newIdentDefs(ident"ctx", ident"Context"),
-                  newIdentDefs(slotBuf, newNimNode(nnkVarTy).add(ident"string"))
+                  newIdentDefs(injectBlkBuf, newNimNode(nnkVarTy).add(ident"string"))
                 ),
                 newEmptyNode(),  # pragmas
                 newEmptyNode(),  # reserved
-                slotStmts       # body
+                injectBlkStmts       # body
               )
               implCall.add lambda
             else:
-              # Non-slot content — process as regular DSL
-              processNode(slotNode, stmts, buf, lit)
+              # Non-inject-block content — process as regular DSL
+              processNode(injectBlkNode, stmts, buf, lit)
               flushLit(stmts, buf, lit)
         stmts.add implCall
     else:
@@ -186,9 +186,9 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
 
   of nnkPrefix:
     if node[0].kind == nnkIdent and node[0].strVal == "<-":
-      # <-S1 — named slot, calls __inject__S1(ctx, buf) at this position
+      # <-S1 — named inject block, calls __inject__S1(ctx, buf) at this position
       flushLit(stmts, buf, lit)
-      stmts.add newCall(injectSlotName(node[1].strVal), ident"ctx", buf)
+      stmts.add newCall(injectBlockName(node[1].strVal), ident"ctx", buf)
     else:
       flushLit(stmts, buf, lit)
       stmts.add node
