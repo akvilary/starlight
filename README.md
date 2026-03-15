@@ -6,6 +6,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 
 ## Features
 
+- **Built on [Chronos](https://github.com/status-im/nim-chronos)** — async engine and HTTP server from the Status team, battle-tested in production.
 - **Compile-time HTML optimization** — static parts of templates are pre-computed and baked into the binary. Only dynamic expressions are evaluated at runtime.
 - **Native Nim syntax in HTML DSL** — no special syntax like `{var}` or `x->inc()`. Just write normal Nim code inside `layout` blocks.
 - **PrefixTree router** — typed path parameters (`{id:int}`, `{slug}`, `{price:float}`) with compile-time validation.
@@ -41,7 +42,7 @@ responseHtml home():
   return HomePage()
 
 route Main:
-  get "", home
+  get("", home)
 
 var app = newApp()
 app.mount("/", Main)
@@ -253,12 +254,12 @@ proc getCached(ctx: Context): Future[Response] {.async, gcsafe.} =
 Path parameters are declared in the handler signature with their types. They are automatically extracted from `ctx.pathParams` and converted to the specified type:
 
 ```nim
-# Route: get "/{name}", getUser
+# Route: get("/{name}", getUser)
 responseHtml getUser(name: string):
   # name is automatically bound from ctx.pathParams["name"]
   return Page(pageTitle=name, content=UserProfile(name=name))
 
-# Route: get "/{id:int}", getItem
+# Route: get("/{id:int}", getItem)
 responseJson getItem(id: int):
   # id is automatically parsed as int from ctx.pathParams["id"]
   let item = fetchItem(id)
@@ -281,17 +282,21 @@ responseJson search():
 
 ### Route Groups
 
-Define route groups with the `route` macro. Register handlers by HTTP method:
+Define route groups with the `route` macro. Two syntaxes are supported:
 
 ```nim
+# Reference a handler proc:
 route UsersApi:
-  get "", listUsers
-  get "/{name}", getUser
-  post "", createUser
+  get("", listUsers)
+  get("/{name}", getUser)
+  post("", createUser)
 
+# Inline body:
 route ApiRoutes:
-  get "/status", getStatus
-  post "/echo", echoBody
+  get("/status", getStatus)
+  post("/echo", echoBody)
+  get("/health"):
+    return answer("OK")
 ```
 
 Supported HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
@@ -433,14 +438,14 @@ responseHtml home():
 # --- Routes ---
 
 route UsersApi:
-  get "", listUsers
-  get "/{name}", getUser
+  get("", listUsers)
+  get("/{name}", getUser)
 
 route ApiRoutes:
-  get "/status", getStatus
+  get("/status", getStatus)
 
 route Main:
-  get "", home
+  get("", home)
 
 # --- Middleware ---
 

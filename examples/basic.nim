@@ -80,18 +80,18 @@ responseHtml notFoundPage():
 # --- Route groups ---
 
 route UsersApi:
-  get "", listUsers
-  get "/{name}", getUser
+  get("", listUsers)
+  get("/{name}", getUser)
 
 route ApiRoutes:
-  get "/status", getStatus
-  post "/echo", echoBody
-  get "/unauthorized", unauthorized
+  get("/status", getStatus)
+  post("/echo", echoBody)
+  get("/unauthorized", unauthorized)
 
 route MainPage:
-  get "", homePage
-  get "/about", aboutPage
-  get "/not-found", notFoundPage
+  get("", homePage)
+  get("/about", aboutPage)
+  get("/not-found", notFoundPage)
 
 # --- Middleware ---
 
