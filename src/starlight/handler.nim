@@ -1,10 +1,10 @@
-## Handler macros for generating async handler procs.
+## Handler macro for generating async handler procs.
 ##
 ## Usage:
-##   responseHtml home():
+##   response home() {.html.}:
 ##     return Page(title="Home")
 ##
-##   responseJson getStatus():
+##   response getStatus() {.json.}:
 ##     return %*{"status": "ok"}
 ##
 ##   response custom():
@@ -45,7 +45,7 @@ proc generateParamBindings(nameAndParams: NimNode): seq[NimNode] =
 proc transformReturns(node: NimNode, wrapProc: string): NimNode =
   ## Recursively walks the AST and wraps return expressions
   ## with wrapProc (answer/answerJson). Empty wrapProc = no wrapping.
-  ## Supports: return expr  and  return expr, HttpCode
+  ## Supports: return expr  and  return (expr, HttpCode)
   if node.kind == nnkReturnStmt and node[0].kind != nnkEmpty:
     if wrapProc.len == 0:
       return node
@@ -64,7 +64,7 @@ proc transformReturns(node: NimNode, wrapProc: string): NimNode =
 
 proc buildHandler(nameAndParams: NimNode, body: NimNode,
                   wrapProc: string): NimNode =
-  ## Shared logic for all response macros.
+  ## Shared logic for response macro.
   ## wrapProc: "" = no wrapping, "answer" = HTML, "answerJson" = JSON
   let name = nameAndParams[0]
 
@@ -99,13 +99,25 @@ proc buildHandler(nameAndParams: NimNode, body: NimNode,
   result.addPragma(ident"gcsafe")
 
 macro response*(nameAndParams: untyped, body: untyped): untyped =
-  ## Generates an async handler. Use return to return a Response directly.
-  buildHandler(nameAndParams, body, "")
+  ## Generates an async handler proc.
+  ##
+  ## Pragmas:
+  ##   {.html.} — wraps return in answer() (Content-Type: text/html)
+  ##   {.json.} — wraps return in answerJson() (Content-Type: application/json)
+  ##   (none)   — no wrapping, return must be a Response
+  var actualParams = nameAndParams
+  var wrapProc = ""
 
-macro responseHtml*(nameAndParams: untyped, body: untyped): untyped =
-  ## Generates an async handler. return expr is wrapped in answer().
-  buildHandler(nameAndParams, body, "answer")
+  if nameAndParams.kind == nnkPragmaExpr:
+    actualParams = nameAndParams[0]
+    for pragma in nameAndParams[1]:
+      if pragma.kind == nnkIdent:
+        case pragma.strVal
+        of "html":
+          wrapProc = "answer"
+        of "json":
+          wrapProc = "answerJson"
+        else:
+          discard
 
-macro responseJson*(nameAndParams: untyped, body: untyped): untyped =
-  ## Generates an async handler. return expr is wrapped in answerJson().
-  buildHandler(nameAndParams, body, "answerJson")
+  buildHandler(actualParams, body, wrapProc)

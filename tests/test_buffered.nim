@@ -27,7 +27,7 @@ layout Page(title: string) {.toBuffer.}:
 
 # --- Handler using buffered layout ---
 
-responseHtml home():
+response home() {.html.}:
   return Page(title="Hello")
 
 # --- Routes ---

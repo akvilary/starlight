@@ -5,7 +5,7 @@ layout BigList(items: seq[string]) {.toBuffer: 32.}:
     for item in items:
       Li: item
 
-responseHtml showList():
+response showList() {.html.}:
   return BigList(items = @["a", "b", "c"])
 
 route MainRoute:

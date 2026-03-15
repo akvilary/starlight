@@ -52,29 +52,29 @@ layout NotFoundPage():
 
 # --- Handlers ---
 
-responseHtml listUsers():
+response listUsers() {.html.}:
   let users = @["Alice", "Bob", "Charlie"]
   return Page(title="Users", content=UserList(users=users))
 
-responseHtml getUser(name: string):
+response getUser(name: string) {.html.}:
   return Page(title=name, content=UserProfile(name=name))
 
-responseJson getStatus():
+response getStatus() {.json.}:
   return %*{"status": "ok", "version": "0.1.0"}
 
-responseJson echoBody():
+response echoBody() {.json.}:
   return parseJson(ctx.body)
 
-responseJson unauthorized():
+response unauthorized() {.json.}:
   return (%*{"error": "not authorized"}, Http401)
 
-responseHtml homePage():
+response homePage() {.html.}:
   return Page(title="Starlight", content=HomePage())
 
-responseHtml aboutPage():
+response aboutPage() {.html.}:
   return Page(title="About", content=AboutPage())
 
-responseHtml notFoundPage():
+response notFoundPage() {.html.}:
   return (Page(title="404", content=NotFoundPage()), Http404)
 
 # --- Route groups ---

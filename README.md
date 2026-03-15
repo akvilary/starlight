@@ -39,7 +39,7 @@ layout HomePage():
     Body:
       H1: "It works!"
 
-responseHtml home():
+response home() {.html.}:
   return HomePage()
 
 route Main:
@@ -102,7 +102,7 @@ layout Page(pageTitle: string, content: string):
 Layouts are called like regular functions. `ctx` is passed implicitly:
 
 ```nim
-responseHtml home():
+response home() {.html.}:
   return Page(pageTitle="Home", content=Card(title="Welcome", body="Hello!"))
 ```
 
@@ -164,36 +164,34 @@ layout ArticleView(content: string, author: string):
 
 ## Handlers
 
-Three macros generate async handler procs:
+The `response` macro generates async handler procs. Use pragmas to specify the response type:
 
-- `responseHtml` — wraps `return` expressions in `answer()` (Content-Type: text/html)
-- `responseJson` — wraps `return` expressions in `answerJson()` (Content-Type: application/json)
-- `response` — no wrapping, `return` must provide a `Response` directly
+- `{.html.}` — wraps `return` expressions in `answer()` (Content-Type: text/html)
+- `{.json.}` — wraps `return` expressions in `answerJson()` (Content-Type: application/json)
+- *(no pragma)* — no wrapping, `return` must provide a `Response` directly
 
 If no `return` is specified, the handler returns `Http200` with an empty body.
 
 ### HTML Handler
 
 ```nim
-# With macro:
-responseHtml home():
+response home() {.html.}:
   return Page(pageTitle="Home", content=HomePage())
 
-# Without macro (equivalent):
-proc home(ctx: Context): Future[Response] {.async, gcsafe.} =
-  return answer(Page(pageTitle="Home", content=HomePage()))
+# Equivalent to:
+# proc home(ctx: Context): Future[Response] {.async, gcsafe.} =
+#   return answer(Page(pageTitle="Home", content=HomePage()))
 ```
 
 ### JSON Handler
 
 ```nim
-# With macro:
-responseJson getStatus():
+response getStatus() {.json.}:
   return %*{"status": "ok", "version": "0.1.0"}
 
-# Without macro (equivalent):
-proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
-  return answerJson(%*{"status": "ok", "version": "0.1.0"})
+# Equivalent to:
+# proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
+#   return answerJson(%*{"status": "ok", "version": "0.1.0"})
 ```
 
 ### Custom HTTP Status Code
@@ -201,10 +199,10 @@ proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
 To return a response with a custom status code, use a tuple `(body, HttpCode)`:
 
 ```nim
-responseJson unauthorized():
+response unauthorized() {.json.}:
   return (%*{"error": "not authorized"}, Http401)
 
-responseHtml notFound():
+response notFound() {.html.}:
   return (Page(title="404", content=NotFound()), Http404)
 ```
 
@@ -231,11 +229,11 @@ response fireAndForget():
 
 ```nim
 # JsonNode — serialized by the framework:
-responseJson getStatus():
+response getStatus() {.json.}:
   return %*{"status": "ok"}
 
 # Pre-serialized string — zero serialization overhead:
-responseJson getCached():
+response getCached() {.json.}:
   return cachedJsonString
 
 # Without macro:
@@ -249,12 +247,12 @@ Path parameters are declared in the handler signature with their types. They are
 
 ```nim
 # Route: get("/{name}", getUser)
-responseHtml getUser(name: string):
+response getUser(name: string) {.html.}:
   # name is automatically bound from ctx.pathParams["name"]
   return Page(pageTitle=name, content=UserProfile(name=name))
 
 # Route: get("/{id:int}", getItem)
-responseJson getItem(id: int):
+response getItem(id: int) {.json.}:
   # id is automatically parsed as int from ctx.pathParams["id"]
   let item = fetchItem(id)
   return %*{"id": id, "name": item.name}
@@ -265,7 +263,7 @@ responseJson getItem(id: int):
 The `ctx` object is available in every handler:
 
 ```nim
-responseJson search():
+response search() {.json.}:
   let query = ctx.getQuery("q")
   let token = ctx.headers["Authorization"]
   let data = parseJson(ctx.body)
@@ -405,7 +403,7 @@ A `{.toBuffer.}` layout automatically detects its calling context at compile tim
 **Called from a handler** (no `buf` in scope):
 
 ```nim
-responseHtml home():
+response home() {.html.}:
   return Page(title="Hello")
 
 # What actually happens:
@@ -582,17 +580,17 @@ layout UserProfilePage(pageTitle: string, name: string) {.toBuffer.}:
 # Handler calls a {.toBuffer.} layout → one allocation, zero copies.
 # The buffer is created once, filled by all nested layouts, then moved into Response.body.
 
-responseHtml listUsers():
+response listUsers() {.html.}:
   let users = @["Alice", "Bob", "Charlie"]
   return UsersPage(pageTitle="Users", users=users)
 
-responseHtml getUser(name: string):
+response getUser(name: string) {.html.}:
   return UserProfilePage(pageTitle=name, name=name)
 
-responseJson getStatus():
+response getStatus() {.json.}:
   return %*{"status": "ok"}
 
-responseHtml home():
+response home() {.html.}:
   return HomePage(pageTitle="Home")
 
 # --- Routes ---
@@ -638,9 +636,9 @@ In this example, every HTML page shares the same `Shell` layout via `inject`. Wh
 | `layout Name(params):` | macro | Defines a reusable HTML layout |
 | `layout Name(params) {.toBuffer.}:` | macro | Layout that writes to a shared buffer |
 | `layout Name(params) {.toBuffer: N.}:` | macro | Shared buffer layout with N KB capacity hint |
-| `responseHtml Name(params):` | macro | Defines an HTML handler (wraps return in `answer()`) |
-| `responseJson Name(params):` | macro | Defines a JSON handler (wraps return in `answerJson()`) |
-| `response Name(params):` | macro | Defines a raw handler (return must be `Response`) |
+| `response Name(params) {.html.}:` | macro | Handler that wraps return in `answer()` (text/html) |
+| `response Name(params) {.json.}:` | macro | Handler that wraps return in `answerJson()` (application/json) |
+| `response Name(params):` | macro | Raw handler, return must be a `Response` |
 | `route Name:` | macro | Defines a route group |
 | `newApp()` | proc | Creates a new application |
 | `app.mount(prefix, group)` | proc | Mounts a route group at prefix |
