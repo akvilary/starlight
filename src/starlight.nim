@@ -11,9 +11,9 @@ import starlight/context
 import starlight/router
 import starlight/middleware
 import starlight/private/escape
-import starlight/component
+import starlight/layout
 import starlight/handler
 import starlight/route
 import starlight/server
 
-export types, context, router, middleware, escape, component, handler, route, server
+export types, context, router, middleware, escape, layout, handler, route, server

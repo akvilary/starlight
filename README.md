@@ -13,6 +13,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 - **Middleware chain** — explicit `next` callback pattern for predictable request processing.
 - **Zero-overhead layouts** — `layout` generates inline procs with implicit context passing.
 - **Single allocation rendering** — the HTML engine pre-calculates buffer size and builds the entire page in one string.
+- **Shared buffer mode (`{.toBuffer.}`)** — nested layouts write to a single shared buffer with zero intermediate allocations. Buffer capacity is computed at compile time. The final string is moved (not copied) through the entire response chain thanks to Nim's ORC move semantics.
 
 ## Installation
 
@@ -55,6 +56,8 @@ Run:
 nim c -r main.nim
 # Starlight listening on http://127.0.0.1:5000
 ```
+
+The project ships with `nim.cfg` that sets `--mm:orc` explicitly. ORC provides move semantics for zero-copy rendering and is thread-safe for multi-threaded HTTP serving.
 
 ## Layouts
 
@@ -382,6 +385,107 @@ buf.add "</p></body>"
 
 On a typical page where 80-90% is static markup, this means near-zero runtime overhead.
 
+## Shared Buffer Mode
+
+By default, each `layout` creates its own string buffer, fills it, and returns the result. When layouts are nested via `raw`, the inner layout allocates a separate buffer, returns it as a string, and the outer layout copies it in. For a page with 5 nested components, that means 5 allocations + 4 copies.
+
+The `{.toBuffer.}` pragma eliminates this overhead. All nested `{.toBuffer.}` layouts write to **one shared buffer** — zero intermediate allocations.
+
+### How It Works
+
+Add `{.toBuffer.}` to any layout:
+
+```nim
+layout Header() {.toBuffer.}:
+  header:
+    h1: "My Site"
+
+layout Page(title: string, content: string) {.toBuffer.}:
+  html:
+    head:
+      title: title
+    body:
+      Header()       # {.toBuffer.} → writes to the same buffer, no allocation
+      raw content    # regular layout → returns string, added to buffer
+```
+
+A `{.toBuffer.}` layout automatically detects its calling context:
+- **Called from a handler** — creates a buffer, fills it, returns the string. Nim's ARC moves it into `Response.body` with zero copies.
+- **Called inside another layout** — detects the parent's buffer and writes to it directly. No allocation, no copy.
+
+Regular layouts (without `{.toBuffer.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
+
+### Container Slots
+
+For page wrappers that need to accept arbitrary content, use `container` to define a slot and `containered` to fill it:
+
+```nim
+layout Shell(title: string) {.toBuffer.}:
+  html:
+    head:
+      title: title
+      style: "body { font-family: system-ui; }"
+    body:
+      container    # ← slot: caller's content is injected here
+      footer:
+        p: "Powered by Starlight"
+
+layout HomePage(title: string) {.toBuffer.}:
+  containered Shell(title=title):   # fill Shell's container slot
+    Header()                         # {.toBuffer.} → shared buffer
+    main:
+      h1: "Welcome"
+      p: "Fast SSR for Nim."
+```
+
+Everything — Shell's markup, Header's content, the main section — writes to a single buffer. The `containered` keyword processes the body block through the HTML DSL and injects it at the `container` position.
+
+### Buffer Capacity
+
+Each `{.toBuffer.}` layout exports a compile-time constant `Name_staticCap` computed from:
+
+| Component | Source |
+|-----------|--------|
+| Static HTML bytes | Counted from string literals in generated code |
+| Dynamic expressions | Number of runtime values × 64 bytes each |
+| Nested `{.toBuffer.}` layouts | Sum of their `_staticCap` constants |
+| Margin | +256 bytes |
+
+The top-level layout uses this constant for `newStringOfCap`. If the page exceeds the estimate (e.g. a large dynamic list), Nim's string auto-grows (2x doubling, amortized O(1)).
+
+For layouts with unpredictable dynamic content (large `seq` loops), you can provide a hint in KB:
+
+```nim
+layout UserList(users: seq[string]) {.toBuffer: 32.}:   # 32 KB hint
+  ul:
+    for user in users:
+      li: user
+```
+
+The actual capacity is `max(computed formula, hint × 1024)`.
+
+### Zero-Copy Response Chain
+
+The string created by a `{.toBuffer.}` layout is never copied on its way to the client:
+
+1. `newStringOfCap(N)` — one allocation, capacity pre-computed at compile time
+2. `buf.add(...)` — writes fill the buffer, no reallocation if estimate is good
+3. Layout returns `buf` — **moved**, not copied (ORC last-use optimization)
+4. `answer(buf)` → `Response.body = buf` — **moved** into the Response object
+5. HTTP server sends `Response.body` — reads bytes directly, no copy
+
+Result: **1 allocation, 0 copies** for the entire render-to-response pipeline.
+
+### Summary
+
+| Feature | Regular `layout` | `layout {.toBuffer.}` |
+|---------|------------------|-----------------------|
+| Buffer | Own buffer per layout | Shared with parent |
+| Nesting | `raw Inner()` (copy) | `Inner()` (direct write) |
+| Slots | Not supported | `container` / `containered` |
+| Buffer sizing | `staticLen + 256` | `staticLen + dynamic*64 + nested + 256` |
+| Hint override | No | `{.toBuffer: N.}` (KB) |
+
 ## Full Example
 
 ```nim
@@ -468,6 +572,8 @@ app.serve("127.0.0.1", 5000)
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `layout Name(params):` | macro | Defines a reusable HTML layout |
+| `layout Name(params) {.toBuffer.}:` | macro | Layout that writes to a shared buffer |
+| `layout Name(params) {.toBuffer: N.}:` | macro | Shared buffer layout with N KB capacity hint |
 | `responseHtml Name(params):` | macro | Defines an HTML handler (wraps return in `answer()`) |
 | `responseJson Name(params):` | macro | Defines a JSON handler (wraps return in `answerJson()`) |
 | `response Name(params):` | macro | Defines a raw handler (return must be `Response`) |
@@ -488,6 +594,8 @@ app.serve("127.0.0.1", 5000)
 | `ctx.httpMethod` | field | HTTP method |
 | `raw expr` | keyword | Insert HTML without escaping (inside layout) |
 | `text expr` | keyword | Insert text with escaping (inside layout) |
+| `container` | keyword | Define a slot inside `{.toBuffer.}` layout |
+| `containered Name(args): body` | keyword | Call a `{.toBuffer.}` layout and fill its `container` slot |
 
 ## License
 

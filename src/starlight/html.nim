@@ -11,6 +11,7 @@
 import std/[macros, sets, tables]
 import private/tags
 import private/escape
+import private/naming
 
 export escape
 
@@ -137,19 +138,46 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
                     elif node.len > 1: node[1]
                     else: newStrLitNode("")
       addDynamic(stmts, buf, content)
+    elif node[0].kind == nnkIdent and node[0].strVal == "containered":
+      # containered — call a {.toBuffer.} layout, filling its container slot
+      # AST: Command("containered", Call(Name, args...), StmtList(body...))
+      # Body is a sibling of the Call node, not a child
+      flushLit(stmts, buf, lit)
+      let call = if node.len > 1: node[1] else: return
+      if call.kind in {nnkCall, nnkCommand}:
+        let implName = layoutImplName(call[0].strVal)
+        var implCall = newCall(implName, ident"ctx", buf)
+        # Add all call arguments
+        for i in 1..<call.len:
+          implCall.add call[i]
+        # Body block is node[2] (sibling of the Call)
+        if node.len > 2 and node[2].kind == nnkStmtList:
+          var bodyStmts = newStmtList()
+          var bodyLit = ""
+          processNode(node[2], bodyStmts, buf, bodyLit)
+          flushLit(bodyStmts, buf, bodyLit)
+          implCall.add bodyStmts
+        else:
+          implCall.add newNimNode(nnkDiscardStmt).add(newEmptyNode())
+        stmts.add implCall
     else:
       # Not a tag — treat as expression
       processContent(node, stmts, buf, lit)
 
   of nnkIdent:
     let name = node.strVal
-    let resolved = if name in tagAliases: tagAliases[name] else: name
-    if isTag(resolved) and isVoid(resolved):
-      # Only void tags can be bare identifiers (e.g., `br`, `hr`)
-      # Non-void bare identifiers are treated as variables
-      lit.add "<" & resolved & "/>"
+    if name == "container":
+      # container — slot placeholder for containered caller's content
+      flushLit(stmts, buf, lit)
+      stmts.add ident"containerBody"
     else:
-      processContent(node, stmts, buf, lit)
+      let resolved = if name in tagAliases: tagAliases[name] else: name
+      if isTag(resolved) and isVoid(resolved):
+        # Only void tags can be bare identifiers (e.g., `br`, `hr`)
+        # Non-void bare identifiers are treated as variables
+        lit.add "<" & resolved & "/>"
+      else:
+        processContent(node, stmts, buf, lit)
 
   of nnkAccQuoted:
     let name = if node.len > 0: node[0].strVal else: ""
@@ -261,7 +289,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
   else:
     processContent(node, stmts, buf, lit)
 
-proc countStaticLen(stmts: NimNode): int =
+proc countStaticLen*(stmts: NimNode): int =
   ## Count total static string length for pre-allocation estimate.
   for stmt in stmts:
     if stmt.kind == nnkCall and stmt.len > 1 and stmt[^1].kind == nnkStrLit:
@@ -276,6 +304,39 @@ proc countStaticLen(stmts: NimNode): int =
       elif child.kind in {nnkElse}:
         if child[0].kind == nnkStmtList:
           result += countStaticLen(child[0])
+
+proc countDynamicExprs*(stmts: NimNode): int =
+  ## Count dynamic (non-static) buf.add calls for buffer estimation.
+  for stmt in stmts:
+    if stmt.kind == nnkCall and stmt.len > 1:
+      if stmt[0].kind == nnkDotExpr and stmt[0][1].eqIdent("add"):
+        if stmt[^1].kind != nnkStrLit:
+          inc result
+    for child in stmt:
+      if child.kind == nnkStmtList:
+        result += countDynamicExprs(child)
+      elif child.kind in {nnkElifBranch, nnkOfBranch}:
+        if child[^1].kind == nnkStmtList:
+          result += countDynamicExprs(child[^1])
+      elif child.kind in {nnkElse}:
+        if child[0].kind == nnkStmtList:
+          result += countDynamicExprs(child[0])
+
+proc collectNestedCaps*(body: NimNode): seq[NimNode] =
+  ## Find containered Name(...) calls in the original body and return Name_staticCap idents.
+  case body.kind
+  of nnkCommand:
+    if body[0].kind == nnkIdent and body[0].strVal == "containered":
+      let call = body[1]
+      if call.kind in {nnkCall, nnkCommand}:
+        result.add ident(call[0].strVal & "_staticCap")
+      # Also scan the block body if present
+      if call.kind in {nnkCall, nnkCommand} and call[^1].kind == nnkStmtList:
+        for child in call[^1]:
+          result.add collectNestedCaps(child)
+  else:
+    for child in body:
+      result.add collectNestedCaps(child)
 
 proc generateHtmlBlock*(body: NimNode): NimNode =
   ## Generate HTML rendering code from DSL body. Called by the layout macro.
@@ -296,3 +357,12 @@ proc generateHtmlBlock*(body: NimNode): NimNode =
   resultStmts.add buf
 
   result = newBlockStmt(newEmptyNode(), resultStmts)
+
+proc generateHtmlBlockBuffered*(body: NimNode, buf: NimNode): NimNode =
+  ## Generate HTML rendering code that writes to an existing buffer.
+  ## Unlike generateHtmlBlock, does not create or return the buffer.
+  var stmts = newStmtList()
+  var lit = ""
+  processNode(body, stmts, buf, lit)
+  flushLit(stmts, buf, lit)
+  result = stmts
