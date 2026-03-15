@@ -4,51 +4,51 @@ import ../src/starlight
 # --- Layouts ---
 
 layout Page(title: string, content: string):
-  html:
-    head:
-      meta(charset="utf-8")
-      title: title
-      style: "body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }"
-    body:
-      nav:
-        a(href="/"): "Home"
+  Html:
+    Head:
+      Meta(charset="utf-8")
+      Title: title
+      Style: "body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }"
+    Body:
+      Nav:
+        A(href="/"): "Home"
         text " | "
-        a(href="/users"): "Users"
+        A(href="/users"): "Users"
         text " | "
-        a(href="/about"): "About"
-      hr
+        A(href="/about"): "About"
+      Hr
       raw content
 
 layout UserList(users: seq[string]):
-  h1: "Users"
-  ul:
+  H1: "Users"
+  Ul:
     for user in users:
-      li:
-        a(href="/users/" & user): user
+      Li:
+        A(href="/users/" & user): user
 
 layout UserProfile(name: string):
-  h1: "User: " & name
-  p: "Profile page for " & name
-  a(href="/users"): "Back to users"
+  H1: "User: " & name
+  P: "Profile page for " & name
+  A(href="/users"): "Back to users"
 
 layout HomePage():
-  h1: "Welcome to Starlight"
-  p: "A super fast server-side rendering framework for Nim."
-  tdiv(class="features"):
-    h2: "Features"
-    ul:
-      li: "Compile-time HTML optimization"
-      li: "PrefixTree router with typed parameters"
-      li: "Middleware chain"
-      li: "Zero-overhead layouts"
+  H1: "Welcome to Starlight"
+  P: "A super fast server-side rendering framework for Nim."
+  Div(class="features"):
+    H2: "Features"
+    Ul:
+      Li: "Compile-time HTML optimization"
+      Li: "PrefixTree router with typed parameters"
+      Li: "Middleware chain"
+      Li: "Zero-overhead layouts"
 
 layout AboutPage():
-  h1: "About"
-  p: "Built with Nim and httpx."
+  H1: "About"
+  P: "Built with Nim and Chronos."
 
 layout NotFoundPage():
-  h1: "404 — Not Found"
-  p: "The page you are looking for does not exist."
+  H1: "404 — Not Found"
+  P: "The page you are looking for does not exist."
 
 # --- Handlers ---
 

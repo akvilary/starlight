@@ -33,11 +33,11 @@ requires "starlight >= 0.1.0"
 import starlight
 
 layout HomePage():
-  html:
-    head:
-      title: "Hello Starlight"
-    body:
-      h1: "It works!"
+  Html:
+    Head:
+      Title: "Hello Starlight"
+    Body:
+      H1: "It works!"
 
 responseHtml home():
   return HomePage()
@@ -67,11 +67,11 @@ The project ships with `nim.cfg` that sets `--mm:orc` explicitly. ORC provides m
 
 ```nim
 layout Card(title: string, body: string, footer = ""):
-  tdiv(class="card"):
-    h2(class="card-title"): title
-    p(class="card-body"): body
+  Div(class="card"):
+    H2(class="card-title"): title
+    P(class="card-body"): body
     if footer != "":
-      tdiv(class="card-footer"): footer
+      Div(class="card-footer"): footer
 ```
 
 ### Nested Layouts
@@ -79,21 +79,21 @@ layout Card(title: string, body: string, footer = ""):
 Layouts can call other layouts using `raw`:
 
 ```nim
-layout Nav():
-  nav:
-    a(href="/"): "Home"
+layout NavBar():
+  Nav:
+    A(href="/"): "Home"
     text " | "
-    a(href="/about"): "About"
+    A(href="/about"): "About"
 
 layout Page(pageTitle: string, content: string):
-  html:
-    head:
-      meta(charset="utf-8")
-      title: pageTitle
-    body:
-      raw Nav()
-      hr
-      main:
+  Html:
+    Head:
+      Meta(charset="utf-8")
+      Title: pageTitle
+    Body:
+      raw NavBar()
+      Hr
+      Main:
         raw content
 ```
 
@@ -108,16 +108,18 @@ responseHtml home():
 
 ### HTML Tags
 
-Tags are recognized from a built-in set of HTML tag names. Attributes are passed as named parameters. Void tags (`br`, `hr`, `img`, `input`, etc.) self-close automatically.
+Tags are written in TitleCase (`Div`, `H1`, `P`, `A`) and output as lowercase HTML (`<div>`, `<h1>`, `<p>`, `<a>`). Attributes are passed as named parameters. Void tags (`Br`, `Hr`, `Img`, `Input`, etc.) self-close automatically.
 
 ```nim
 layout MyPage():
-  h1: "Hello World"
-  p: "A paragraph"
-  a(href="/about"): "About"
-  img(src="/logo.png", alt="Logo")
-  br
+  H1: "Hello World"
+  P: "A paragraph"
+  A(href="/about"): "About"
+  Img(src="/logo.png", alt="Logo")
+  Br
 ```
+
+TitleCase eliminates all conflicts with Nim keywords — no aliases needed for `Div`, `Object`, `Template`, or `Var`.
 
 ### Dynamic Content
 
@@ -125,8 +127,8 @@ Variables and expressions work as normal Nim code. All dynamic content is automa
 
 ```nim
 layout Greeting(userName: string, messageCount: int):
-  h1: "Hello, " & userName & "!"
-  p: "You have " & $messageCount & " messages"
+  H1: "Hello, " & userName & "!"
+  P: "You have " & $messageCount & " messages"
 ```
 
 ### Control Flow
@@ -136,15 +138,15 @@ Standard Nim control flow works inside layouts:
 ```nim
 layout UserNav(loggedIn: bool, userName: string):
   if loggedIn:
-    p: "Welcome back, " & userName
-    a(href="/logout"): "Logout"
+    P: "Welcome back, " & userName
+    A(href="/logout"): "Logout"
   else:
-    a(href="/login"): "Login"
+    A(href="/login"): "Login"
 
 layout ItemList(items: seq[string]):
-  ul:
+  Ul:
     for item in items:
-      li: item
+      Li: item
 ```
 
 ### Raw HTML and Text
@@ -152,24 +154,13 @@ layout ItemList(items: seq[string]):
 Use `raw` to insert pre-rendered HTML without escaping, and `text` to insert escaped text alongside tags:
 
 ```nim
-layout Article(content: string, author: string):
-  tdiv(class="article"):
+layout ArticleView(content: string, author: string):
+  Div(class="article"):
     raw content
-  p:
+  P:
     text "Written by "
-    strong: author
+    Strong: author
 ```
-
-### Nim Keyword Conflicts
-
-Some HTML tags conflict with Nim keywords. Use prefixed aliases:
-
-| HTML tag    | Nim alias    |
-|-------------|-------------|
-| `div`       | `tdiv`      |
-| `template`  | `ttemplate` |
-| `object`    | `tobject`   |
-| `var`       | `tvar`      |
 
 ## Handlers
 
@@ -364,12 +355,12 @@ Starlight's key advantage: the HTML engine analyzes templates at compile time an
 
 ```nim
 layout MyPage(userName: string, bio: string):
-  head:
-    title: "My App"
-    meta(charset="utf-8")
-  body:
-    h1: userName
-    p: bio
+  Head:
+    Title: "My App"
+    Meta(charset="utf-8")
+  Body:
+    H1: userName
+    P: bio
 ```
 
 Generated code (conceptually):
@@ -396,24 +387,53 @@ The `{.toBuffer.}` pragma eliminates this overhead. All nested `{.toBuffer.}` la
 Add `{.toBuffer.}` to any layout:
 
 ```nim
-layout Header() {.toBuffer.}:
-  header:
-    h1: "My Site"
+layout SiteHeader() {.toBuffer.}:
+  Header:
+    H1: "My Site"
 
 layout Page(title: string, content: string) {.toBuffer.}:
-  html:
-    head:
-      title: title
-    body:
-      Header()       # {.toBuffer.} → writes to the same buffer, no allocation
+  Html:
+    Head:
+      Title: title
+    Body:
+      SiteHeader()   # {.toBuffer.} → writes to the same buffer, no allocation
       raw content    # regular layout → returns string, added to buffer
 ```
 
-A `{.toBuffer.}` layout automatically detects its calling context:
-- **Called from a handler** — creates a buffer, fills it, returns the string. Nim's ARC moves it into `Response.body` with zero copies.
-- **Called inside another layout** — detects the parent's buffer and writes to it directly. No allocation, no copy.
+A `{.toBuffer.}` layout automatically detects its calling context at compile time via `when declared(buf)`:
 
-Regular layouts (without `{.toBuffer.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
+**Called from a handler** (no `buf` in scope):
+
+```nim
+responseHtml home():
+  return Page(title="Hello")
+
+# What actually happens:
+#   1. Page template sees declared(buf) = false
+#   2. Creates: var buf = newStringOfCap(Page_staticCap)
+#   3. Calls __layout__Page(ctx, buf, title) — fills buf
+#      (all nested {.toBuffer.} layouts write to this same buf)
+#   4. Returns buf as string
+#   5. answer(buf) — moves the string into Response.body (zero copies, ORC move semantics)
+```
+
+One allocation, one buffer for the entire page. The string is never copied — it is moved through the `answer()` → `Response.body` → HTTP send chain.
+
+**Called inside another `{.toBuffer.}` layout** (`buf` already in scope):
+
+```nim
+layout Page(title: string) {.toBuffer.}:
+  Html:
+    Body:
+      SiteHeader()   # SiteHeader sees declared(buf) = true
+                      # → calls __layout__SiteHeader(ctx, buf) directly
+                      # → writes to the SAME buf, returns ""
+                      # Zero allocation, zero copy
+```
+
+The nested layout writes to the parent's buffer and returns an empty string (which the DSL discards as a no-op).
+
+**Regular layouts** (without `{.toBuffer.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
 
 ### Container Slots
 
@@ -421,21 +441,21 @@ For page wrappers that need to accept arbitrary content, use `container` to defi
 
 ```nim
 layout Shell(title: string) {.toBuffer.}:
-  html:
-    head:
-      title: title
-      style: "body { font-family: system-ui; }"
-    body:
+  Html:
+    Head:
+      Title: title
+      Style: "body { font-family: system-ui; }"
+    Body:
       container    # ← slot: caller's content is injected here
-      footer:
-        p: "Powered by Starlight"
+      Footer:
+        P: "Powered by Starlight"
 
 layout HomePage(title: string) {.toBuffer.}:
   containered Shell(title=title):   # fill Shell's container slot
-    Header()                         # {.toBuffer.} → shared buffer
-    main:
-      h1: "Welcome"
-      p: "Fast SSR for Nim."
+    SiteHeader()                     # {.toBuffer.} → shared buffer
+    Main:
+      H1: "Welcome"
+      P: "Fast SSR for Nim."
 ```
 
 Everything — Shell's markup, Header's content, the main section — writes to a single buffer. The `containered` keyword processes the body block through the HTML DSL and injects it at the `container` position.
@@ -457,9 +477,9 @@ For layouts with unpredictable dynamic content (large `seq` loops), you can prov
 
 ```nim
 layout UserList(users: seq[string]) {.toBuffer: 32.}:   # 32 KB hint
-  ul:
+  Ul:
     for user in users:
-      li: user
+      Li: user
 ```
 
 The actual capacity is `max(computed formula, hint × 1024)`.
@@ -492,52 +512,64 @@ Result: **1 allocation, 0 copies** for the entire render-to-response pipeline.
 import std/json
 import starlight
 
-# --- Layouts ---
+# --- Shared buffer layouts ---
+# All {.toBuffer.} layouts write to a single buffer — zero intermediate allocations.
 
-layout Page(pageTitle: string, content: string):
-  html:
-    head:
-      meta(charset="utf-8")
-      title: pageTitle
-      style: "body { font-family: system-ui; max-width: 800px; margin: 0 auto; padding: 20px; }"
-    body:
-      nav:
-        a(href="/"): "Home"
-        text " | "
-        a(href="/users"): "Users"
-      hr
-      raw content
+# Simple buffered component (no slots)
+layout SiteNav() {.toBuffer.}:
+  Nav:
+    A(href="/"): "Home"
+    text " | "
+    A(href="/users"): "Users"
 
-layout UserList(users: seq[string]):
-  h1: "Users"
-  ul:
-    for user in users:
-      li:
-        a(href="/users/" & user): user
+# Page shell with a container slot
+layout Shell(pageTitle: string) {.toBuffer.}:
+  Html:
+    Head:
+      Meta(charset="utf-8")
+      Title: pageTitle
+      Style: "body { font-family: system-ui; max-width: 800px; margin: 0 auto; padding: 20px; }"
+    Body:
+      SiteNav()        # {.toBuffer.} → writes to the same buffer
+      Hr
+      container        # ← slot: caller's content is injected here
 
-layout UserProfile(name: string):
-  h1: name
-  p: "Profile page"
-  a(href="/users"): "Back"
+# Pages use containered to fill Shell's slot
+layout HomePage(pageTitle: string) {.toBuffer.}:
+  containered Shell(pageTitle=pageTitle):
+    H1: "Welcome"
+    P: "A super fast SSR framework for Nim."
 
-layout HomePage():
-  h1: "Welcome"
-  p: "A super fast SSR framework for Nim."
+layout UsersPage(pageTitle: string, users: seq[string]) {.toBuffer.}:
+  containered Shell(pageTitle=pageTitle):
+    H1: "Users"
+    Ul:
+      for user in users:
+        Li:
+          A(href="/users/" & user): user
+
+layout UserProfilePage(pageTitle: string, name: string) {.toBuffer.}:
+  containered Shell(pageTitle=pageTitle):
+    H1: name
+    P: "Profile page"
+    A(href="/users"): "Back"
 
 # --- Handlers ---
+# Handler calls a {.toBuffer.} layout → one allocation, zero copies.
+# The buffer is created once, filled by all nested layouts, then moved into Response.body.
 
 responseHtml listUsers():
   let users = @["Alice", "Bob", "Charlie"]
-  return Page(pageTitle="Users", content=UserList(users=users))
+  return UsersPage(pageTitle="Users", users=users)
 
 responseHtml getUser(name: string):
-  return Page(pageTitle=name, content=UserProfile(name=name))
+  return UserProfilePage(pageTitle=name, name=name)
 
 responseJson getStatus():
   return %*{"status": "ok"}
 
 responseHtml home():
-  return Page(pageTitle="Home", content=HomePage())
+  return HomePage(pageTitle="Home")
 
 # --- Routes ---
 
@@ -548,7 +580,7 @@ route UsersApi:
 route ApiRoutes:
   get("/status", getStatus)
 
-route Main:
+route MainRoute:
   get("", home)
 
 # --- Middleware ---
@@ -563,9 +595,17 @@ var app = newApp()
 app.use(logger)
 app.mount("/users", UsersApi)
 app.mount("/api", ApiRoutes)
-app.mount("/", Main)
+app.mount("/", MainRoute)
 app.serve("127.0.0.1", 5000)
 ```
+
+In this example, every HTML page shares the same `Shell` layout via `containered`. When a handler calls `HomePage(pageTitle="Home")`:
+
+1. One buffer is created with compile-time estimated capacity
+2. `Shell` writes `<html><head>...</head><body>`, then `SiteNav()` writes `<nav>...</nav>` to the **same buffer**
+3. The `container` slot is filled with the page content — also written to the same buffer
+4. The completed string is **moved** (not copied) into `Response.body` via ORC move semantics
+5. Result: **1 allocation, 0 copies** for the entire page
 
 ## API Reference
 

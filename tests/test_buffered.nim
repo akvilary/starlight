@@ -2,27 +2,27 @@ import ../src/starlight
 
 # --- Simple buffered layout (no slots) ---
 
-layout Header() {.toBuffer.}:
-  header:
-    h1: "My Site"
+layout SiteHeader() {.toBuffer.}:
+  Header:
+    H1: "My Site"
 
 # --- Buffered layout with container slot ---
 
 layout Wrapper(title: string) {.toBuffer.}:
-  html:
-    head:
-      title: title
-    body:
+  Html:
+    Head:
+      Title: title
+    Body:
       container
-      footer: "End"
+      Footer: "End"
 
 # --- Buffered layout using containered ---
 
 layout Page(title: string) {.toBuffer.}:
   containered Wrapper(title=title):
-    Header()
-    main:
-      h1: "Welcome"
+    SiteHeader()
+    Main:
+      H1: "Welcome"
 
 # --- Handler using buffered layout ---
 
@@ -31,11 +31,11 @@ responseHtml home():
 
 # --- Routes ---
 
-route Main:
+route MainRoute:
   get("/", home)
 
 var app = newApp()
-app.mount("/", Main)
+app.mount("/", MainRoute)
 
 # --- Verify buffer order ---
 

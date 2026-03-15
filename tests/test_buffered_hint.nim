@@ -1,15 +1,15 @@
 import ../src/starlight
 
 layout BigList(items: seq[string]) {.toBuffer: 32.}:
-  ul:
+  Ul:
     for item in items:
-      li: item
+      Li: item
 
 responseHtml showList():
   return BigList(items = @["a", "b", "c"])
 
-route Main:
+route MainRoute:
   get("/", showList)
 
 var app = newApp()
-app.mount("/", Main)
+app.mount("/", MainRoute)

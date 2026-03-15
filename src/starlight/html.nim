@@ -8,20 +8,18 @@
 ##       if loggedIn:
 ##         a(href="/logout"): "Logout"
 
-import std/[macros, sets, tables]
+import std/[macros, sets]
 import private/tags
 import private/escape
 import private/naming
 
-export escape
+export escape, tags
 
 proc resolveTagName(node: NimNode): string =
-  ## Extracts tag name from ident or backtick-quoted ident, resolving aliases.
+  ## Extracts tag name from ident or backtick-quoted ident.
   case node.kind
   of nnkIdent:
     result = node.strVal
-    if result in tagAliases:
-      result = tagAliases[result]
   of nnkAccQuoted:
     if node.len > 0:
       result = node[0].strVal
@@ -70,7 +68,8 @@ proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string
 proc processTag(node: NimNode, tagName: string, stmts: NimNode,
                 buf: NimNode, lit: var string) =
   ## Process an HTML tag node.
-  lit.add "<" & tagName
+  let htmlTag = tagToHtml(tagName)
+  lit.add "<" & htmlTag
 
   # Collect attributes and body
   for i in 1..<node.len:
@@ -107,7 +106,7 @@ proc processTag(node: NimNode, tagName: string, stmts: NimNode,
         processNode(child, stmts, buf, lit)
       else:
         processContent(child, stmts, buf, lit)
-    lit.add "</" & tagName & ">"
+    lit.add "</" & htmlTag & ">"
 
 proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
   case node.kind
@@ -171,18 +170,17 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
       flushLit(stmts, buf, lit)
       stmts.add ident"containerBody"
     else:
-      let resolved = if name in tagAliases: tagAliases[name] else: name
-      if isTag(resolved) and isVoid(resolved):
-        # Only void tags can be bare identifiers (e.g., `br`, `hr`)
+      if isTag(name) and isVoid(name):
+        # Only void tags can be bare identifiers (e.g., Br, Hr)
         # Non-void bare identifiers are treated as variables
-        lit.add "<" & resolved & "/>"
+        lit.add "<" & tagToHtml(name) & "/>"
       else:
         processContent(node, stmts, buf, lit)
 
   of nnkAccQuoted:
     let name = if node.len > 0: node[0].strVal else: ""
     if isTag(name) and isVoid(name):
-      lit.add "<" & name & "/>"
+      lit.add "<" & tagToHtml(name) & "/>"
     else:
       processContent(node, stmts, buf, lit)
 

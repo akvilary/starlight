@@ -1,35 +1,34 @@
-## Compile-time sets of HTML tag names.
+## Compile-time sets of HTML tag names (TitleCase).
+## DSL uses TitleCase (Div, H1, P), output is lowercase (<div>, <h1>, <p>).
 
-import std/[sets, tables]
+import std/[sets, strutils]
 
 const htmlTags* = toHashSet([
-  "html", "head", "body", "title", "meta", "link", "style", "script",
-  "div", "span", "p", "a", "img", "br", "hr",
-  "h1", "h2", "h3", "h4", "h5", "h6",
-  "ul", "ol", "li", "dl", "dt", "dd",
-  "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",
-  "form", "input", "button", "select", "option", "optgroup", "textarea", "label",
-  "fieldset", "legend",
-  "header", "footer", "nav", "main", "section", "article", "aside",
-  "figure", "figcaption", "details", "summary",
-  "pre", "code", "blockquote", "cite",
-  "strong", "em", "b", "i", "u", "s", "small", "sub", "sup", "mark",
-  "abbr", "time", "progress", "meter",
-  "audio", "video", "source", "canvas", "svg",
-  "iframe", "embed", "object", "param",
-  "noscript", "slot",
-  "dialog", "data", "output", "picture", "map", "area",
-  "del", "ins", "dfn", "kbd", "samp", "wbr", "bdi", "bdo", "ruby", "rt", "rp",
+  "Html", "Head", "Body", "Title", "Meta", "Link", "Style", "Script",
+  "Div", "Span", "P", "A", "Img", "Br", "Hr",
+  "H1", "H2", "H3", "H4", "H5", "H6",
+  "Ul", "Ol", "Li", "Dl", "Dt", "Dd",
+  "Table", "Thead", "Tbody", "Tfoot", "Tr", "Th", "Td", "Caption", "Colgroup", "Col",
+  "Form", "Input", "Button", "Select", "Option", "Optgroup", "Textarea", "Label",
+  "Fieldset", "Legend",
+  "Header", "Footer", "Nav", "Main", "Section", "Article", "Aside",
+  "Figure", "Figcaption", "Details", "Summary",
+  "Pre", "Code", "Blockquote", "Cite",
+  "Strong", "Em", "B", "I", "U", "S", "Small", "Sub", "Sup", "Mark",
+  "Abbr", "Time", "Progress", "Meter",
+  "Audio", "Video", "Source", "Canvas", "Svg",
+  "Iframe", "Embed", "Object", "Param",
+  "Noscript", "Slot",
+  "Dialog", "Data", "Output", "Picture", "Map", "Area",
+  "Del", "Ins", "Dfn", "Kbd", "Samp", "Wbr", "Bdi", "Bdo", "Ruby", "Rt", "Rp",
+  "Template", "Var",
 ])
 
 const voidTags* = toHashSet([
-  "area", "base", "br", "col", "embed", "hr", "img", "input",
-  "link", "meta", "param", "source", "track", "wbr",
+  "Area", "Base", "Br", "Col", "Embed", "Hr", "Img", "Input",
+  "Link", "Meta", "Param", "Source", "Track", "Wbr",
 ])
 
-const tagAliases* = {
-  "tdiv": "div",
-  "ttemplate": "template",
-  "tobject": "object",
-  "tvar": "var",
-}.toTable
+proc tagToHtml*(name: string): string =
+  ## Convert TitleCase tag name to lowercase HTML tag.
+  name.toLowerAscii
