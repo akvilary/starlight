@@ -435,9 +435,9 @@ The nested layout writes to the parent's buffer and returns an empty string (whi
 
 **Regular layouts** (without `{.toBuffer.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
 
-### Container Slots
+### Named Slots
 
-For page wrappers that need to accept arbitrary content, use `container` to define a slot and `containered` to fill it:
+For page wrappers that need to accept arbitrary content, use `<-Sn` to define named slots and `inject` + `->Sn:` to fill them:
 
 ```nim
 layout Shell(title: string) {.toBuffer.}:
@@ -446,19 +446,40 @@ layout Shell(title: string) {.toBuffer.}:
       Title: title
       Style: "body { font-family: system-ui; }"
     Body:
-      container    # ← slot: caller's content is injected here
+      <-S1         # ← named slot: caller's content is injected here
       Footer:
         P: "Powered by Starlight"
 
 layout HomePage(title: string) {.toBuffer.}:
-  containered Shell(title=title):   # fill Shell's container slot
-    SiteHeader()                     # {.toBuffer.} → shared buffer
-    Main:
-      H1: "Welcome"
-      P: "Fast SSR for Nim."
+  inject Shell(title=title):
+    ->S1:                            # fill Shell's S1 slot
+      SiteHeader()                   # {.toBuffer.} → shared buffer
+      Main:
+        H1: "Welcome"
+        P: "Fast SSR for Nim."
 ```
 
-Everything — Shell's markup, Header's content, the main section — writes to a single buffer. The `containered` keyword processes the body block through the HTML DSL and injects it at the `container` position.
+Multiple slots are supported:
+
+```nim
+layout TwoColumnLayout() {.toBuffer.}:
+  Div(class="page"):
+    Div(class="sidebar"):
+      <-S1
+    Div(class="content"):
+      <-S2
+
+layout DashboardPage() {.toBuffer.}:
+  inject TwoColumnLayout():
+    ->S1:
+      Nav:
+        A(href="/"): "Home"
+    ->S2:
+      H1: "Dashboard"
+      P: "Welcome back."
+```
+
+Everything writes to a single buffer. The `inject` keyword processes each `->Sn:` body through the HTML DSL and injects it at the corresponding `<-Sn` position.
 
 ### Buffer Capacity
 
@@ -502,7 +523,7 @@ Result: **1 allocation, 0 copies** for the entire render-to-response pipeline.
 |---------|------------------|-----------------------|
 | Buffer | Own buffer per layout | Shared with parent |
 | Nesting | `raw Inner()` (copy) | `Inner()` (direct write) |
-| Slots | Not supported | `container` / `containered` |
+| Slots | Not supported | `<-Sn` / `inject` + `->Sn:` |
 | Buffer sizing | `staticLen + 256` | `staticLen + dynamic*64 + nested + 256` |
 | Hint override | No | `{.toBuffer: N.}` (KB) |
 
@@ -522,7 +543,7 @@ layout SiteNav() {.toBuffer.}:
     text " | "
     A(href="/users"): "Users"
 
-# Page shell with a container slot
+# Page shell with a named slot
 layout Shell(pageTitle: string) {.toBuffer.}:
   Html:
     Head:
@@ -532,27 +553,30 @@ layout Shell(pageTitle: string) {.toBuffer.}:
     Body:
       SiteNav()        # {.toBuffer.} → writes to the same buffer
       Hr
-      container        # ← slot: caller's content is injected here
+      <-S1             # ← named slot: page content is injected here
 
-# Pages use containered to fill Shell's slot
+# Pages use inject to fill Shell's slot
 layout HomePage(pageTitle: string) {.toBuffer.}:
-  containered Shell(pageTitle=pageTitle):
-    H1: "Welcome"
-    P: "A super fast SSR framework for Nim."
+  inject Shell(pageTitle=pageTitle):
+    ->S1:
+      H1: "Welcome"
+      P: "A super fast SSR framework for Nim."
 
 layout UsersPage(pageTitle: string, users: seq[string]) {.toBuffer.}:
-  containered Shell(pageTitle=pageTitle):
-    H1: "Users"
-    Ul:
-      for user in users:
-        Li:
-          A(href="/users/" & user): user
+  inject Shell(pageTitle=pageTitle):
+    ->S1:
+      H1: "Users"
+      Ul:
+        for user in users:
+          Li:
+            A(href="/users/" & user): user
 
 layout UserProfilePage(pageTitle: string, name: string) {.toBuffer.}:
-  containered Shell(pageTitle=pageTitle):
-    H1: name
-    P: "Profile page"
-    A(href="/users"): "Back"
+  inject Shell(pageTitle=pageTitle):
+    ->S1:
+      H1: name
+      P: "Profile page"
+      A(href="/users"): "Back"
 
 # --- Handlers ---
 # Handler calls a {.toBuffer.} layout → one allocation, zero copies.
@@ -599,11 +623,11 @@ app.mount("/", MainRoute)
 app.serve("127.0.0.1", 5000)
 ```
 
-In this example, every HTML page shares the same `Shell` layout via `containered`. When a handler calls `HomePage(pageTitle="Home")`:
+In this example, every HTML page shares the same `Shell` layout via `inject`. When a handler calls `HomePage(pageTitle="Home")`:
 
 1. One buffer is created with compile-time estimated capacity
 2. `Shell` writes `<html><head>...</head><body>`, then `SiteNav()` writes `<nav>...</nav>` to the **same buffer**
-3. The `container` slot is filled with the page content — also written to the same buffer
+3. The `<-S1` slot is filled with the page content — also written to the same buffer
 4. The completed string is **moved** (not copied) into `Response.body` via ORC move semantics
 5. Result: **1 allocation, 0 copies** for the entire page
 
@@ -634,8 +658,9 @@ In this example, every HTML page shares the same `Shell` layout via `containered
 | `ctx.httpMethod` | field | HTTP method |
 | `raw expr` | keyword | Insert HTML without escaping (inside layout) |
 | `text expr` | keyword | Insert text with escaping (inside layout) |
-| `container` | keyword | Define a slot inside `{.toBuffer.}` layout |
-| `containered Name(args): body` | keyword | Call a `{.toBuffer.}` layout and fill its `container` slot |
+| `<-Sn` | keyword | Define a named slot inside `{.toBuffer.}` layout |
+| `inject Name(args):` | keyword | Call a `{.toBuffer.}` layout and fill its slots |
+| `->Sn:` | keyword | Provide content for slot Sn inside `inject` block |
 
 ## License
 

@@ -12,20 +12,21 @@
 ##   Page(title="Hello", content="<h1>World</h1>")
 ##
 ## Buffered mode — all nested writes go to one shared buffer:
-##   layout Header() {.toBuffer.}:
-##     header:
-##       h1: "My Site"
+##   layout SiteHeader() {.toBuffer.}:
+##     Header:
+##       H1: "My Site"
 ##
-##   layout Wrapper(title: string) {.toBuffer.}:
-##     html:
-##       body:
-##         container       # slot for caller's content
+##   layout Shell(title: string) {.toBuffer.}:
+##     Html:
+##       Body:
+##         <-S1            # named slot
 ##
 ##   layout Page(title: string) {.toBuffer.}:
-##     containered Wrapper(title=title):
-##       Header()          # {.toBuffer.} → writes to shared buf
-##       main:
-##         h1: "Welcome"
+##     inject Shell(title=title):
+##       ->S1:
+##         SiteHeader()
+##         Main:
+##           H1: "Welcome"
 
 import std/macros
 import html
@@ -33,16 +34,17 @@ import private/naming
 
 export naming
 
-proc hasContainerSlot(node: NimNode): bool =
-  ## Recursively checks if the body contains a bare `container` ident.
+proc collectSlotNames(node: NimNode, result: var seq[string]) =
+  ## Recursively finds <-Sn slot markers and collects their names.
   case node.kind
-  of nnkIdent:
-    return node.strVal == "container"
+  of nnkPrefix:
+    if node[0].kind == nnkIdent and node[0].strVal == "<-":
+      let name = node[1].strVal
+      if name notin result:
+        result.add name
   else:
     for child in node:
-      if hasContainerSlot(child):
-        return true
-    return false
+      collectSlotNames(child, result)
 
 proc extractParams(signature: NimNode): tuple[
   procParams, tmplParams, callArgs: seq[NimNode]] =
@@ -95,7 +97,9 @@ proc generateBuffered(name: NimNode, body: NimNode,
   ## Generate buffered layout code (with {.toBuffer.} pragma).
   let implName = layoutImplName(name.strVal)
   let staticCapName = ident(name.strVal & "_staticCap")
-  let hasSlot = hasContainerSlot(body)
+  var slotNames: seq[string] = @[]
+  collectSlotNames(body, slotNames)
+  let hasSlots = slotNames.len > 0
   let bufIdent = ident"buf"
   let htmlStmts = generateHtmlBlockBuffered(body, bufIdent)
   let capExpr = buildCapExpr(htmlStmts, body, hintKb)
@@ -111,72 +115,68 @@ proc generateBuffered(name: NimNode, body: NimNode,
     )
   )
 
-  if hasSlot:
-    # Template-based _impl for slot injection:
-    # template Name_impl*(ctx, buf: untyped, params..., containerBody: untyped) =
-    #   buf.add "..."
-    #   containerBody
-    #   buf.add "..."
-    var implParams: seq[NimNode] = @[]
-    implParams.add newEmptyNode()  # void return
-    implParams.add newIdentDefs(ident"ctx", newEmptyNode())  # untyped ctx
-    implParams.add newIdentDefs(bufIdent, newEmptyNode())  # untyped buf
-    for p in procParams:
-      implParams.add p
-    implParams.add newIdentDefs(ident"containerBody", newEmptyNode())  # untyped
-
-    let implTmpl = newProc(
-      name = postfix(implName, "*"),
-      params = implParams,
-      body = htmlStmts,
-      procType = nnkTemplateDef,
+  # Always proc-based _impl:
+  # proc __layout__Name*(ctx: Context, buf: var string, params...,
+  #                      S1Body: proc(ctx: Context, buf: var string), ...) {.inline.} =
+  let slotProcType = newNimNode(nnkProcTy).add(
+    newNimNode(nnkFormalParams).add(
+      newEmptyNode(),
+      newIdentDefs(ident"ctx", ident"Context"),
+      newIdentDefs(ident"buf", newNimNode(nnkVarTy).add(ident"string"))
+    ),
+    newNimNode(nnkPragma).add(
+      ident"gcsafe",
+      newNimNode(nnkExprColonExpr).add(
+        ident"raises",
+        newNimNode(nnkBracket).add(ident"CatchableError")
+      )
     )
-    result.add implTmpl
-  else:
-    # Proc-based _impl for no-slot buffered layouts:
-    # proc Name_impl*(ctx: Context, buf: var string, params...) {.inline.} =
-    #   buf.add "..."
-    var implParams: seq[NimNode] = @[]
-    implParams.add newEmptyNode()  # void return
-    implParams.add newIdentDefs(ident"ctx", ident"Context")
-    implParams.add newIdentDefs(bufIdent, newNimNode(nnkVarTy).add(ident"string"))
-    for p in procParams:
-      implParams.add p
+  )
 
-    let implProc = newProc(
-      name = postfix(implName, "*"),
-      params = implParams,
-      body = htmlStmts,
-      procType = nnkProcDef,
-    )
-    implProc.addPragma(ident"inline")
-    result.add implProc
+  var implParams: seq[NimNode] = @[]
+  implParams.add newEmptyNode()  # void return
+  implParams.add newIdentDefs(ident"ctx", ident"Context")
+  implParams.add newIdentDefs(bufIdent, newNimNode(nnkVarTy).add(ident"string"))
+  for p in procParams:
+    implParams.add p
+  for slot in slotNames:
+    implParams.add newIdentDefs(injectSlotName(slot), slotProcType)
+
+  let implProc = newProc(
+    name = postfix(implName, "*"),
+    params = implParams,
+    body = htmlStmts,
+    procType = nnkProcDef,
+  )
+  implProc.addPragma(ident"inline")
+  result.add implProc
+
+  # No-op closure for empty slots: proc(ctx: Context, buf: var string) = discard
+  let noopSlot = newNimNode(nnkLambda).add(
+    newEmptyNode(), newEmptyNode(), newEmptyNode(),
+    newNimNode(nnkFormalParams).add(
+      newEmptyNode(),
+      newIdentDefs(ident"ctx", ident"Context"),
+      newIdentDefs(ident"buf", newNimNode(nnkVarTy).add(ident"string"))
+    ),
+    newEmptyNode(), newEmptyNode(),
+    newStmtList(newNimNode(nnkDiscardStmt).add(newEmptyNode()))
+  )
 
   # Wrapper template with context detection:
-  # template Name*(...): untyped =
-  #   when declared(buf):
-  #     Name_impl(ctx, buf, ...)
-  #     ""
-  #   else:
-  #     block:
-  #       var buf = newStringOfCap(Name_staticCap)
-  #       Name_impl(ctx, buf, ...)
-  #       buf
   var wrapperParams: seq[NimNode] = @[]
   wrapperParams.add ident"untyped"  # return type
   for p in tmplParams:
     wrapperParams.add p
-  if hasSlot:
-    wrapperParams.add newIdentDefs(ident"containerBody", newEmptyNode())
 
-  # Build _impl call args
+  # Build _impl call args (slots get no-op closures in the wrapper)
   var fwdArgs: seq[NimNode] = @[]
   fwdArgs.add ident"ctx"
   fwdArgs.add bufIdent
   for arg in callArgs:
     fwdArgs.add arg
-  if hasSlot:
-    fwdArgs.add ident"containerBody"
+  for slot in slotNames:
+    fwdArgs.add noopSlot
 
   var fwdCallBuf = newCall(implName)
   for arg in fwdArgs:
@@ -186,10 +186,10 @@ proc generateBuffered(name: NimNode, body: NimNode,
   for arg in fwdArgs:
     fwdCallStandalone.add arg
 
-  # when declared(buf): Name_impl(ctx, buf, ...); ""
+  # when declared(buf): __layout__Name(ctx, buf, ...); ""
   let bufBranch = newStmtList(fwdCallBuf, newStrLitNode(""))
 
-  # else: block: var buf = ...; Name_impl(ctx, buf, ...); buf
+  # else: block: var buf = ...; __layout__Name(ctx, buf, ...); buf
   let standaloneBranch = newBlockStmt(newEmptyNode(), newStmtList(
     newVarStmt(bufIdent, newCall(ident"newStringOfCap", staticCapName)),
     fwdCallStandalone,

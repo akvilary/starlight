@@ -6,23 +6,24 @@ layout SiteHeader() {.toBuffer.}:
   Header:
     H1: "My Site"
 
-# --- Buffered layout with container slot ---
+# --- Buffered layout with named slots ---
 
 layout Wrapper(title: string) {.toBuffer.}:
   Html:
     Head:
       Title: title
     Body:
-      container
+      <-S1
       Footer: "End"
 
-# --- Buffered layout using containered ---
+# --- Buffered layout using inject ---
 
 layout Page(title: string) {.toBuffer.}:
-  containered Wrapper(title=title):
-    SiteHeader()
-    Main:
-      H1: "Welcome"
+  inject Wrapper(title=title):
+    ->S1:
+      SiteHeader()
+      Main:
+        H1: "Welcome"
 
 # --- Handler using buffered layout ---
 

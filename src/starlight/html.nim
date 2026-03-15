@@ -137,10 +137,10 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
                     elif node.len > 1: node[1]
                     else: newStrLitNode("")
       addDynamic(stmts, buf, content)
-    elif node[0].kind == nnkIdent and node[0].strVal == "containered":
-      # containered — call a {.toBuffer.} layout, filling its container slot
-      # AST: Command("containered", Call(Name, args...), StmtList(body...))
-      # Body is a sibling of the Call node, not a child
+    elif node[0].kind == nnkIdent and node[0].strVal == "inject":
+      # inject — call a {.toBuffer.} layout, filling its named slots
+      # AST: Command("inject", Call(Name, args...), StmtList(->S1: body, ->S2: body, ...))
+      # Body is a sibling of the Call node (node[2])
       flushLit(stmts, buf, lit)
       let call = if node.len > 1: node[1] else: return
       if call.kind in {nnkCall, nnkCommand}:
@@ -149,33 +149,58 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
         # Add all call arguments
         for i in 1..<call.len:
           implCall.add call[i]
-        # Body block is node[2] (sibling of the Call)
+        # Parse named slots from body: ->S1: body, ->S2: body, ...
+        # Each slot becomes a closure: proc(ctx: Context, buf: var string)
         if node.len > 2 and node[2].kind == nnkStmtList:
-          var bodyStmts = newStmtList()
-          var bodyLit = ""
-          processNode(node[2], bodyStmts, buf, bodyLit)
-          flushLit(bodyStmts, buf, bodyLit)
-          implCall.add bodyStmts
-        else:
-          implCall.add newNimNode(nnkDiscardStmt).add(newEmptyNode())
+          for slotNode in node[2]:
+            if slotNode.kind == nnkPrefix and slotNode[0].strVal == "->":
+              # ->Sn: body — process body through DSL, wrap in lambda
+              var slotStmts = newStmtList()
+              var slotLit = ""
+              let slotBuf = ident"buf"
+              if slotNode.len > 2 and slotNode[2].kind == nnkStmtList:
+                processNode(slotNode[2], slotStmts, slotBuf, slotLit)
+                flushLit(slotStmts, slotBuf, slotLit)
+              let lambda = newNimNode(nnkLambda).add(
+                newEmptyNode(),  # name
+                newEmptyNode(),  # patterns
+                newEmptyNode(),  # generic params
+                newNimNode(nnkFormalParams).add(
+                  newEmptyNode(),  # void return
+                  newIdentDefs(ident"ctx", ident"Context"),
+                  newIdentDefs(slotBuf, newNimNode(nnkVarTy).add(ident"string"))
+                ),
+                newEmptyNode(),  # pragmas
+                newEmptyNode(),  # reserved
+                slotStmts       # body
+              )
+              implCall.add lambda
+            else:
+              # Non-slot content — process as regular DSL
+              processNode(slotNode, stmts, buf, lit)
+              flushLit(stmts, buf, lit)
         stmts.add implCall
     else:
       # Not a tag — treat as expression
       processContent(node, stmts, buf, lit)
 
+  of nnkPrefix:
+    if node[0].kind == nnkIdent and node[0].strVal == "<-":
+      # <-S1 — named slot, calls __inject__S1(ctx, buf) at this position
+      flushLit(stmts, buf, lit)
+      stmts.add newCall(injectSlotName(node[1].strVal), ident"ctx", buf)
+    else:
+      flushLit(stmts, buf, lit)
+      stmts.add node
+
   of nnkIdent:
     let name = node.strVal
-    if name == "container":
-      # container — slot placeholder for containered caller's content
-      flushLit(stmts, buf, lit)
-      stmts.add ident"containerBody"
+    if isTag(name) and isVoid(name):
+      # Only void tags can be bare identifiers (e.g., Br, Hr)
+      # Non-void bare identifiers are treated as variables
+      lit.add "<" & tagToHtml(name) & "/>"
     else:
-      if isTag(name) and isVoid(name):
-        # Only void tags can be bare identifiers (e.g., Br, Hr)
-        # Non-void bare identifiers are treated as variables
-        lit.add "<" & tagToHtml(name) & "/>"
-      else:
-        processContent(node, stmts, buf, lit)
+      processContent(node, stmts, buf, lit)
 
   of nnkAccQuoted:
     let name = if node.len > 0: node[0].strVal else: ""
