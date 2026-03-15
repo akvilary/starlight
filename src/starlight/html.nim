@@ -1,12 +1,12 @@
 ## HTML DSL macro with compile-time static/dynamic splitting.
 ##
 ## Usage:
-##   let page = html:
-##     h1: "Hello"
-##     p: userName
-##     tdiv(class="container"):
+##   let page = Html:
+##     H1: "Hello"
+##     P: userName
+##     Div(class="container"):
 ##       if loggedIn:
-##         a(href="/logout"): "Logout"
+##         A(href="/logout"): "Logout"
 
 import std/[macros, sets]
 import private/tags
@@ -49,10 +49,46 @@ proc addDynamic(stmts: NimNode, buf: NimNode, expr: NimNode) =
     stmts.add newCall(newDotExpr(buf, ident"add"),
                       newCall(ident"escapeHtml", newCall(ident"$", expr)))
 
-proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string)
-proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string)
+proc makeLazyLambda(expr: NimNode): NimNode =
+  ## Wrap an expression in a closure: proc(ctx: Context, buf: var string) =
+  ##   let tmp = expr; buf.add(escapeHtml($tmp))
+  let lambdaBuf = ident"buf"
+  let tmp = genSym(nskLet, "lazyTmp")
+  let lambdaBody = newStmtList(
+    newLetStmt(tmp, expr),
+    newCall(newDotExpr(lambdaBuf, ident"add"),
+            newCall(ident"escapeHtml", newCall(ident"$", tmp)))
+  )
+  result = newNimNode(nnkLambda).add(
+    newEmptyNode(),  # name
+    newEmptyNode(),  # patterns
+    newEmptyNode(),  # generic params
+    newNimNode(nnkFormalParams).add(
+      newEmptyNode(),  # void return
+      newIdentDefs(ident"ctx", ident"Context"),
+      newIdentDefs(lambdaBuf, newNimNode(nnkVarTy).add(ident"string"))
+    ),
+    newEmptyNode(),  # pragmas
+    newEmptyNode(),  # reserved
+    lambdaBody
+  )
 
-proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
+proc hasLazyArgs(node: NimNode): bool =
+  ## Check if a call node has any `lazy name=expr` arguments.
+  for i in 1..<node.len:
+    let arg = node[i]
+    if arg.kind == nnkExprEqExpr and arg[0].kind == nnkCommand and
+       arg[0].len >= 2 and arg[0][0].kind == nnkIdent and arg[0][0].strVal == "lazy":
+      return true
+  return false
+
+proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
+                    lazyParams: HashSet[string])
+proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
+                 lazyParams: HashSet[string])
+
+proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
+                    lazyParams: HashSet[string]) =
   ## Process a content expression (not a tag).
   case node.kind
   of nnkStrLit, nnkTripleStrLit, nnkRStrLit:
@@ -66,7 +102,7 @@ proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string
     addDynamic(stmts, buf, node)
 
 proc processTag(node: NimNode, tagName: string, stmts: NimNode,
-                buf: NimNode, lit: var string) =
+                buf: NimNode, lit: var string, lazyParams: HashSet[string]) =
   ## Process an HTML tag node.
   let htmlTag = tagToHtml(tagName)
   lit.add "<" & htmlTag
@@ -103,21 +139,49 @@ proc processTag(node: NimNode, tagName: string, stmts: NimNode,
       if child.kind == nnkExprEqExpr:
         continue
       elif child.kind == nnkStmtList:
-        processNode(child, stmts, buf, lit)
+        processNode(child, stmts, buf, lit, lazyParams)
       else:
-        processContent(child, stmts, buf, lit)
+        processContent(child, stmts, buf, lit, lazyParams)
     lit.add "</" & htmlTag & ">"
 
-proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
+proc transformLazyCall(node: NimNode, stmts: NimNode, buf: NimNode,
+                       lit: var string, lazyParams: HashSet[string]) =
+  ## Transform a call with lazy args: call __layout__Name(ctx, buf, ...) directly,
+  ## wrapping lazy exprs in closures.
+  flushLit(stmts, buf, lit)
+  # Call _impl directly: __layout__Name(ctx, buf, regular args..., lazy args...)
+  let implName = layoutImplName(node[0].strVal)
+  var newCallNode = newCall(implName, ident"ctx", buf)
+  for i in 1..<node.len:
+    let arg = node[i]
+    if arg.kind == nnkExprEqExpr and arg[0].kind == nnkCommand and
+       arg[0].len >= 2 and arg[0][0].kind == nnkIdent and arg[0][0].strVal == "lazy":
+      let paramName = arg[0][1].strVal  # actual param name
+      let expr = arg[1]                 # expression to defer
+      # Check if expr is a lazy param being forwarded
+      if expr.kind == nnkIdent and expr.strVal in lazyParams:
+        # Forward: pass the mangled closure directly
+        newCallNode.add newNimNode(nnkExprEqExpr).add(
+          lazyParamName(paramName), lazyParamName(expr.strVal))
+      else:
+        # Wrap expression in a closure
+        newCallNode.add newNimNode(nnkExprEqExpr).add(
+          lazyParamName(paramName), makeLazyLambda(expr))
+    else:
+      newCallNode.add arg
+  stmts.add newCallNode
+
+proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
+                 lazyParams: HashSet[string]) =
   case node.kind
   of nnkStmtList:
     for child in node:
-      processNode(child, stmts, buf, lit)
+      processNode(child, stmts, buf, lit, lazyParams)
 
   of nnkCall, nnkCommand:
     let firstName = resolveTagName(node[0])
     if isTag(firstName):
-      processTag(node, firstName, stmts, buf, lit)
+      processTag(node, firstName, stmts, buf, lit, lazyParams)
     elif node[0].kind == nnkIdent and node[0].strVal == "raw":
       # raw — insert without escaping
       flushLit(stmts, buf, lit)
@@ -137,77 +201,35 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
                     elif node.len > 1: node[1]
                     else: newStrLitNode("")
       addDynamic(stmts, buf, content)
-    elif node[0].kind == nnkIdent and node[0].strVal == "inject":
-      # inject — call a {.buf.} layout, filling its named inject blocks
-      # AST: Command("inject", Call(Name, args...), StmtList(->S1: body, ->S2: body, ...))
-      # Body is a sibling of the Call node (node[2])
-      flushLit(stmts, buf, lit)
-      let call = if node.len > 1: node[1] else: return
-      if call.kind in {nnkCall, nnkCommand}:
-        let implName = layoutImplName(call[0].strVal)
-        var implCall = newCall(implName, ident"ctx", buf)
-        # Add all call arguments
-        for i in 1..<call.len:
-          implCall.add call[i]
-        # Parse named inject blocks from body: ->S1: body, ->S2: body, ...
-        # Each inject block becomes a closure: proc(ctx: Context, buf: var string)
-        if node.len > 2 and node[2].kind == nnkStmtList:
-          for injectBlkNode in node[2]:
-            if injectBlkNode.kind == nnkPrefix and injectBlkNode[0].strVal == "->":
-              # ->Sn: body — process body through DSL, wrap in lambda
-              var injectBlkStmts = newStmtList()
-              var injectBlkLit = ""
-              let injectBlkBuf = ident"buf"
-              if injectBlkNode.len > 2 and injectBlkNode[2].kind == nnkStmtList:
-                processNode(injectBlkNode[2], injectBlkStmts, injectBlkBuf, injectBlkLit)
-                flushLit(injectBlkStmts, injectBlkBuf, injectBlkLit)
-              let lambda = newNimNode(nnkLambda).add(
-                newEmptyNode(),  # name
-                newEmptyNode(),  # patterns
-                newEmptyNode(),  # generic params
-                newNimNode(nnkFormalParams).add(
-                  newEmptyNode(),  # void return
-                  newIdentDefs(ident"ctx", ident"Context"),
-                  newIdentDefs(injectBlkBuf, newNimNode(nnkVarTy).add(ident"string"))
-                ),
-                newEmptyNode(),  # pragmas
-                newEmptyNode(),  # reserved
-                injectBlkStmts       # body
-              )
-              implCall.add lambda
-            else:
-              # Non-inject-block content — process as regular DSL
-              processNode(injectBlkNode, stmts, buf, lit)
-              flushLit(stmts, buf, lit)
-        stmts.add implCall
+    elif hasLazyArgs(node):
+      # Call with lazy args — wrap lazy exprs in closures
+      transformLazyCall(node, stmts, buf, lit, lazyParams)
     else:
       # Not a tag — treat as expression
-      processContent(node, stmts, buf, lit)
+      processContent(node, stmts, buf, lit, lazyParams)
 
   of nnkPrefix:
-    if node[0].kind == nnkIdent and node[0].strVal == "<-":
-      # <-S1 — named inject block, calls __inject__S1(ctx, buf) at this position
-      flushLit(stmts, buf, lit)
-      stmts.add newCall(injectBlockName(node[1].strVal), ident"ctx", buf)
-    else:
-      flushLit(stmts, buf, lit)
-      stmts.add node
+    flushLit(stmts, buf, lit)
+    stmts.add node
 
   of nnkIdent:
     let name = node.strVal
-    if isTag(name) and isVoid(name):
+    if name in lazyParams:
+      # Lazy param — call the closure at this buffer position
+      flushLit(stmts, buf, lit)
+      stmts.add newCall(lazyParamName(name), ident"ctx", buf)
+    elif isTag(name) and isVoid(name):
       # Only void tags can be bare identifiers (e.g., Br, Hr)
-      # Non-void bare identifiers are treated as variables
       lit.add "<" & tagToHtml(name) & "/>"
     else:
-      processContent(node, stmts, buf, lit)
+      processContent(node, stmts, buf, lit, lazyParams)
 
   of nnkAccQuoted:
     let name = if node.len > 0: node[0].strVal else: ""
     if isTag(name) and isVoid(name):
       lit.add "<" & tagToHtml(name) & "/>"
     else:
-      processContent(node, stmts, buf, lit)
+      processContent(node, stmts, buf, lit, lazyParams)
 
   of nnkIfStmt, nnkIfExpr:
     flushLit(stmts, buf, lit)
@@ -216,12 +238,12 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
       case branch.kind
       of nnkElifBranch, nnkElifExpr:
         var body = newStmtList()
-        processNode(branch[1], body, buf, lit)
+        processNode(branch[1], body, buf, lit, lazyParams)
         flushLit(body, buf, lit)
         ifNode.add newNimNode(nnkElifBranch).add(branch[0], body)
       of nnkElse, nnkElseExpr:
         var body = newStmtList()
-        processNode(branch[0], body, buf, lit)
+        processNode(branch[0], body, buf, lit, lazyParams)
         flushLit(body, buf, lit)
         ifNode.add newNimNode(nnkElse).add(body)
       else: discard
@@ -230,7 +252,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
   of nnkForStmt:
     flushLit(stmts, buf, lit)
     var body = newStmtList()
-    processNode(node[^1], body, buf, lit)
+    processNode(node[^1], body, buf, lit, lazyParams)
     flushLit(body, buf, lit)
     var forNode = newNimNode(nnkForStmt)
     for i in 0..<node.len - 1:
@@ -241,7 +263,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
   of nnkWhileStmt:
     flushLit(stmts, buf, lit)
     var body = newStmtList()
-    processNode(node[1], body, buf, lit)
+    processNode(node[1], body, buf, lit, lazyParams)
     flushLit(body, buf, lit)
     stmts.add newNimNode(nnkWhileStmt).add(node[0], body)
 
@@ -254,7 +276,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
       case branch.kind
       of nnkOfBranch:
         var body = newStmtList()
-        processNode(branch[^1], body, buf, lit)
+        processNode(branch[^1], body, buf, lit, lazyParams)
         flushLit(body, buf, lit)
         var ofNode = newNimNode(nnkOfBranch)
         for j in 0..<branch.len - 1:
@@ -263,7 +285,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
         caseNode.add ofNode
       of nnkElse:
         var body = newStmtList()
-        processNode(branch[0], body, buf, lit)
+        processNode(branch[0], body, buf, lit, lazyParams)
         flushLit(body, buf, lit)
         caseNode.add newNimNode(nnkElse).add(body)
       else: discard
@@ -273,7 +295,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
     flushLit(stmts, buf, lit)
     var tryNode = newNimNode(nnkTryStmt)
     var tryBody = newStmtList()
-    processNode(node[0], tryBody, buf, lit)
+    processNode(node[0], tryBody, buf, lit, lazyParams)
     flushLit(tryBody, buf, lit)
     tryNode.add tryBody
     for i in 1..<node.len:
@@ -281,7 +303,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
       case branch.kind
       of nnkExceptBranch:
         var body = newStmtList()
-        processNode(branch[^1], body, buf, lit)
+        processNode(branch[^1], body, buf, lit, lazyParams)
         flushLit(body, buf, lit)
         var exceptNode = newNimNode(nnkExceptBranch)
         for j in 0..<branch.len - 1:
@@ -290,7 +312,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
         tryNode.add exceptNode
       of nnkFinally:
         var body = newStmtList()
-        processNode(branch[0], body, buf, lit)
+        processNode(branch[0], body, buf, lit, lazyParams)
         flushLit(body, buf, lit)
         tryNode.add newNimNode(nnkFinally).add(body)
       else: discard
@@ -310,7 +332,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string) =
     lit.add $node.floatVal
 
   else:
-    processContent(node, stmts, buf, lit)
+    processContent(node, stmts, buf, lit, lazyParams)
 
 proc countStaticLen*(stmts: NimNode): int =
   ## Count total static string length for pre-allocation estimate.
@@ -345,29 +367,13 @@ proc countDynamicExprs*(stmts: NimNode): int =
         if child[0].kind == nnkStmtList:
           result += countDynamicExprs(child[0])
 
-proc collectNestedCaps*(body: NimNode): seq[NimNode] =
-  ## Find containered Name(...) calls in the original body and return Name_staticCap idents.
-  case body.kind
-  of nnkCommand:
-    if body[0].kind == nnkIdent and body[0].strVal == "containered":
-      let call = body[1]
-      if call.kind in {nnkCall, nnkCommand}:
-        result.add ident(call[0].strVal & "_staticCap")
-      # Also scan the block body if present
-      if call.kind in {nnkCall, nnkCommand} and call[^1].kind == nnkStmtList:
-        for child in call[^1]:
-          result.add collectNestedCaps(child)
-  else:
-    for child in body:
-      result.add collectNestedCaps(child)
-
 proc generateHtmlBlock*(body: NimNode): NimNode =
   ## Generate HTML rendering code from DSL body. Called by the layout macro.
   let buf = genSym(nskVar, "htmlBuf")
   var stmts = newStmtList()
   var lit = ""
 
-  processNode(body, stmts, buf, lit)
+  processNode(body, stmts, buf, lit, initHashSet[string]())
   flushLit(stmts, buf, lit)
 
   let staticLen = countStaticLen(stmts)
@@ -381,11 +387,12 @@ proc generateHtmlBlock*(body: NimNode): NimNode =
 
   result = newBlockStmt(newEmptyNode(), resultStmts)
 
-proc generateHtmlBlockBuffered*(body: NimNode, buf: NimNode): NimNode =
+proc generateHtmlBlockBuffered*(body: NimNode, buf: NimNode,
+                                lazyParams: HashSet[string] = initHashSet[string]()): NimNode =
   ## Generate HTML rendering code that writes to an existing buffer.
   ## Unlike generateHtmlBlock, does not create or return the buffer.
   var stmts = newStmtList()
   var lit = ""
-  processNode(body, stmts, buf, lit)
+  processNode(body, stmts, buf, lit, lazyParams)
   flushLit(stmts, buf, lit)
   result = stmts

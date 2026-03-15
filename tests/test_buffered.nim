@@ -1,31 +1,27 @@
 import ../src/starlight
 
-# --- Simple buffered layout (no inject blocks) ---
+# --- Simple buffered layout (no lazy params) ---
 
 layout SiteHeader() {.buf.}:
   Header:
     H1: "My Site"
 
-# --- Buffered layout with named inject blocks ---
+# --- Buffered layout with lazy param ---
 
-layout Wrapper(title: string) {.buf.}:
+layout Wrapper(title: string, content: lazyLayout) {.buf.}:
   Html:
     Head:
       Title: title
     Body:
-      <-S1
+      content
       Footer: "End"
 
-# --- Buffered layout using inject ---
+# --- Buffered layout using lazy ---
 
 layout Page(title: string) {.buf.}:
-  inject Wrapper(title=title):
-    ->S1:
-      SiteHeader()
-      Main:
-        H1: "Welcome"
+  Wrapper(title=title, lazy content=SiteHeader())
 
-# --- Handler using buffered layout ---
+# --- Handler ---
 
 response home() {.html.}:
   return Page(title="Hello")
@@ -45,7 +41,6 @@ proc testBufferOrder() =
   let html = Page(title="Hello")
   let expected = "<html><head><title>Hello</title></head><body>" &
                  "<header><h1>My Site</h1></header>" &
-                 "<main><h1>Welcome</h1></main>" &
                  "<footer>End</footer>" &
                  "</body></html>"
   doAssert html == expected, "\nGot:\n" & html & "\nExpected:\n" & expected

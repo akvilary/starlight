@@ -1,21 +1,25 @@
 import ../src/starlight
 
-# --- Layout with two named inject blocks ---
+# --- Layout with two lazy params ---
 
-layout TwoBlocks() {.buf.}:
+layout TwoLazy(headerContent: lazyLayout, bodyContent: lazyLayout) {.buf.}:
   Div(class="page"):
-    <-S1
+    headerContent
     Hr
-    <-S2
+    bodyContent
+
+# --- Simple {.buf.} layouts to pass as lazy args ---
+
+layout HeaderBlock() {.buf.}:
+  H1: "Header content"
+
+layout FooterBlock() {.buf.}:
+  P: "Footer content"
 
 layout Page() {.buf.}:
-  inject TwoBlocks():
-    ->S1:
-      H1: "Header content"
-    ->S2:
-      P: "Footer content"
+  TwoLazy(lazy headerContent=HeaderBlock(), lazy bodyContent=FooterBlock())
 
-proc testMultiInjectBlocks() =
+proc testMultiLazy() =
   let ctx = newContext()
   let html = Page()
   let expected = "<div class=\"page\">" &
@@ -25,5 +29,5 @@ proc testMultiInjectBlocks() =
                  "</div>"
   doAssert html == expected, "\nGot:\n" & html & "\nExpected:\n" & expected
 
-testMultiInjectBlocks()
-echo "test_multi_inject_blocks: OK"
+testMultiLazy()
+echo "test_multi_lazy: OK"

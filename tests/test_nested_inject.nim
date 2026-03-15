@@ -1,38 +1,35 @@
 import ../src/starlight
 
-# --- Depth 2: inner layout with S1 inject block ---
+# --- Inner layout with lazy param ---
 
-layout Inner() {.buf.}:
+layout Inner(content: lazyLayout) {.buf.}:
   Div(class="inner"):
-    <-S1
+    content
 
-# --- Depth 1: outer layout with S1 inject block ---
+# --- Outer layout with lazy param, forwards to Inner ---
 
-layout Outer() {.buf.}:
+layout Outer(content: lazyLayout) {.buf.}:
   Div(class="outer"):
-    <-S1
+    Inner(lazy content=content)   # forward lazy param
 
-# --- Page: depth 0, injects into Outer which injects into Inner ---
+# --- Page ---
+
+layout ContentBlock() {.buf.}:
+  P: "Inner content"
 
 layout Page() {.buf.}:
-  inject Outer():
-    ->S1:
-      H1: "Outer content"
-      inject Inner():
-        ->S1:
-          P: "Inner content"
+  Outer(lazy content=ContentBlock())
 
-proc testNestedInject() =
+proc testNestedLazy() =
   let ctx = newContext()
   let html = Page()
   let expected =
     "<div class=\"outer\">" &
-      "<h1>Outer content</h1>" &
       "<div class=\"inner\">" &
         "<p>Inner content</p>" &
       "</div>" &
     "</div>"
   doAssert html == expected, "\nGot:\n" & html & "\nExpected:\n" & expected
 
-testNestedInject()
-echo "test_nested_inject: OK"
+testNestedLazy()
+echo "test_nested_lazy: OK"

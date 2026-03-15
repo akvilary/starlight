@@ -2,10 +2,10 @@
 ##
 ## Usage:
 ##   layout Page(title: string, content: string):
-##     html:
-##       head:
-##         title: title
-##       body:
+##     Html:
+##       Head:
+##         Title: title
+##       Body:
 ##         raw content
 ##
 ##   # In a handler (ctx is implicit):
@@ -16,39 +16,32 @@
 ##     Header:
 ##       H1: "My Site"
 ##
-##   layout Shell(title: string) {.buf.}:
+##   layout Shell(title: string, content: lazyLayout) {.buf.}:
 ##     Html:
 ##       Body:
-##         <-S1            # named inject block
+##         content
 ##
 ##   layout Page(title: string) {.buf.}:
-##     inject Shell(title=title):
-##       ->S1:
-##         SiteHeader()
-##         Main:
-##           H1: "Welcome"
+##     Shell(title=title, lazy content=SiteHeader())
 
-import std/macros
+import std/[macros, sets]
 import html
 import private/naming
 
 export naming
 
-proc collectInjectBlockNames(node: NimNode, result: var seq[string]) =
-  ## Recursively finds <-Sn inject block markers and collects their names.
-  case node.kind
-  of nnkPrefix:
-    if node[0].kind == nnkIdent and node[0].strVal == "<-":
-      let name = node[1].strVal
-      if name notin result:
-        result.add name
-  else:
-    for child in node:
-      collectInjectBlockNames(child, result)
+proc collectLazyParams(signature: NimNode): seq[string] =
+  ## Collect parameter names declared as `name: lazyLayout`.
+  for i in 1..<signature.len:
+    let param = signature[i]
+    if param.kind == nnkExprColonExpr and
+       param[1].kind == nnkIdent and param[1].strVal == "lazyLayout":
+      result.add param[0].strVal
 
-proc extractParams(signature: NimNode): tuple[
+proc extractParams(signature: NimNode, lazyNames: seq[string] = @[]): tuple[
   procParams, tmplParams, callArgs: seq[NimNode]] =
   ## Extract parameter lists from layout signature.
+  ## Parameters with `lazyLayout` type are excluded — handled separately.
   var procParams: seq[NimNode] = @[]
   var tmplParams: seq[NimNode] = @[]
   var callArgs: seq[NimNode] = @[]
@@ -57,6 +50,8 @@ proc extractParams(signature: NimNode): tuple[
     let param = signature[i]
     case param.kind
     of nnkExprColonExpr:
+      if param[0].strVal in lazyNames:
+        continue  # lazy params handled separately
       procParams.add newIdentDefs(param[0], param[1])
       tmplParams.add newIdentDefs(param[0], param[1])
       callArgs.add param[0]
@@ -71,21 +66,13 @@ proc extractParams(signature: NimNode): tuple[
 
   result = (procParams, tmplParams, callArgs)
 
-proc buildCapExpr(stmts, body: NimNode, hintKb: int): NimNode =
+proc buildCapExpr(stmts: NimNode, hintKb: int): NimNode =
   ## Build compile-time expression for buffer capacity.
-  ## Formula: max(staticLen + dynamicCount*64 + sum(nestedCaps) + 256, hintKb*1024)
   let staticLen = countStaticLen(stmts)
   let dynamicCount = countDynamicExprs(stmts)
-  let nestedCaps = collectNestedCaps(body)
 
-  # Start with: staticLen + dynamicCount * 64 + 256
   var capExpr: NimNode = newIntLitNode(staticLen + dynamicCount * 64 + 256)
 
-  # Add nested layout caps: + Name_staticCap + ...
-  for cap in nestedCaps:
-    capExpr = newCall(ident"+", capExpr, cap)
-
-  # Apply hint: max(computed, hintKb * 1024)
   if hintKb > 0:
     capExpr = newCall(ident"max", capExpr, newIntLitNode(hintKb * 1024))
 
@@ -93,16 +80,15 @@ proc buildCapExpr(stmts, body: NimNode, hintKb: int): NimNode =
 
 proc generateBuffered(name: NimNode, body: NimNode,
                       procParams, tmplParams, callArgs: seq[NimNode],
+                      lazyNames: seq[string],
                       hintKb: int): NimNode =
   ## Generate buffered layout code (with {.buf.} pragma).
   let implName = layoutImplName(name.strVal)
   let staticCapName = ident(name.strVal & "_staticCap")
-  var injectBlockNames: seq[string] = @[]
-  collectInjectBlockNames(body, injectBlockNames)
-  let hasInjectBlocks = injectBlockNames.len > 0
   let bufIdent = ident"buf"
-  let htmlStmts = generateHtmlBlockBuffered(body, bufIdent)
-  let capExpr = buildCapExpr(htmlStmts, body, hintKb)
+  let lazySet = lazyNames.toHashSet
+  let htmlStmts = generateHtmlBlockBuffered(body, bufIdent, lazySet)
+  let capExpr = buildCapExpr(htmlStmts, hintKb)
 
   result = newStmtList()
 
@@ -115,10 +101,8 @@ proc generateBuffered(name: NimNode, body: NimNode,
     )
   )
 
-  # Always proc-based _impl:
-  # proc __layout__Name*(ctx: Context, buf: var string, params...,
-  #                      S1Body: proc(ctx: Context, buf: var string), ...) {.inline.} =
-  let injectBlockProcType = newNimNode(nnkProcTy).add(
+  # Closure type for lazy params
+  let lazyProcType = newNimNode(nnkProcTy).add(
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),
       newIdentDefs(ident"ctx", ident"Context"),
@@ -133,14 +117,16 @@ proc generateBuffered(name: NimNode, body: NimNode,
     )
   )
 
+  # proc __layout__Name*(ctx: Context, buf: var string, params...,
+  #                      __lazy__content: proc(...), ...) {.inline.} =
   var implParams: seq[NimNode] = @[]
   implParams.add newEmptyNode()  # void return
   implParams.add newIdentDefs(ident"ctx", ident"Context")
   implParams.add newIdentDefs(bufIdent, newNimNode(nnkVarTy).add(ident"string"))
   for p in procParams:
     implParams.add p
-  for injectBlk in injectBlockNames:
-    implParams.add newIdentDefs(injectBlockName(injectBlk), injectBlockProcType)
+  for lazyName in lazyNames:
+    implParams.add newIdentDefs(lazyParamName(lazyName), lazyProcType)
 
   let implProc = newProc(
     name = postfix(implName, "*"),
@@ -151,8 +137,8 @@ proc generateBuffered(name: NimNode, body: NimNode,
   implProc.addPragma(ident"inline")
   result.add implProc
 
-  # No-op closure for empty inject blocks: proc(ctx: Context, buf: var string) = discard
-  let noopInjectBlock = newNimNode(nnkLambda).add(
+  # No-op closure for lazy params: proc(ctx: Context, buf: var string) = discard
+  let noopLazy = newNimNode(nnkLambda).add(
     newEmptyNode(), newEmptyNode(), newEmptyNode(),
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),
@@ -163,20 +149,20 @@ proc generateBuffered(name: NimNode, body: NimNode,
     newStmtList(newNimNode(nnkDiscardStmt).add(newEmptyNode()))
   )
 
-  # Wrapper template with context detection:
+  # Wrapper template with context detection
   var wrapperParams: seq[NimNode] = @[]
   wrapperParams.add ident"untyped"  # return type
   for p in tmplParams:
     wrapperParams.add p
 
-  # Build _impl call args (inject blocks get no-op closures in the wrapper)
+  # Build _impl call args (lazy params get no-op closures in wrapper)
   var fwdArgs: seq[NimNode] = @[]
   fwdArgs.add ident"ctx"
   fwdArgs.add bufIdent
   for arg in callArgs:
     fwdArgs.add arg
-  for injectBlk in injectBlockNames:
-    fwdArgs.add noopInjectBlock
+  for lazyName in lazyNames:
+    fwdArgs.add noopLazy
 
   var fwdCallBuf = newCall(implName)
   for arg in fwdArgs:
@@ -237,12 +223,15 @@ macro layout*(signature: untyped, body: untyped): untyped =
 
   let name = actualSignature[0]
   let implName = layoutImplName(name.strVal)
-  let (procParams, tmplParams, callArgs) = extractParams(actualSignature)
 
   if isBuffered:
-    return generateBuffered(name, body, procParams, tmplParams, callArgs, hintKb)
+    let lazyNames = collectLazyParams(actualSignature)
+    let (procParams, tmplParams, callArgs) = extractParams(actualSignature, lazyNames)
+    return generateBuffered(name, body, procParams, tmplParams, callArgs, lazyNames, hintKb)
 
   # --- Regular layout (unchanged) ---
+
+  let (procParams, tmplParams, callArgs) = extractParams(actualSignature)
 
   # Build param list for proc: ctx: Context, then user params
   var fullProcParams: seq[NimNode] = @[]

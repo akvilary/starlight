@@ -433,55 +433,70 @@ The nested layout writes to the parent's buffer and returns an empty string (whi
 
 **Regular layouts** (without `{.buf.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
 
-### Inject Blocks
+### Lazy Parameters
 
-**Why inject blocks exist.** A `{.buf.}` layout that takes a `content: string` parameter and embeds it via `raw content` has a problem: the parameter is evaluated **before** the layout body runs. If `content` is another `{.buf.}` layout call, it writes to the buffer too early — before the parent's `<html><body>` tags. The result is broken HTML.
+**The problem.** A `{.buf.}` layout that takes a `content: string` parameter and embeds it via `raw content` has a broken buffer order: the parameter is evaluated **before** the layout body runs. If `content` is another `{.buf.}` layout call, it writes to the buffer too early — before the parent's `<html><body>` tags.
 
-Inject blocks solve this by deferring the content to the exact position in the buffer where it belongs. The content is passed as a closure and called at the `<-Sn` marker — guaranteeing correct write order. The tradeoff is slightly more verbose syntax (`inject` + `->Sn:` + `<-Sn`), but in return you get **correct buffer ordering** and **zero intermediate allocations** for the entire page tree.
-
-Use `<-Sn` to define named inject blocks and `inject` + `->Sn:` to fill them:
+**The solution.** Declare the parameter as `lazyLayout` — the expression is wrapped in a closure and called at the exact position in the layout body where the parameter name appears:
 
 ```nim
-layout Shell(title: string) {.buf.}:
+layout Shell(title: string, content: lazyLayout) {.buf.}:
   Html:
     Head:
       Title: title
-      Style: "body { font-family: system-ui; }"
     Body:
-      <-S1         # ← inject block: caller's content is injected here
+      content          # ← closure is called HERE, writing to buffer at this position
       Footer:
         P: "Powered by Starlight"
 
 layout HomePage(title: string) {.buf.}:
-  inject Shell(title=title):
-    ->S1:                            # fill Shell's S1 inject block
-      SiteHeader()                   # {.buf.} → shared buffer
-      Main:
-        H1: "Welcome"
-        P: "Fast SSR for Nim."
+  Shell(title=title, lazy content=SiteHeader())
+  #                   ^^^^ lazy keyword wraps SiteHeader() in a closure
 ```
 
-Multiple inject blocks are supported:
+`lazy content=expr` defers evaluation of `expr` until the layout body reaches the `content` position. The `{.buf.}` layout `SiteHeader()` writes directly to the shared buffer at the correct position.
+
+Multiple lazy parameters are supported:
 
 ```nim
-layout TwoColumnLayout() {.buf.}:
+layout TwoColumn(sidebar: lazyLayout, main: lazyLayout) {.buf.}:
   Div(class="page"):
     Div(class="sidebar"):
-      <-S1
+      sidebar
     Div(class="content"):
-      <-S2
+      main
+
+layout SidebarNav() {.buf.}:
+  Nav:
+    A(href="/"): "Home"
+
+layout DashboardContent() {.buf.}:
+  H1: "Dashboard"
+  P: "Welcome back."
 
 layout DashboardPage() {.buf.}:
-  inject TwoColumnLayout():
-    ->S1:
-      Nav:
-        A(href="/"): "Home"
-    ->S2:
-      H1: "Dashboard"
-      P: "Welcome back."
+  TwoColumn(lazy sidebar=SidebarNav(), lazy main=DashboardContent())
 ```
 
-Everything writes to a single buffer. The `inject` keyword processes each `->Sn:` body through the HTML DSL and injects it at the corresponding `<-Sn` position.
+**Forwarding.** A lazy parameter can be passed down to a nested layout:
+
+```nim
+layout Inner(content: lazyLayout) {.buf.}:
+  Div(class="inner"):
+    content
+
+layout Outer(content: lazyLayout) {.buf.}:
+  Div(class="outer"):
+    Inner(lazy content=content)    # forwards the closure, no re-wrapping
+```
+
+**Using and forwarding.** A lazy parameter can be both called (written to buffer) and forwarded in the same layout:
+
+```nim
+layout Outer(content: lazyLayout) {.buf.}:
+  content                           # writes content to buffer here
+  Inner(lazy content=content)       # AND forwards to Inner (writes again)
+```
 
 ### Buffer Capacity
 
@@ -525,7 +540,7 @@ Result: **1 allocation, 0 copies** for the entire render-to-response pipeline.
 |---------|------------------|-----------------------|
 | Buffer | Own buffer per layout | Shared with parent |
 | Nesting | `raw Inner()` (copy) | `Inner()` (direct write) |
-| Inject blocks | Not supported | `<-Sn` / `inject` + `->Sn:` |
+| Lazy params | Not supported | `content: lazyLayout` + `lazy content=expr` |
 | Buffer sizing | `staticLen + 256` | `staticLen + dynamic*64 + nested + 256` |
 | Hint override | No | `{.buf:N.}` (KB) |
 
@@ -538,15 +553,15 @@ import starlight
 # --- Shared buffer layouts ---
 # All {.buf.} layouts write to a single buffer — zero intermediate allocations.
 
-# Simple buffered component (no inject blocks)
+# Simple buffered component (no lazy params)
 layout SiteNav() {.buf.}:
   Nav:
     A(href="/"): "Home"
     text " | "
     A(href="/users"): "Users"
 
-# Page shell with a named inject block
-layout Shell(pageTitle: string) {.buf.}:
+# Page shell with a lazy parameter for page content
+layout Shell(pageTitle: string, content: lazyLayout) {.buf.}:
   Html:
     Head:
       Meta(charset="utf-8")
@@ -555,30 +570,34 @@ layout Shell(pageTitle: string) {.buf.}:
     Body:
       SiteNav()        # {.buf.} → writes to the same buffer
       Hr
-      <-S1             # ← inject block: page content is injected here
+      content          # ← lazy param: called here, writes to buffer at this position
 
-# Pages use inject to fill Shell's inject block
+# Page content layouts
+layout HomeContent() {.buf.}:
+  H1: "Welcome"
+  P: "A super fast SSR framework for Nim."
+
+layout UsersContent(users: seq[string]) {.buf.}:
+  H1: "Users"
+  Ul:
+    for user in users:
+      Li:
+        A(href="/users/" & user): user
+
+layout UserProfileContent(name: string) {.buf.}:
+  H1: name
+  P: "Profile page"
+  A(href="/users"): "Back"
+
+# Pages pass content to Shell via lazy
 layout HomePage(pageTitle: string) {.buf.}:
-  inject Shell(pageTitle=pageTitle):
-    ->S1:
-      H1: "Welcome"
-      P: "A super fast SSR framework for Nim."
+  Shell(pageTitle=pageTitle, lazy content=HomeContent())
 
 layout UsersPage(pageTitle: string, users: seq[string]) {.buf.}:
-  inject Shell(pageTitle=pageTitle):
-    ->S1:
-      H1: "Users"
-      Ul:
-        for user in users:
-          Li:
-            A(href="/users/" & user): user
+  Shell(pageTitle=pageTitle, lazy content=UsersContent(users=users))
 
 layout UserProfilePage(pageTitle: string, name: string) {.buf.}:
-  inject Shell(pageTitle=pageTitle):
-    ->S1:
-      H1: name
-      P: "Profile page"
-      A(href="/users"): "Back"
+  Shell(pageTitle=pageTitle, lazy content=UserProfileContent(name=name))
 
 # --- Handlers ---
 # Handler calls a {.buf.} layout → one allocation, zero copies.
@@ -625,13 +644,14 @@ app.mount("/", MainRoute)
 app.serve("127.0.0.1", 5000)
 ```
 
-In this example, every HTML page shares the same `Shell` layout via `inject`. When a handler calls `HomePage(pageTitle="Home")`:
+In this example, every HTML page shares the same `Shell` layout via `lazy content=`. When a handler calls `HomePage(pageTitle="Home")`:
 
 1. One buffer is created with compile-time estimated capacity
 2. `Shell` writes `<html><head>...</head><body>`, then `SiteNav()` writes `<nav>...</nav>` to the **same buffer**
-3. The `<-S1` inject block is filled with the page content — also written to the same buffer
-4. The completed string is **moved** (not copied) into `Response.body` via ORC move semantics
-5. Result: **1 allocation, 0 copies** for the entire page
+3. The `content` lazy param is called — `HomeContent()` writes to the same buffer at the correct position
+4. `Shell` finishes writing the closing tags
+5. The completed string is **moved** (not copied) into `Response.body` via ORC move semantics
+6. Result: **1 allocation, 0 copies** for the entire page
 
 ## API Reference
 
@@ -660,9 +680,8 @@ In this example, every HTML page shares the same `Shell` layout via `inject`. Wh
 | `ctx.httpMethod` | field | HTTP method |
 | `raw expr` | keyword | Insert HTML without escaping (inside layout) |
 | `text expr` | keyword | Insert text with escaping (inside layout) |
-| `<-Sn` | keyword | Define a named inject block inside `{.buf.}` layout |
-| `inject Name(args):` | keyword | Call a `{.buf.}` layout and fill its inject blocks |
-| `->Sn:` | keyword | Provide content for inject block Sn inside `inject` call |
+| `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer |
+| `lazy content=expr` | keyword | Pass `expr` as a lazy parameter (wrapped in closure) |
 
 ## License
 

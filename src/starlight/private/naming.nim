@@ -5,5 +5,5 @@ import std/macros
 proc layoutImplName*(name: string): NimNode =
   ident("__layout__" & name)
 
-proc injectBlockName*(name: string): NimNode =
-  ident("__inject__" & name)
+proc lazyParamName*(name: string): NimNode =
+  ident("__lazy__" & name)
