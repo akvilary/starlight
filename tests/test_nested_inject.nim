@@ -2,19 +2,19 @@ import ../src/starlight
 
 # --- Depth 2: inner layout with S1 slot ---
 
-layout Inner() {.toBuffer.}:
+layout Inner() {.buf.}:
   Div(class="inner"):
     <-S1
 
 # --- Depth 1: outer layout with S1 slot ---
 
-layout Outer() {.toBuffer.}:
+layout Outer() {.buf.}:
   Div(class="outer"):
     <-S1
 
 # --- Page: depth 0, injects into Outer which injects into Inner ---
 
-layout Page() {.toBuffer.}:
+layout Page() {.buf.}:
   inject Outer():
     ->S1:
       H1: "Outer content"

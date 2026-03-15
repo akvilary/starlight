@@ -2,13 +2,13 @@ import ../src/starlight
 
 # --- Layout with two named slots ---
 
-layout TwoSlots() {.toBuffer.}:
+layout TwoSlots() {.buf.}:
   Div(class="page"):
     <-S1
     Hr
     <-S2
 
-layout Page() {.toBuffer.}:
+layout Page() {.buf.}:
   inject TwoSlots():
     ->S1:
       H1: "Header content"

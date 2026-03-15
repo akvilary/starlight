@@ -12,16 +12,16 @@
 ##   Page(title="Hello", content="<h1>World</h1>")
 ##
 ## Buffered mode — all nested writes go to one shared buffer:
-##   layout SiteHeader() {.toBuffer.}:
+##   layout SiteHeader() {.buf.}:
 ##     Header:
 ##       H1: "My Site"
 ##
-##   layout Shell(title: string) {.toBuffer.}:
+##   layout Shell(title: string) {.buf.}:
 ##     Html:
 ##       Body:
 ##         <-S1            # named slot
 ##
-##   layout Page(title: string) {.toBuffer.}:
+##   layout Page(title: string) {.buf.}:
 ##     inject Shell(title=title):
 ##       ->S1:
 ##         SiteHeader()
@@ -94,7 +94,7 @@ proc buildCapExpr(stmts, body: NimNode, hintKb: int): NimNode =
 proc generateBuffered(name: NimNode, body: NimNode,
                       procParams, tmplParams, callArgs: seq[NimNode],
                       hintKb: int): NimNode =
-  ## Generate buffered layout code (with {.toBuffer.} pragma).
+  ## Generate buffered layout code (with {.buf.} pragma).
   let implName = layoutImplName(name.strVal)
   let staticCapName = ident(name.strVal & "_staticCap")
   var slotNames: seq[string] = @[]
@@ -216,10 +216,10 @@ macro layout*(signature: untyped, body: untyped): untyped =
   ## Generates an inline proc (with ctx: Context) and a template wrapper
   ## (without ctx) for implicit context passing.
   ##
-  ## With {.toBuffer.} pragma, generates a buffered layout that writes
+  ## With {.buf.} pragma, generates a buffered layout that writes
   ## directly to a shared buffer instead of returning a string.
 
-  # Check for {.toBuffer.} pragma
+  # Check for {.buf.} pragma
   var actualSignature = signature
   var isBuffered = false
   var hintKb = 0
@@ -227,10 +227,10 @@ macro layout*(signature: untyped, body: untyped): untyped =
   if signature.kind == nnkPragmaExpr:
     actualSignature = signature[0]
     for pragma in signature[1]:
-      if pragma.kind == nnkIdent and pragma.strVal == "toBuffer":
+      if pragma.kind == nnkIdent and pragma.strVal == "buf":
         isBuffered = true
       elif pragma.kind == nnkExprColonExpr and
-           pragma[0].kind == nnkIdent and pragma[0].strVal == "toBuffer":
+           pragma[0].kind == nnkIdent and pragma[0].strVal == "buf":
         isBuffered = true
         if pragma[1].kind in {nnkIntLit..nnkUInt64Lit}:
           hintKb = pragma[1].intVal.int

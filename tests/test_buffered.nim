@@ -2,13 +2,13 @@ import ../src/starlight
 
 # --- Simple buffered layout (no slots) ---
 
-layout SiteHeader() {.toBuffer.}:
+layout SiteHeader() {.buf.}:
   Header:
     H1: "My Site"
 
 # --- Buffered layout with named slots ---
 
-layout Wrapper(title: string) {.toBuffer.}:
+layout Wrapper(title: string) {.buf.}:
   Html:
     Head:
       Title: title
@@ -18,7 +18,7 @@ layout Wrapper(title: string) {.toBuffer.}:
 
 # --- Buffered layout using inject ---
 
-layout Page(title: string) {.toBuffer.}:
+layout Page(title: string) {.buf.}:
   inject Wrapper(title=title):
     ->S1:
       SiteHeader()

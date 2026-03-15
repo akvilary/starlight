@@ -1,6 +1,6 @@
 import ../src/starlight
 
-layout BigList(items: seq[string]) {.toBuffer: 32.}:
+layout BigList(items: seq[string]) {.buf: 32.}:
   Ul:
     for item in items:
       Li: item

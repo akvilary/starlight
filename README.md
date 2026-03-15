@@ -13,7 +13,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 - **Middleware chain** — explicit `next` callback pattern for predictable request processing.
 - **Zero-overhead layouts** — `layout` generates inline procs with implicit context passing.
 - **Single allocation rendering** — the HTML engine pre-calculates buffer size and builds the entire page in one string.
-- **Shared buffer mode (`{.toBuffer.}`)** — nested layouts write to a single shared buffer with zero intermediate allocations. Buffer capacity is computed at compile time. The final string is moved (not copied) through the entire response chain thanks to Nim's ORC move semantics.
+- **Shared buffer mode (`{.buf.}`)** — nested layouts write to a single shared buffer with zero intermediate allocations. Buffer capacity is computed at compile time. The final string is moved (not copied) through the entire response chain thanks to Nim's ORC move semantics.
 
 ## Installation
 
@@ -378,27 +378,27 @@ On a typical page where 80-90% is static markup, this means near-zero runtime ov
 
 By default, each `layout` creates its own string buffer, fills it, and returns the result. When layouts are nested via `raw`, the inner layout allocates a separate buffer, returns it as a string, and the outer layout copies it in. For a page with 5 nested components, that means 5 allocations + 4 copies.
 
-The `{.toBuffer.}` pragma eliminates this overhead. All nested `{.toBuffer.}` layouts write to **one shared buffer** — zero intermediate allocations.
+The `{.buf.}` pragma eliminates this overhead. All nested `{.buf.}` layouts write to **one shared buffer** — zero intermediate allocations.
 
 ### How It Works
 
-Add `{.toBuffer.}` to any layout:
+Add `{.buf.}` to any layout:
 
 ```nim
-layout SiteHeader() {.toBuffer.}:
+layout SiteHeader() {.buf.}:
   Header:
     H1: "My Site"
 
-layout Page(title: string, content: string) {.toBuffer.}:
+layout Page(title: string, content: string) {.buf.}:
   Html:
     Head:
       Title: title
     Body:
-      SiteHeader()   # {.toBuffer.} → writes to the same buffer, no allocation
+      SiteHeader()   # {.buf.} → writes to the same buffer, no allocation
       raw content    # regular layout → returns string, added to buffer
 ```
 
-A `{.toBuffer.}` layout automatically detects its calling context at compile time via `when declared(buf)`:
+A `{.buf.}` layout automatically detects its calling context at compile time via `when declared(buf)`:
 
 **Called from a handler** (no `buf` in scope):
 
@@ -410,17 +410,17 @@ response home() {.html.}:
 #   1. Page template sees declared(buf) = false
 #   2. Creates: var buf = newStringOfCap(Page_staticCap)
 #   3. Calls __layout__Page(ctx, buf, title) — fills buf
-#      (all nested {.toBuffer.} layouts write to this same buf)
+#      (all nested {.buf.} layouts write to this same buf)
 #   4. Returns buf as string
 #   5. answer(buf) — moves the string into Response.body (zero copies, ORC move semantics)
 ```
 
 One allocation, one buffer for the entire page. The string is never copied — it is moved through the `answer()` → `Response.body` → HTTP send chain.
 
-**Called inside another `{.toBuffer.}` layout** (`buf` already in scope):
+**Called inside another `{.buf.}` layout** (`buf` already in scope):
 
 ```nim
-layout Page(title: string) {.toBuffer.}:
+layout Page(title: string) {.buf.}:
   Html:
     Body:
       SiteHeader()   # SiteHeader sees declared(buf) = true
@@ -431,14 +431,14 @@ layout Page(title: string) {.toBuffer.}:
 
 The nested layout writes to the parent's buffer and returns an empty string (which the DSL discards as a no-op).
 
-**Regular layouts** (without `{.toBuffer.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
+**Regular layouts** (without `{.buf.}`) always return strings. Use `raw` to embed them inside other layouts, as before.
 
 ### Named Slots
 
 For page wrappers that need to accept arbitrary content, use `<-Sn` to define named slots and `inject` + `->Sn:` to fill them:
 
 ```nim
-layout Shell(title: string) {.toBuffer.}:
+layout Shell(title: string) {.buf.}:
   Html:
     Head:
       Title: title
@@ -448,10 +448,10 @@ layout Shell(title: string) {.toBuffer.}:
       Footer:
         P: "Powered by Starlight"
 
-layout HomePage(title: string) {.toBuffer.}:
+layout HomePage(title: string) {.buf.}:
   inject Shell(title=title):
     ->S1:                            # fill Shell's S1 slot
-      SiteHeader()                   # {.toBuffer.} → shared buffer
+      SiteHeader()                   # {.buf.} → shared buffer
       Main:
         H1: "Welcome"
         P: "Fast SSR for Nim."
@@ -460,14 +460,14 @@ layout HomePage(title: string) {.toBuffer.}:
 Multiple slots are supported:
 
 ```nim
-layout TwoColumnLayout() {.toBuffer.}:
+layout TwoColumnLayout() {.buf.}:
   Div(class="page"):
     Div(class="sidebar"):
       <-S1
     Div(class="content"):
       <-S2
 
-layout DashboardPage() {.toBuffer.}:
+layout DashboardPage() {.buf.}:
   inject TwoColumnLayout():
     ->S1:
       Nav:
@@ -481,13 +481,13 @@ Everything writes to a single buffer. The `inject` keyword processes each `->Sn:
 
 ### Buffer Capacity
 
-Each `{.toBuffer.}` layout exports a compile-time constant `Name_staticCap` computed from:
+Each `{.buf.}` layout exports a compile-time constant `Name_staticCap` computed from:
 
 | Component | Source |
 |-----------|--------|
 | Static HTML bytes | Counted from string literals in generated code |
 | Dynamic expressions | Number of runtime values × 64 bytes each |
-| Nested `{.toBuffer.}` layouts | Sum of their `_staticCap` constants |
+| Nested `{.buf.}` layouts | Sum of their `_staticCap` constants |
 | Margin | +256 bytes |
 
 The top-level layout uses this constant for `newStringOfCap`. If the page exceeds the estimate (e.g. a large dynamic list), Nim's string auto-grows (2x doubling, amortized O(1)).
@@ -495,7 +495,7 @@ The top-level layout uses this constant for `newStringOfCap`. If the page exceed
 For layouts with unpredictable dynamic content (large `seq` loops), you can provide a hint in KB:
 
 ```nim
-layout UserList(users: seq[string]) {.toBuffer: 32.}:   # 32 KB hint
+layout UserList(users: seq[string]) {.buf:32.}:   # 32 KB hint
   Ul:
     for user in users:
       Li: user
@@ -505,7 +505,7 @@ The actual capacity is `max(computed formula, hint × 1024)`.
 
 ### Zero-Copy Response Chain
 
-The string created by a `{.toBuffer.}` layout is never copied on its way to the client:
+The string created by a `{.buf.}` layout is never copied on its way to the client:
 
 1. `newStringOfCap(N)` — one allocation, capacity pre-computed at compile time
 2. `buf.add(...)` — writes fill the buffer, no reallocation if estimate is good
@@ -517,13 +517,13 @@ Result: **1 allocation, 0 copies** for the entire render-to-response pipeline.
 
 ### Summary
 
-| Feature | Regular `layout` | `layout {.toBuffer.}` |
+| Feature | Regular `layout` | `layout {.buf.}` |
 |---------|------------------|-----------------------|
 | Buffer | Own buffer per layout | Shared with parent |
 | Nesting | `raw Inner()` (copy) | `Inner()` (direct write) |
 | Slots | Not supported | `<-Sn` / `inject` + `->Sn:` |
 | Buffer sizing | `staticLen + 256` | `staticLen + dynamic*64 + nested + 256` |
-| Hint override | No | `{.toBuffer: N.}` (KB) |
+| Hint override | No | `{.buf:N.}` (KB) |
 
 ## Full Example
 
@@ -532,35 +532,35 @@ import std/json
 import starlight
 
 # --- Shared buffer layouts ---
-# All {.toBuffer.} layouts write to a single buffer — zero intermediate allocations.
+# All {.buf.} layouts write to a single buffer — zero intermediate allocations.
 
 # Simple buffered component (no slots)
-layout SiteNav() {.toBuffer.}:
+layout SiteNav() {.buf.}:
   Nav:
     A(href="/"): "Home"
     text " | "
     A(href="/users"): "Users"
 
 # Page shell with a named slot
-layout Shell(pageTitle: string) {.toBuffer.}:
+layout Shell(pageTitle: string) {.buf.}:
   Html:
     Head:
       Meta(charset="utf-8")
       Title: pageTitle
       Style: "body { font-family: system-ui; max-width: 800px; margin: 0 auto; padding: 20px; }"
     Body:
-      SiteNav()        # {.toBuffer.} → writes to the same buffer
+      SiteNav()        # {.buf.} → writes to the same buffer
       Hr
       <-S1             # ← named slot: page content is injected here
 
 # Pages use inject to fill Shell's slot
-layout HomePage(pageTitle: string) {.toBuffer.}:
+layout HomePage(pageTitle: string) {.buf.}:
   inject Shell(pageTitle=pageTitle):
     ->S1:
       H1: "Welcome"
       P: "A super fast SSR framework for Nim."
 
-layout UsersPage(pageTitle: string, users: seq[string]) {.toBuffer.}:
+layout UsersPage(pageTitle: string, users: seq[string]) {.buf.}:
   inject Shell(pageTitle=pageTitle):
     ->S1:
       H1: "Users"
@@ -569,7 +569,7 @@ layout UsersPage(pageTitle: string, users: seq[string]) {.toBuffer.}:
           Li:
             A(href="/users/" & user): user
 
-layout UserProfilePage(pageTitle: string, name: string) {.toBuffer.}:
+layout UserProfilePage(pageTitle: string, name: string) {.buf.}:
   inject Shell(pageTitle=pageTitle):
     ->S1:
       H1: name
@@ -577,7 +577,7 @@ layout UserProfilePage(pageTitle: string, name: string) {.toBuffer.}:
       A(href="/users"): "Back"
 
 # --- Handlers ---
-# Handler calls a {.toBuffer.} layout → one allocation, zero copies.
+# Handler calls a {.buf.} layout → one allocation, zero copies.
 # The buffer is created once, filled by all nested layouts, then moved into Response.body.
 
 response listUsers() {.html.}:
@@ -634,8 +634,8 @@ In this example, every HTML page shares the same `Shell` layout via `inject`. Wh
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `layout Name(params):` | macro | Defines a reusable HTML layout |
-| `layout Name(params) {.toBuffer.}:` | macro | Layout that writes to a shared buffer |
-| `layout Name(params) {.toBuffer: N.}:` | macro | Shared buffer layout with N KB capacity hint |
+| `layout Name(params) {.buf.}:` | macro | Layout that writes to a shared buffer |
+| `layout Name(params) {.buf:N.}:` | macro | Shared buffer layout with N KB capacity hint |
 | `response Name(params) {.html.}:` | macro | Handler that wraps return in `answer()` (text/html) |
 | `response Name(params) {.json.}:` | macro | Handler that wraps return in `answerJson()` (application/json) |
 | `response Name(params):` | macro | Raw handler, return must be a `Response` |
@@ -656,8 +656,8 @@ In this example, every HTML page shares the same `Shell` layout via `inject`. Wh
 | `ctx.httpMethod` | field | HTTP method |
 | `raw expr` | keyword | Insert HTML without escaping (inside layout) |
 | `text expr` | keyword | Insert text with escaping (inside layout) |
-| `<-Sn` | keyword | Define a named slot inside `{.toBuffer.}` layout |
-| `inject Name(args):` | keyword | Call a `{.toBuffer.}` layout and fill its slots |
+| `<-Sn` | keyword | Define a named slot inside `{.buf.}` layout |
+| `inject Name(args):` | keyword | Call a `{.buf.}` layout and fill its slots |
 | `->Sn:` | keyword | Provide content for slot Sn inside `inject` block |
 
 ## License
