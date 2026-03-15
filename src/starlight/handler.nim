@@ -45,11 +45,18 @@ proc generateParamBindings(nameAndParams: NimNode): seq[NimNode] =
 proc transformReturns(node: NimNode, wrapProc: string): NimNode =
   ## Recursively walks the AST and wraps return expressions
   ## with wrapProc (answer/answerJson). Empty wrapProc = no wrapping.
+  ## Supports: return expr  and  return expr, HttpCode
   if node.kind == nnkReturnStmt and node[0].kind != nnkEmpty:
     if wrapProc.len == 0:
       return node
-    return newNimNode(nnkReturnStmt).add(
-      newCall(ident(wrapProc), node[0]))
+    let retExpr = node[0]
+    var call = newCall(ident(wrapProc))
+    if retExpr.kind == nnkTupleConstr:
+      for child in retExpr:
+        call.add child
+    else:
+      call.add retExpr
+    return newNimNode(nnkReturnStmt).add(call)
 
   result = node.copyNimNode()
   for child in node:

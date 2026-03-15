@@ -46,6 +46,10 @@ layout AboutPage():
   h1: "About"
   p: "Built with Nim and httpx."
 
+layout NotFoundPage():
+  h1: "404 — Not Found"
+  p: "The page you are looking for does not exist."
+
 # --- Handlers ---
 
 responseHtml listUsers():
@@ -61,11 +65,17 @@ responseJson getStatus():
 responseJson echoBody():
   return parseJson(ctx.body)
 
+responseJson unauthorized():
+  return (%*{"error": "not authorized"}, Http401)
+
 responseHtml homePage():
   return Page(title="Starlight", content=HomePage())
 
 responseHtml aboutPage():
   return Page(title="About", content=AboutPage())
+
+responseHtml notFoundPage():
+  return (Page(title="404", content=NotFoundPage()), Http404)
 
 # --- Route groups ---
 
@@ -76,10 +86,12 @@ route UsersApi:
 route ApiRoutes:
   get "/status", getStatus
   post "/echo", echoBody
+  get "/unauthorized", unauthorized
 
 route MainPage:
   get "", homePage
   get "/about", aboutPage
+  get "/not-found", notFoundPage
 
 # --- Middleware ---
 

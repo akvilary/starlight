@@ -201,11 +201,33 @@ proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
   return answerJson(%*{"status": "ok", "version": "0.1.0"})
 ```
 
+### Custom HTTP Status Code
+
+To return a response with a custom status code, use a tuple `(body, HttpCode)`:
+
+```nim
+responseJson unauthorized():
+  return (%*{"error": "not authorized"}, Http401)
+
+responseHtml notFound():
+  return (Page(title="404", content=NotFound()), Http404)
+```
+
 ### Raw Response Handler
 
 ```nim
 response customHandler():
   return answer("plain text", Http200)
+```
+
+### Default Response
+
+If no `return` is specified, the handler returns `Http200` with an empty body (`""`):
+
+```nim
+response fireAndForget():
+  echo "doing work, no return"
+  # return "" # Http200
 ```
 
 ### JSON from Pre-Serialized String
