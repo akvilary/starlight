@@ -68,7 +68,7 @@ proc makeLazyLambda(expr: NimNode): NimNode =
       newIdentDefs(ident"ctx", ident"Context"),
       newIdentDefs(lambdaBuf, newNimNode(nnkVarTy).add(ident"string"))
     ),
-    newEmptyNode(),  # pragmas
+    newNimNode(nnkPragma).add(ident"nimcall"),  # nimcall — no closure env needed
     newEmptyNode(),  # reserved
     lambdaBody
   )

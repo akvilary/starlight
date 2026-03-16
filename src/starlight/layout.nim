@@ -109,6 +109,7 @@ proc generateBuffered(name: NimNode, body: NimNode,
       newIdentDefs(ident"buf", newNimNode(nnkVarTy).add(ident"string"))
     ),
     newNimNode(nnkPragma).add(
+      ident"nimcall",
       ident"gcsafe",
       newNimNode(nnkExprColonExpr).add(
         ident"raises",
@@ -145,7 +146,7 @@ proc generateBuffered(name: NimNode, body: NimNode,
       newIdentDefs(ident"ctx", ident"Context"),
       newIdentDefs(ident"buf", newNimNode(nnkVarTy).add(ident"string"))
     ),
-    newEmptyNode(), newEmptyNode(),
+    newNimNode(nnkPragma).add(ident"nimcall"), newEmptyNode(),
     newStmtList(newNimNode(nnkDiscardStmt).add(newEmptyNode()))
   )
 
