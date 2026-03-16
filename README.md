@@ -76,25 +76,39 @@ layout Card(title: string, body: string, footer = ""):
 
 ### Nested Layouts
 
-For nesting, prefer `{.buf.}` layouts — all nested `{.buf.}` layouts write to a single shared buffer with zero intermediate allocations (see [Shared Buffer Mode](#shared-buffer-mode)). Regular layouts (without `{.buf.}`) also work but each creates its own buffer; use `raw` to embed them:
+Use `{.buf.}` layouts for nesting — all nested calls write to a single shared buffer with zero intermediate allocations (see [Shared Buffer Mode](#shared-buffer-mode)):
 
 ```nim
-layout NavBar():
+layout NavBar() {.buf.}:
   Nav:
     A(href="/"): "Home"
     raw " | "
     A(href="/about"): "About"
 
-layout Page(pageTitle: string, content: string):
+layout Page(pageTitle: string) {.buf.}:
   Html:
     Head:
       Meta(charset="utf-8")
       Title: pageTitle
     Body:
-      raw NavBar()
+      NavBar()
       Hr
       Main:
-        raw content
+        H1: "Welcome"
+```
+
+Nesting also works without `{.buf.}`, but each layout creates its own string buffer and the results are concatenated — this is slower due to extra allocations and copies:
+
+```nim
+layout NavBar():
+  Nav:
+    A(href="/"): "Home"
+
+layout Page(pageTitle: string, content: string):
+  Html:
+    Body:
+      raw NavBar()       # NavBar() returns a string, copied into Page's buffer
+      raw content        # same — extra allocation + copy
 ```
 
 ### Using Layouts in Handlers
