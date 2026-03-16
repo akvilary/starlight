@@ -10,7 +10,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 - **Compile-time HTML optimization** — static parts of templates are pre-computed and baked into the binary. Only dynamic expressions are evaluated at runtime.
 - **Native Nim syntax in HTML DSL** — no special syntax like `{var}` or `x->inc()`. Just write normal Nim code inside `layout` blocks.
 - **PrefixTree router** — typed path parameters (`{id:int}`, `{slug}`, `{price:float}`) with compile-time validation.
-- **Middleware chain** — explicit `next` callback pattern for predictable request processing.
+- **Middleware chain** — explicit `next` callback pattern for predictable handler processing.
 - **Zero-overhead layouts** — `layout` generates inline procs with implicit context passing.
 - **Single allocation rendering** — the HTML engine pre-calculates buffer size and builds the entire page in one string.
 - **Shared buffer mode (`{.buf.}`)** — nested layouts write to a single shared buffer with zero intermediate allocations. Buffer capacity is computed at compile time. The final string is moved (not copied) through the entire response chain thanks to Nim's ORC move semantics.
@@ -39,7 +39,7 @@ layout HomePage():
     Body:
       H1: "It works!"
 
-response home() {.html.}:
+handler home() {.html.}:
   return HomePage()
 
 route Main:
@@ -132,7 +132,7 @@ layout Page(title: string) {.buf.}:
 Layouts are called like regular functions. `ctx` is passed implicitly:
 
 ```nim
-response home() {.html.}:
+handler home() {.html.}:
   return Page(pageTitle="Home", content=Card(title="Welcome", body="Hello!"))
 ```
 
@@ -201,7 +201,7 @@ layout Comment(userInput: string):
 
 ## Handlers
 
-The `response` macro generates async handler procs. Use pragmas to specify the response type:
+The `handler` macro generates async handler procs. Use pragmas to specify the response type:
 
 - `{.html.}` — wraps `return` expressions in `answer()` (Content-Type: text/html)
 - `{.json.}` — wraps `return` expressions in `answerJson()` (Content-Type: application/json)
@@ -212,7 +212,7 @@ If no `return` is specified, the handler returns `Http200` with an empty body.
 ### HTML Handler
 
 ```nim
-response home() {.html.}:
+handler home() {.html.}:
   return Page(pageTitle="Home", content=HomePage())
 
 # Equivalent to:
@@ -223,7 +223,7 @@ response home() {.html.}:
 ### JSON Handler
 
 ```nim
-response getStatus() {.json.}:
+handler getStatus() {.json.}:
   return %*{"status": "ok", "version": "0.1.0"}
 
 # Equivalent to:
@@ -236,17 +236,17 @@ response getStatus() {.json.}:
 To return a response with a custom status code, use a tuple `(body, HttpCode)`:
 
 ```nim
-response unauthorized() {.json.}:
+handler unauthorized() {.json.}:
   return (%*{"error": "not authorized"}, Http401)
 
-response notFound() {.html.}:
+handler notFound() {.html.}:
   return (Page(title="404", content=NotFound()), Http404)
 ```
 
 ### Raw Response Handler
 
 ```nim
-response customHandler():
+handler customHandler():
   return answer("plain text", Http200)
 ```
 
@@ -255,7 +255,7 @@ response customHandler():
 If no `return` is specified, the handler returns `Http200` with an empty body (`""`):
 
 ```nim
-response fireAndForget():
+handler fireAndForget():
   echo "doing work, no return"
   # return "" # Http200
 ```
@@ -266,11 +266,11 @@ response fireAndForget():
 
 ```nim
 # JsonNode — serialized by the framework:
-response getStatus() {.json.}:
+handler getStatus() {.json.}:
   return %*{"status": "ok"}
 
 # Pre-serialized string — zero serialization overhead:
-response getCached() {.json.}:
+handler getCached() {.json.}:
   return cachedJsonString
 
 # Without macro:
@@ -284,12 +284,12 @@ Path parameters are declared in the handler signature with their types. They are
 
 ```nim
 # Route: get("/{name}", getUser)
-response getUser(name: string) {.html.}:
+handler getUser(name: string) {.html.}:
   # name is automatically bound from ctx.pathParams["name"]
   return Page(pageTitle=name, content=UserProfile(name=name))
 
 # Route: get("/{id:int}", getItem)
-response getItem(id: int) {.json.}:
+handler getItem(id: int) {.json.}:
   # id is automatically parsed as int from ctx.pathParams["id"]
   let item = fetchItem(id)
   return %*{"id": id, "name": item.name}
@@ -300,7 +300,7 @@ response getItem(id: int) {.json.}:
 The `ctx` object is available in every handler:
 
 ```nim
-response search() {.json.}:
+handler search() {.json.}:
   let query = ctx.getQuery("q")
   let token = ctx.headers["Authorization"]
   let data = parseJson(ctx.body)
@@ -440,7 +440,7 @@ A `{.buf.}` layout automatically detects its calling context at compile time via
 **Called from a handler** (no `buf` in scope):
 
 ```nim
-response home() {.html.}:
+handler home() {.html.}:
   return Page(title="Hello")
 
 # What actually happens:
@@ -640,17 +640,17 @@ layout UserProfilePage(pageTitle: string, name: string) {.buf.}:
 # Handler calls a {.buf.} layout → one allocation, zero copies.
 # The buffer is created once, filled by all nested layouts, then moved into Response.body.
 
-response listUsers() {.html.}:
+handler listUsers() {.html.}:
   let users = @["Alice", "Bob", "Charlie"]
   return UsersPage(pageTitle="Users", users=users)
 
-response getUser(name: string) {.html.}:
+handler getUser(name: string) {.html.}:
   return UserProfilePage(pageTitle=name, name=name)
 
-response getStatus() {.json.}:
+handler getStatus() {.json.}:
   return %*{"status": "ok"}
 
-response home() {.html.}:
+handler home() {.html.}:
   return HomePage(pageTitle="Home")
 
 # --- Routes ---
@@ -697,9 +697,9 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `layout Name(params):` | macro | Defines a reusable HTML layout |
 | `layout Name(params) {.buf.}:` | macro | Layout that writes to a shared buffer |
 | `layout Name(params) {.buf:N.}:` | macro | Shared buffer layout with N KB capacity hint |
-| `response Name(params) {.html.}:` | macro | Handler that wraps return in `answer()` (text/html) |
-| `response Name(params) {.json.}:` | macro | Handler that wraps return in `answerJson()` (application/json) |
-| `response Name(params):` | macro | Raw handler, return must be a `Response` |
+| `handler Name(params) {.html.}:` | macro | Handler that wraps return in `answer()` (text/html) |
+| `handler Name(params) {.json.}:` | macro | Handler that wraps return in `answerJson()` (application/json) |
+| `handler Name(params):` | macro | Raw handler, return must be a `Response` |
 | `route Name:` | macro | Defines a route group |
 | `newApp()` | proc | Creates a new application |
 | `app.mount(prefix, group)` | proc | Mounts a route group at prefix |

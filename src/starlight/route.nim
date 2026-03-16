@@ -1,7 +1,7 @@
 ## Route group macro.
 ##
 ## Usage:
-##   response listTags() {.html.}:
+##   handler listTags() {.html.}:
 ##     return renderTags()
 ##
 ##   route TagsApi:

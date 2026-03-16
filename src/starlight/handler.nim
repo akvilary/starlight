@@ -1,13 +1,13 @@
 ## Handler macro for generating async handler procs.
 ##
 ## Usage:
-##   response home() {.html.}:
+##   handler home() {.html.}:
 ##     return Page(title="Home")
 ##
-##   response getStatus() {.json.}:
+##   handler getStatus() {.json.}:
 ##     return %*{"status": "ok"}
 ##
-##   response custom():
+##   handler custom():
 ##     return answer("hello", Http200)
 
 import std/macros
@@ -62,20 +62,93 @@ proc transformReturns(node: NimNode, wrapProc: string): NimNode =
   for child in node:
     result.add transformReturns(child, wrapProc)
 
+proc addAsyncGcsafePragmas(node: NimNode) =
+  ## Adds {.async: (raises: [CatchableError]), gcsafe.} pragmas to a proc.
+  node.addPragma(newNimNode(nnkExprColonExpr).add(
+    ident"async",
+    newNimNode(nnkTupleConstr).add(
+      newNimNode(nnkExprColonExpr).add(
+        ident"raises",
+        newNimNode(nnkBracket).add(ident"CatchableError")
+      )
+    )
+  ))
+  node.addPragma(ident"gcsafe")
+
 proc buildHandler(nameAndParams: NimNode, body: NimNode,
-                  wrapProc: string): NimNode =
-  ## Shared logic for response macro.
+                  wrapProc: string, timeoutMs: int = 0): NimNode =
+  ## Shared logic for handler macro.
   ## wrapProc: "" = no wrapping, "answer" = HTML, "answerJson" = JSON
+  ## timeoutMs: 0 = no timeout, >0 = timeout in milliseconds
   let name = nameAndParams[0]
 
-  var procBody = newStmtList()
-
+  # Build the core body (param bindings + transformed returns)
+  var coreBody = newStmtList()
   for binding in generateParamBindings(nameAndParams):
-    procBody.add binding
-
+    coreBody.add binding
   let transformed = transformReturns(body, wrapProc)
   for child in transformed:
-    procBody.add child
+    coreBody.add child
+
+  var procBody: NimNode
+
+  if timeoutMs > 0:
+    procBody = newStmtList()
+
+    # proc __inner__(ctx: Context): Future[Response] {.async, gcsafe, nimcall.}
+    let innerProc = newProc(
+      name = ident"__inner__",
+      params = [
+        newNimNode(nnkBracketExpr).add(ident"Future", ident"Response"),
+        newIdentDefs(ident"ctx", ident"Context"),
+      ],
+      body = coreBody,
+    )
+    innerProc.addAsyncGcsafePragmas()
+    innerProc.addPragma(ident"nimcall")
+    procBody.add innerProc
+
+    # return await __inner__(ctx).wait(milliseconds(N))
+    let waitCall = newCall(
+      newDotExpr(
+        newCall(ident"__inner__", ident"ctx"),
+        ident"wait",
+      ),
+      newCall(ident"milliseconds", newIntLitNode(timeoutMs)),
+    )
+    let returnAwait = newNimNode(nnkReturnStmt).add(
+      newCall(ident"await", waitCall)
+    )
+
+    # Response(code: Http408, body: "Request Timeout", headers: ...)
+    let timeoutResponse = newNimNode(nnkObjConstr).add(
+      ident"Response",
+      newNimNode(nnkExprColonExpr).add(ident"code", ident"Http408"),
+      newNimNode(nnkExprColonExpr).add(ident"body", newStrLitNode("Request Timeout")),
+      newNimNode(nnkExprColonExpr).add(
+        ident"headers",
+        newCall(
+          newDotExpr(ident"HttpTable", ident"init"),
+          newNimNode(nnkBracket).add(
+            newNimNode(nnkTupleConstr).add(
+              newStrLitNode("Content-Type"),
+              newStrLitNode("text/plain"),
+            )
+          ),
+        ),
+      ),
+    )
+
+    # try: ... except AsyncTimeoutError: ...
+    procBody.add newNimNode(nnkTryStmt).add(
+      newStmtList(returnAwait),
+      newNimNode(nnkExceptBranch).add(
+        ident"AsyncTimeoutError",
+        newStmtList(newNimNode(nnkReturnStmt).add(timeoutResponse)),
+      ),
+    )
+  else:
+    procBody = coreBody
 
   # proc name*(ctx: Context): Future[Response] {.async, gcsafe.}
   let ctxParam = newIdentDefs(ident"ctx", ident"Context")
@@ -86,27 +159,19 @@ proc buildHandler(nameAndParams: NimNode, body: NimNode,
     params = [retType, ctxParam],
     body = procBody,
   )
-  # {.async: (raises: [CatchableError]), gcsafe.}
-  result.addPragma(newNimNode(nnkExprColonExpr).add(
-    ident"async",
-    newNimNode(nnkTupleConstr).add(
-      newNimNode(nnkExprColonExpr).add(
-        ident"raises",
-        newNimNode(nnkBracket).add(ident"CatchableError")
-      )
-    )
-  ))
-  result.addPragma(ident"gcsafe")
+  result.addAsyncGcsafePragmas()
 
-macro response*(nameAndParams: untyped, body: untyped): untyped =
+macro handler*(nameAndParams: untyped, body: untyped): untyped =
   ## Generates an async handler proc.
   ##
   ## Pragmas:
-  ##   {.html.} — wraps return in answer() (Content-Type: text/html)
-  ##   {.json.} — wraps return in answerJson() (Content-Type: application/json)
-  ##   (none)   — no wrapping, return must be a Response
+  ##   {.html.}         — wraps return in answer() (Content-Type: text/html)
+  ##   {.json.}         — wraps return in answerJson() (Content-Type: application/json)
+  ##   {.timeout: N.}   — aborts handler after N ms with 408 Request Timeout
+  ##   (none)           — no wrapping, return must be a Response
   var actualParams = nameAndParams
   var wrapProc = ""
+  var timeoutMs = 0
 
   if nameAndParams.kind == nnkPragmaExpr:
     actualParams = nameAndParams[0]
@@ -119,5 +184,9 @@ macro response*(nameAndParams: untyped, body: untyped): untyped =
           wrapProc = "answerJson"
         else:
           discard
+      elif pragma.kind == nnkExprColonExpr:
+        if pragma[0].kind == nnkIdent and pragma[0].strVal == "timeout":
+          if pragma[1].kind in {nnkIntLit..nnkUInt64Lit}:
+            timeoutMs = pragma[1].intVal.int
 
-  buildHandler(actualParams, body, wrapProc)
+  buildHandler(actualParams, body, wrapProc, timeoutMs)
