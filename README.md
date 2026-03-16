@@ -111,6 +111,22 @@ layout Page(pageTitle: string, content: string):
       raw content        # same — extra allocation + copy
 ```
 
+### Using Third-Party Template Engines
+
+Starlight works with any template engine that returns a string. For example, with [Nimja](https://github.com/enthus1ast/nimja):
+
+```nim
+import nimja
+
+proc renderArticle(title: string): string =
+  compileTemplateStr("templates/article.nimja")
+
+layout Page(title: string) {.buf.}:
+  Html:
+    Body:
+      raw renderArticle("Hello")
+```
+
 ### Using Layouts in Handlers
 
 Layouts are called like regular functions. `ctx` is passed implicitly:
