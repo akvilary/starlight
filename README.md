@@ -205,7 +205,10 @@ The `handler` macro generates async handler procs. Use pragmas to specify the re
 
 - `{.html.}` — wraps `return` expressions in `answer()` (Content-Type: text/html)
 - `{.json.}` — wraps `return` expressions in `answerJson()` (Content-Type: application/json)
+- `{.timeout: N.}` — aborts handler after N milliseconds with `Http408 Request Timeout`
 - *(no pragma)* — no wrapping, `return` must provide a `Response` directly
+
+Pragmas can be combined: `{.html, timeout: 2000.}`.
 
 If no `return` is specified, the handler returns `Http200` with an empty body.
 
@@ -306,6 +309,40 @@ handler search() {.json.}:
   let data = parseJson(ctx.body)
   return %*{"query": query, "ip": ctx.ip}
 ```
+
+### Handler Timeout
+
+The `{.timeout: N.}` pragma sets a deadline (in milliseconds) for handler execution. If the handler doesn't complete in time, the client receives `Http408 Request Timeout`:
+
+```nim
+handler fetchExternal() {.json, timeout: 3000.}:
+  let data = await httpClient.get("https://slow-api.example.com")
+  return data
+
+handler quickCheck() {.html, timeout: 500.}:
+  return StatusPage(db.ping())
+```
+
+#### How it works
+
+The macro moves the handler body into an inner `{.nimcall.}` proc (not a closure) and wraps the call in Chronos `wait()` with a `try/except`:
+
+```nim
+# What the macro generates for {.timeout: 2000.}:
+proc myHandler*(ctx: Context): Future[Response] {.async, gcsafe.} =
+  proc __inner__(ctx: Context): Future[Response] {.async, gcsafe, nimcall.} =
+    # ... original handler body ...
+  try:
+    return await __inner__(ctx).wait(milliseconds(2000))
+  except AsyncTimeoutError:
+    return Response(code: Http408, body: "Request Timeout",
+                    headers: HttpTable.init([("Content-Type", "text/plain")]))
+```
+
+- `__inner__` takes `ctx` as a parameter (not captured), so it is compatible with `{.gcsafe.}`
+- `{.nimcall.}` prevents the compiler from creating a closure — the inner proc is a plain function call
+- Chronos `wait()` starts the future and raises `AsyncTimeoutError` if the deadline is exceeded
+- `AsyncTimeoutError` is caught by the wrapper and converted to a `Http408` response
 
 ## Routing
 
@@ -699,6 +736,7 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `layout Name(params) {.buf:N.}:` | macro | Shared buffer layout with N KB capacity hint |
 | `handler Name(params) {.html.}:` | macro | Handler that wraps return in `answer()` (text/html) |
 | `handler Name(params) {.json.}:` | macro | Handler that wraps return in `answerJson()` (application/json) |
+| `handler Name(params) {.timeout: N.}:` | macro | Handler with N ms timeout (returns Http408 on expiry) |
 | `handler Name(params):` | macro | Raw handler, return must be a `Response` |
 | `route Name:` | macro | Defines a route group |
 | `newApp()` | proc | Creates a new application |
