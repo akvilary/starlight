@@ -1,3 +1,4 @@
+import std/unittest
 import ../src/starlight
 
 layout BigList(items: seq[string]) {.buf: 32.}:
@@ -5,11 +6,9 @@ layout BigList(items: seq[string]) {.buf: 32.}:
     for item in items:
       Li: item
 
-response showList() {.html.}:
-  return BigList(items = @["a", "b", "c"])
+suite "buffered layout with capacity hint":
+  let ctx = newContext()
 
-route MainRoute:
-  get("/", showList)
-
-var app = newApp()
-app.mount("/", MainRoute)
+  test "renders list with {.buf: 32.} hint":
+    let html = BigList(items = @["a", "b", "c"])
+    check html == "<ul><li>a</li><li>b</li><li>c</li></ul>"

@@ -1,6 +1,5 @@
+import std/unittest
 import ../src/starlight
-
-# --- Test that dynamic expressions are not evaluated twice ---
 
 var callCount = 0
 
@@ -18,13 +17,11 @@ layout Outer(content: lazyLayout) {.buf.}:
 layout Page() {.buf.}:
   Outer(lazy content=Inner(value=sideEffect()))
 
-proc testDoubleEval() =
-  callCount = 0
+suite "double evaluation":
   let ctx = newContext()
-  let html = Page()
-  let expected = "<div><span>called</span></div>"
-  doAssert html == expected, "\nGot:\n" & html & "\nExpected:\n" & expected
-  doAssert callCount == 1, "sideEffect() called " & $callCount & " times, expected 1"
 
-testDoubleEval()
-echo "test_double_eval: OK"
+  test "side effect called exactly once in nested lazy":
+    callCount = 0
+    let html = Page()
+    check html == "<div><span>called</span></div>"
+    check callCount == 1
