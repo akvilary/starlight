@@ -101,7 +101,7 @@ proc generateBuffered(name: NimNode, body: NimNode,
     )
   )
 
-  # Closure type for lazy params
+  # Nimcall proc type for lazy params (no closure env, zero heap allocation)
   let lazyProcType = newNimNode(nnkProcTy).add(
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),

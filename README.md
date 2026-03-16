@@ -437,7 +437,7 @@ The nested layout writes to the parent's buffer and returns an empty string (whi
 
 **The problem.** A `{.buf.}` layout that takes a `content: string` parameter and embeds it via `raw content` has a broken buffer order: the parameter is evaluated **before** the layout body runs. If `content` is another `{.buf.}` layout call, it writes to the buffer too early — before the parent's `<html><body>` tags.
 
-**The solution.** Declare the parameter as `lazyLayout` — the expression is wrapped in a closure and called at the exact position in the layout body where the parameter name appears:
+**The solution.** Declare the parameter as `lazyLayout` — the expression is wrapped in a `nimcall` proc and called at the exact position in the layout body where the parameter name appears:
 
 ```nim
 layout Shell(title: string, content: lazyLayout) {.buf.}:
@@ -451,7 +451,7 @@ layout Shell(title: string, content: lazyLayout) {.buf.}:
 
 layout HomePage(title: string) {.buf.}:
   Shell(title=title, lazy content=SiteHeader())
-  #                   ^^^^ lazy keyword wraps SiteHeader() in a closure
+  #                   ^^^^ lazy keyword wraps SiteHeader() in a nimcall proc
 ```
 
 `lazy content=expr` defers evaluation of `expr` until the layout body reaches the `content` position. The `{.buf.}` layout `SiteHeader()` writes directly to the shared buffer at the correct position.
@@ -487,7 +487,7 @@ layout Inner(content: lazyLayout) {.buf.}:
 
 layout Outer(content: lazyLayout) {.buf.}:
   Div(class="outer"):
-    Inner(lazy content=content)    # forwards the closure, no re-wrapping
+    Inner(lazy content=content)    # forwards the proc, no re-wrapping
 ```
 
 **Using and forwarding.** A lazy parameter can be both called (written to buffer) and forwarded in the same layout:
@@ -681,7 +681,7 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `raw expr` | keyword | Insert HTML without escaping (inside layout) |
 | `text expr` | keyword | Insert text with escaping (inside layout) |
 | `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer |
-| `lazy content=expr` | keyword | Pass `expr` as a lazy parameter (wrapped in closure) |
+| `lazy content=expr` | keyword | Pass `expr` as a lazy parameter (wrapped in nimcall proc) |
 
 ## License
 

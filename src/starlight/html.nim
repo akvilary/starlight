@@ -50,7 +50,7 @@ proc addDynamic(stmts: NimNode, buf: NimNode, expr: NimNode) =
                       newCall(ident"escapeHtml", newCall(ident"$", expr)))
 
 proc makeLazyLambda(expr: NimNode): NimNode =
-  ## Wrap an expression in a closure: proc(ctx: Context, buf: var string) =
+  ## Wrap an expression in a nimcall proc: proc(ctx: Context, buf: var string) {.nimcall.} =
   ##   let tmp = expr; buf.add(escapeHtml($tmp))
   let lambdaBuf = ident"buf"
   let tmp = genSym(nskLet, "lazyTmp")
