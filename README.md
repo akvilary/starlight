@@ -82,7 +82,7 @@ For nesting, prefer `{.buf.}` layouts — all nested `{.buf.}` layouts write to 
 layout NavBar():
   Nav:
     A(href="/"): "Home"
-    text " | "
+    raw " | "
     A(href="/about"): "About"
 
 layout Page(pageTitle: string, content: string):
@@ -123,7 +123,7 @@ TitleCase eliminates all conflicts with Nim keywords — no aliases needed for `
 
 ### Dynamic Content
 
-Variables and expressions work as normal Nim code. All dynamic content is automatically HTML-escaped:
+Variables and expressions work as normal Nim code. Dynamic content is inserted **without escaping** for maximum performance — the developer is responsible for escaping user input when needed (use `escapeHtml` function):
 
 ```nim
 layout Greeting(userName: string, messageCount: int):
@@ -149,17 +149,24 @@ layout ItemList(items: seq[string]):
       Li: item
 ```
 
-### Raw HTML and Text
+### Raw HTML and Escaping
 
-Use `raw` to insert pre-rendered HTML without escaping, and `text` to insert escaped text alongside tags:
+`raw` inserts content **without escaping** — use for pre-rendered HTML or trusted strings:
 
 ```nim
 layout ArticleView(content: string, author: string):
   Div(class="article"):
-    raw content
+    raw content              # trusted HTML, no escaping
   P:
-    text "Written by "
+    raw "Written by "
     Strong: author
+```
+
+For user input or untrusted data, use the `escapeHtml` function explicitly:
+
+```nim
+layout Comment(userInput: string):
+  P: escapeHtml(userInput)   # safe: <script> → &lt;script&gt;
 ```
 
 ## Handlers
@@ -366,9 +373,9 @@ Generated code (conceptually):
 ```nim
 var buf = newStringOfCap(256)
 buf.add "<head><title>My App</title><meta charset=\"utf-8\"/></head><body><h1>"
-buf.add escapeHtml($userName)   # only runtime work
+buf.add $userName               # only runtime work
 buf.add "</h1><p>"
-buf.add escapeHtml($bio)        # only runtime work
+buf.add $bio                    # only runtime work
 buf.add "</p></body>"
 ```
 
@@ -557,7 +564,7 @@ import starlight
 layout SiteNav() {.buf.}:
   Nav:
     A(href="/"): "Home"
-    text " | "
+    raw " | "
     A(href="/users"): "Users"
 
 # Page shell with a lazy parameter for page content
@@ -678,8 +685,8 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `ctx.path` | field | Request path |
 | `ctx.ip` | field | Client IP |
 | `ctx.httpMethod` | field | HTTP method |
-| `raw expr` | keyword | Insert HTML without escaping (inside layout) |
-| `text expr` | keyword | Insert text with escaping (inside layout) |
+| `raw expr` | keyword | Insert content without escaping (inside layout) |
+| `escapeHtml(s)` | proc | HTML-escape a string (`&` → `&amp;`, `<` → `&lt;`, etc.) |
 | `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer |
 | `lazy content=expr` | keyword | Pass `expr` as a lazy parameter (wrapped in nimcall proc) |
 

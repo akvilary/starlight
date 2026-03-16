@@ -38,26 +38,26 @@ proc flushLit(stmts: NimNode, buf: NimNode, lit: var string) =
     lit = ""
 
 proc addDynamic(stmts: NimNode, buf: NimNode, expr: NimNode) =
-  ## Add a dynamic (runtime) expression to the buffer with HTML escaping.
+  ## Add a dynamic (runtime) expression to the buffer without escaping.
   ## Uses let-binding for calls to prevent double evaluation.
   if expr.kind in {nnkCall, nnkCommand}:
     let tmp = genSym(nskLet, "tmp")
     stmts.add newLetStmt(tmp, expr)
     stmts.add newCall(newDotExpr(buf, ident"add"),
-                      newCall(ident"escapeHtml", newCall(ident"$", tmp)))
+                      newCall(ident"$", tmp))
   else:
     stmts.add newCall(newDotExpr(buf, ident"add"),
-                      newCall(ident"escapeHtml", newCall(ident"$", expr)))
+                      newCall(ident"$", expr))
 
 proc makeLazyLambda(expr: NimNode): NimNode =
   ## Wrap an expression in a nimcall proc: proc(ctx: Context, buf: var string) {.nimcall.} =
-  ##   let tmp = expr; buf.add(escapeHtml($tmp))
+  ##   let tmp = expr; buf.add($tmp)
   let lambdaBuf = ident"buf"
   let tmp = genSym(nskLet, "lazyTmp")
   let lambdaBody = newStmtList(
     newLetStmt(tmp, expr),
     newCall(newDotExpr(lambdaBuf, ident"add"),
-            newCall(ident"escapeHtml", newCall(ident"$", tmp)))
+            newCall(ident"$", tmp))
   )
   result = newNimNode(nnkLambda).add(
     newEmptyNode(),  # name
@@ -123,10 +123,10 @@ proc processTag(node: NimNode, tagName: string, stmts: NimNode,
           let tmp = genSym(nskLet, "attr")
           stmts.add newLetStmt(tmp, attrVal)
           stmts.add newCall(newDotExpr(buf, ident"add"),
-                            newCall(ident"escapeHtml", newCall(ident"$", tmp)))
+                            newCall(ident"$", tmp))
         else:
           stmts.add newCall(newDotExpr(buf, ident"add"),
-                            newCall(ident"escapeHtml", newCall(ident"$", attrVal)))
+                            newCall(ident"$", attrVal))
         lit = "\""
 
   if isVoid(tagName):
@@ -194,13 +194,6 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
         stmts.add newCall(newDotExpr(buf, ident"add"), tmp)
       else:
         stmts.add newCall(newDotExpr(buf, ident"add"), content)
-    elif node[0].kind == nnkIdent and node[0].strVal == "text":
-      # text — insert with escaping
-      flushLit(stmts, buf, lit)
-      let content = if node.len > 1 and node[1].kind == nnkStmtList: node[1][0]
-                    elif node.len > 1: node[1]
-                    else: newStrLitNode("")
-      addDynamic(stmts, buf, content)
     elif hasLazyArgs(node):
       # Call with lazy args — wrap lazy exprs in closures
       transformLazyCall(node, stmts, buf, lit, lazyParams)
