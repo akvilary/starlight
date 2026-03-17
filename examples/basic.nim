@@ -12,9 +12,9 @@ layout Page(title: string, content: string):
     Body:
       Nav:
         A(href="/"): "Home"
-        text " | "
+        raw " | "
         A(href="/users"): "Users"
-        text " | "
+        raw " | "
         A(href="/about"): "About"
       Hr
       raw content
@@ -51,6 +51,7 @@ layout NotFoundPage():
   P: "The page you are looking for does not exist."
 
 # --- Handlers ---
+# Each handler is a typed proc. Direct call: await getUser(ctx, "Alice")
 
 handler listUsers() {.html.}:
   let users = @["Alice", "Bob", "Charlie"]
@@ -107,5 +108,10 @@ router.use(loggingMiddleware)
 router.mount("/users", UsersApi)
 router.mount("/api", ApiRoutes)
 router.mount("/", MainPage)
+
+# Alternative: add routes directly
+# router.add(MethodGet, "/users", listUsers)
+# router.add(MethodGet, "/users/{name}", getUser)
+# router.add(MethodGet, "/api/status", getStatus)
 
 router.serve("127.0.0.1", 5000)

@@ -201,14 +201,7 @@ layout Comment(userInput: string):
 
 ## Handlers
 
-The `handler` macro generates a proc with the `HandlerProc` signature:
-
-```nim
-type HandlerProc = proc(ctx: Context): Future[Response] {.
-    async: (raises: [CatchableError]), gcsafe.}
-```
-
-Every handler — regardless of path parameters or pragmas — is a `HandlerProc`. Path parameters declared in the handler signature are syntactic sugar: the macro extracts them from `ctx.pathParams` inside the proc body:
+The `handler` macro generates a typed async proc with real parameters:
 
 ```nim
 # What you write:
@@ -216,13 +209,18 @@ handler getUser(name: string) {.html.}:
   return UserProfile(name=name)
 
 # What the macro generates:
-proc getUser*(ctx: Context): Future[Response] {.
+proc getUser*(ctx: Context, name: string): Future[Response] {.
     async: (raises: [CatchableError]), gcsafe.} =
-  let name = ctx.pathParams["name"]
   return answer(UserProfile(name=name))
 ```
 
-This means all handlers have the same signature and are fully compatible with middleware. The router populates `ctx.pathParams` before the middleware chain runs, so middleware like `withTimeout` works identically for handlers with and without path parameters.
+Handler parameters are real proc parameters — not extracted from `ctx.pathParams`. This means handlers are ordinary functions you can call directly from code:
+
+```nim
+let resp = await getUser(ctx, "Alice")
+```
+
+The routing layer (`route` macro / `router.add`) uses compile-time reflection to generate a `HandlerProc` wrapper that extracts path params from `ctx.pathParams` and calls the typed handler. The handler itself knows nothing about routing.
 
 Use pragmas to specify the response type:
 
@@ -239,7 +237,7 @@ handler home() {.html.}:
   return Page(pageTitle="Home", content=HomePage())
 
 # Equivalent to:
-# proc home(ctx: Context): Future[Response] {.async, gcsafe.} =
+# proc home*(ctx: Context): Future[Response] {.async, gcsafe.} =
 #   return answer(Page(pageTitle="Home", content=HomePage()))
 ```
 
@@ -250,7 +248,7 @@ handler getStatus() {.json.}:
   return %*{"status": "ok", "version": "0.1.0"}
 
 # Equivalent to:
-# proc getStatus(ctx: Context): Future[Response] {.async, gcsafe.} =
+# proc getStatus*(ctx: Context): Future[Response] {.async, gcsafe.} =
 #   return answerJson(%*{"status": "ok", "version": "0.1.0"})
 ```
 
@@ -303,14 +301,7 @@ proc getCached(ctx: Context): Future[Response] {.async, gcsafe.} =
 
 ### Path Parameters
 
-Supported parameter types in the handler signature:
-
-| Type | Conversion |
-|------|------------|
-| `string` | No conversion (default) |
-| `int` | `parseInt(ctx.pathParams[key])` |
-| `float` | `parseFloat(ctx.pathParams[key])` |
-| `bool` | `parseBool(ctx.pathParams[key])` |
+Declare path parameters as typed proc parameters. The type in the handler must match the type in the route pattern:
 
 ```nim
 handler getUser(name: string) {.html.}:
@@ -320,6 +311,17 @@ handler getItem(id: int) {.json.}:
   let item = fetchItem(id)
   return %*{"id": id, "name": item.name}
 ```
+
+When the route is registered (via `route` macro or `router.add`), the pattern determines type conversion:
+
+| Pattern syntax  | Handler param | Conversion at routing |
+|-----------------|---------------|-----------------------|
+| `{name}`        | `name: string` | `ctx.pathParams["name"]` |
+| `{id:int}`      | `id: int`     | `parseInt(ctx.pathParams["id"])` |
+| `{price:float}` | `price: float` | `parseFloat(ctx.pathParams["price"])` |
+| `{active:bool}` | `active: bool` | `parseBool(ctx.pathParams["active"])` |
+
+Type validation happens during route matching — if `{id:int}` receives a non-numeric value, the route won't match (404).
 
 ### Accessing Request Context
 
@@ -335,18 +337,18 @@ handler search() {.json.}:
 
 ## Routing
 
+Routes connect URL patterns to handlers. Two approaches: route groups (for mounting with prefixes) and `router.add` (for adding routes directly).
+
 ### Route Groups
 
-Define route groups with the `route` macro. Two syntaxes are supported:
+Define route groups with the `route` macro:
 
 ```nim
-# Reference a handler proc:
 route UsersApi:
   get("", listUsers)
   get("/{name}", getUser)
   post("", createUser)
 
-# Inline body:
 route ApiRoutes:
   get("/status", getStatus)
   post("/echo", echoBody)
@@ -354,7 +356,57 @@ route ApiRoutes:
     return answer("OK")
 ```
 
-Supported HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
+Mount groups on the router with a prefix:
+
+```nim
+var router = newRouter()
+router.mount("/users", UsersApi)
+router.mount("/api", ApiRoutes)
+router.serve("127.0.0.1", 5000)
+```
+
+Routes are combined: `get("/{name}", getUser)` inside `UsersApi` mounted at `/users` becomes `GET /users/{name}`.
+
+### Adding Routes Directly
+
+Use `router.add` to register routes without groups:
+
+```nim
+var router = newRouter()
+router.add(MethodGet, "/users", listUsers)
+router.add(MethodGet, "/users/{name}", getUser)
+router.add(MethodPost, "/api/echo", echoBody)
+```
+
+`router.add` is a macro that uses compile-time reflection to generate a `HandlerProc` wrapper — it parses the pattern, extracts parameter names and types, and generates a proc that calls the typed handler with the right arguments:
+
+```nim
+# What router.add(MethodGet, "/users/{name}", getUser) generates:
+router.addRoute(MethodGet, "/users/{name}",
+  proc(ctx: Context): Future[Response] {.async, gcsafe.} =
+    return await getUser(ctx, name=ctx.pathParams["name"])
+)
+```
+
+### Per-Route Middleware
+
+Attach middleware to individual routes:
+
+```nim
+# In route groups:
+route AdminApi:
+  get("", adminPanel, middleware = [authMiddleware])
+  get("/stats", adminStats, middleware = [authMiddleware, adminOnly])
+
+# With router.add:
+router.add(MethodGet, "/admin", adminPanel, middleware = [authMiddleware])
+```
+
+Middleware can also be applied to an entire group at mount time:
+
+```nim
+router.mount("/admin", AdminApi, middlewares = @[authMiddleware])
+```
 
 ### Path Parameters
 
@@ -368,21 +420,7 @@ Path parameters are defined with `{name:type}` syntax:
 | `{slug}`        | `string`  | `/posts/my-post` |
 | `{name:string}` | `string`  | `/users/alice`   |
 
-Type validation happens during route matching — if `{id:int}` receives a non-numeric value, the route won't match (404).
-
-### Mounting Routes
-
-Mount route groups on the router with a prefix:
-
-```nim
-var router = newRouter()
-router.mount("/users", UsersApi)
-router.mount("/api", ApiRoutes)
-router.mount("/", Pages)
-router.serve("127.0.0.1", 5000)
-```
-
-Routes are combined: a `get "/{id}"` inside `UsersApi` mounted at `/users` becomes `GET /users/{id}`.
+Supported HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options` (in route groups) and `MethodGet`, `MethodPost`, `MethodPut`, `MethodPatch`, `MethodDelete`, `MethodHead`, `MethodOptions` (in `router.add`).
 
 ## Middleware
 
@@ -426,7 +464,7 @@ router.use(withTimeout(5000))
 
 # Per-route — only this group has a timeout:
 route ApiRoutes:
-  get("/slow", slowHandler, @[withTimeout(3000)])
+  get("/slow", slowHandler, middleware = [withTimeout(3000)])
 ```
 
 Internally, `withTimeout` calls Chronos `wait()` on the handler future and catches `AsyncTimeoutError`:
@@ -751,8 +789,8 @@ layout UserProfilePage(pageTitle: string, name: string) {.buf.}:
   Shell(pageTitle=pageTitle, lazy content=UserProfileContent(name=name))
 
 # --- Handlers ---
-# Handler calls a {.buf.} layout → one allocation, zero copies.
-# The buffer is created once, filled by all nested layouts, then moved into Response.body.
+# Each handler is a typed proc with real parameters.
+# Direct call: await getUser(ctx, "Alice")
 
 handler listUsers() {.html.}:
   let users = @["Alice", "Bob", "Charlie"]
@@ -812,13 +850,16 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `layout Name(params):` | macro | Defines a reusable HTML layout |
 | `layout Name(params) {.buf.}:` | macro | Layout that writes to a shared buffer |
 | `layout Name(params) {.buf:N.}:` | macro | Shared buffer layout with N KB capacity hint |
-| `handler Name(params) {.html.}:` | macro | Handler that wraps return in `answer()` (text/html) |
-| `handler Name(params) {.json.}:` | macro | Handler that wraps return in `answerJson()` (application/json) |
-| `handler Name(params):` | macro | Raw handler, return must be a `Response` |
+| `handler Name(params) {.html.}:` | macro | Generates typed async proc, wraps return in `answer()` (text/html) |
+| `handler Name(params) {.json.}:` | macro | Generates typed async proc, wraps return in `answerJson()` (application/json) |
+| `handler Name(params):` | macro | Generates typed async proc, return must be a `Response` |
 | `withTimeout(ms)` | proc | Middleware: aborts handler after `ms` milliseconds (Http408) |
 | `route Name:` | macro | Defines a route group |
+| `router.add(Method, path, handler)` | macro | Adds a route with compile-time handler wrapping |
+| `router.add(Method, path, handler, middleware = [...])` | macro | Adds a route with per-route middleware |
 | `newRouter()` | proc | Creates a new router |
 | `router.mount(prefix, group)` | proc | Mounts a route group at prefix |
+| `router.mount(prefix, group, middlewares)` | proc | Mounts a route group with group-level middleware |
 | `router.use(middleware)` | proc | Adds global middleware |
 | `router.serve(host, port)` | proc | Starts the HTTP server |
 | `ctx.forward(method, path)` | proc | Internal dispatch through the router (supports relative paths) |

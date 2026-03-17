@@ -6,6 +6,7 @@
 ## - Middleware chain with explicit next
 ## - Zero-overhead HTML components
 
+import std/strutils as stdStrutils
 import starlight/types
 import starlight/context
 import starlight/router
@@ -17,3 +18,4 @@ import starlight/route
 import starlight/server
 
 export types, context, router, middleware, escape, layout, handler, route, server
+export stdStrutils.parseInt, stdStrutils.parseFloat, stdStrutils.parseBool

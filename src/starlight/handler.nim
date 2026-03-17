@@ -1,46 +1,42 @@
-## Handler macro for generating async handler procs.
+## Handler macro for generating typed async handler procs.
 ##
 ## Usage:
 ##   handler home() {.html.}:
 ##     return Page(title="Home")
 ##
-##   handler getStatus() {.json.}:
-##     return %*{"status": "ok"}
+##   handler getUser(name: string) {.html.}:
+##     return Page(title=name, content=UserProfile(name=name))
 ##
-##   handler custom():
-##     return answer("hello", Http200)
+## Generates a proc with real typed parameters:
+##   proc getUser*(ctx: Context, name: string): Future[Response] {.async, gcsafe.}
+##
+## Direct call: await getUser(ctx, "Alice")
 
-import std/macros
+import std/[macros, strutils]
 
-proc generateParamBindings(nameAndParams: NimNode): seq[NimNode] =
-  for i in 1..<nameAndParams.len:
-    let param = nameAndParams[i]
-    var paramName: NimNode
-    var paramType = "string"
-
-    case param.kind
-    of nnkExprColonExpr:
-      paramName = param[0]
-      paramType = param[1].strVal
-    of nnkIdent:
-      paramName = param
-    else:
-      paramName = param[0]
-
-    let accessor = newNimNode(nnkBracketExpr).add(
-      newDotExpr(ident"ctx", ident"pathParams"),
-      newStrLitNode(paramName.strVal)
+proc makeAsyncPragma*(): NimNode =
+  ## Builds the {.async: (raises: [CatchableError]).} pragma node.
+  newNimNode(nnkExprColonExpr).add(
+    ident"async",
+    newNimNode(nnkTupleConstr).add(
+      newNimNode(nnkExprColonExpr).add(
+        ident"raises",
+        newNimNode(nnkBracket).add(ident"CatchableError")
+      )
     )
+  )
 
-    case paramType
-    of "int":
-      result.add newLetStmt(paramName, newCall(ident"parseInt", accessor))
-    of "float":
-      result.add newLetStmt(paramName, newCall(ident"parseFloat", accessor))
-    of "bool":
-      result.add newLetStmt(paramName, newCall(ident"parseBool", accessor))
-    else:
-      result.add newLetStmt(paramName, accessor)
+proc methodIdent*(name: string): NimNode =
+  ## Converts a lowercase HTTP method name to the Chronos enum ident.
+  case name
+  of "get": ident"MethodGet"
+  of "post": ident"MethodPost"
+  of "put": ident"MethodPut"
+  of "patch": ident"MethodPatch"
+  of "delete": ident"MethodDelete"
+  of "head": ident"MethodHead"
+  of "options": ident"MethodOptions"
+  else: ident"MethodGet"
 
 proc transformReturns(node: NimNode, wrapProc: string): NimNode =
   ## Recursively walks the AST and wraps return expressions
@@ -64,42 +60,46 @@ proc transformReturns(node: NimNode, wrapProc: string): NimNode =
 
 proc buildHandler(nameAndParams: NimNode, body: NimNode,
                   wrapProc: string): NimNode =
-  ## Shared logic for handler macro.
-  ## wrapProc: "" = no wrapping, "answer" = HTML, "answerJson" = JSON
+  ## Generates the typed async handler proc.
   let name = nameAndParams[0]
 
-  var procBody = newStmtList()
-
-  for binding in generateParamBindings(nameAndParams):
-    procBody.add binding
-
   let transformed = transformReturns(body, wrapProc)
+  var procBody = newStmtList()
   for child in transformed:
     procBody.add child
 
-  # proc name*(ctx: Context): Future[Response] {.async, gcsafe.}
-  let ctxParam = newIdentDefs(ident"ctx", ident"Context")
+  # Build params: (Future[Response], ctx: Context, param1: type1, ...)
   let retType = newNimNode(nnkBracketExpr).add(ident"Future", ident"Response")
+  let ctxParam = newIdentDefs(ident"ctx", ident"Context")
+  var formalParams: seq[NimNode] = @[retType, ctxParam]
+
+  for i in 1..<nameAndParams.len:
+    let param = nameAndParams[i]
+    var paramName, paramType: NimNode
+
+    case param.kind
+    of nnkExprColonExpr:
+      paramName = param[0]
+      paramType = param[1]
+    of nnkIdent:
+      paramName = param
+      paramType = ident"string"
+    else:
+      paramName = param[0]
+      paramType = ident"string"
+
+    formalParams.add newIdentDefs(paramName, paramType)
 
   result = newProc(
     name = postfix(name, "*"),
-    params = [retType, ctxParam],
+    params = formalParams,
     body = procBody,
   )
-  # {.async: (raises: [CatchableError]), gcsafe.}
-  result.addPragma(newNimNode(nnkExprColonExpr).add(
-    ident"async",
-    newNimNode(nnkTupleConstr).add(
-      newNimNode(nnkExprColonExpr).add(
-        ident"raises",
-        newNimNode(nnkBracket).add(ident"CatchableError")
-      )
-    )
-  ))
+  result.addPragma(makeAsyncPragma())
   result.addPragma(ident"gcsafe")
 
 macro handler*(nameAndParams: untyped, body: untyped): untyped =
-  ## Generates an async handler proc.
+  ## Generates a typed async handler proc.
   ##
   ## Pragmas:
   ##   {.html.} — wraps return in answer() (Content-Type: text/html)
@@ -121,3 +121,61 @@ macro handler*(nameAndParams: untyped, body: untyped): untyped =
           discard
 
   buildHandler(actualParams, body, wrapProc)
+
+proc parsePatternParams*(pattern: string): seq[(string, string)] =
+  ## Extract (name, type) pairs from a route pattern at compile time.
+  ## "{name}" → ("name", "string"), "{id:int}" → ("id", "int")
+  if pattern.len == 0:
+    return @[]
+  let stripped = pattern.strip(chars = {'/'})
+  if stripped.len == 0:
+    return @[]
+  for part in stripped.split('/'):
+    if part.startsWith("{") and part.endsWith("}"):
+      let inner = part[1..^2]
+      let colonIdx = inner.find(':')
+      if colonIdx >= 0:
+        result.add((inner[0..<colonIdx], inner[colonIdx + 1..^1]))
+      else:
+        result.add((inner, "string"))
+
+proc generateHandlerWrapper*(handler: NimNode, pattern: string): NimNode =
+  ## Generate a HandlerProc wrapper that extracts path params from ctx.pathParams
+  ## and calls the typed handler proc with named arguments.
+  ##
+  ## Used by route groups and router.add at compile time.
+  let params = parsePatternParams(pattern)
+
+  if params.len == 0:
+    return handler
+
+  # Build call: await handler(ctx, name=ctx.pathParams["name"], ...)
+  var handlerCall = newCall(handler, ident"ctx")
+
+  for (name, typ) in params:
+    let accessor = newNimNode(nnkBracketExpr).add(
+      newDotExpr(ident"ctx", ident"pathParams"),
+      newStrLitNode(name)
+    )
+
+    let converted = case typ
+      of "int": newCall(ident"parseInt", accessor)
+      of "float": newCall(ident"parseFloat", accessor)
+      of "bool": newCall(ident"parseBool", accessor)
+      else: accessor
+
+    handlerCall.add newNimNode(nnkExprEqExpr).add(ident(name), converted)
+
+  let body = newStmtList(
+    newNimNode(nnkReturnStmt).add(newCall(ident"await", handlerCall))
+  )
+
+  let ctxParam = newIdentDefs(ident"ctx", ident"Context")
+  let retType = newNimNode(nnkBracketExpr).add(ident"Future", ident"Response")
+
+  result = newProc(
+    params = [retType, ctxParam],
+    body = body,
+  )
+  result.addPragma(makeAsyncPragma())
+  result.addPragma(ident"gcsafe")

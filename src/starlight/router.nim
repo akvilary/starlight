@@ -1,7 +1,7 @@
 ## PrefixTree-based router with typed path parameters.
 
-import std/[tables, options, strutils]
-import types, middleware, context
+import std/[tables, options, strutils, macros]
+import types, middleware, context, handler
 
 proc newRouter*(): Router =
   Router(
@@ -63,14 +63,16 @@ proc addRoute*(router: Router, httpMethod: HttpMethod, pattern: string,
     middlewares: middlewares,
   )
 
-proc mount*(router: Router, prefix: string, group: RouteGroup) =
+proc mount*(router: Router, prefix: string, group: RouteGroup,
+            middlewares: seq[MiddlewareProc] = @[]) =
   ## Mounts a route group at the given prefix.
+  ## Optional middlewares are prepended to each route's middleware chain.
   for entry in group.entries:
     let fullPattern = if prefix == "/": entry.pattern
                       elif entry.pattern == "": prefix
                       else: prefix & entry.pattern
     router.addRoute(entry.httpMethod, fullPattern,
-                    entry.handler, entry.middlewares)
+                    entry.handler, middlewares & entry.middlewares)
 
 proc validateParam(value: string, kind: ParamKind): bool =
   case kind
@@ -176,3 +178,37 @@ proc forward*(ctx: Context,
   newCtx.path = resolvePath(ctx.path, path)
   newCtx.httpMethod = httpMethod
   return await ctx.router.dispatch(newCtx)
+
+macro add*(router: typed, httpMethod: typed, pattern: untyped,
+           handlerSym: typed): untyped =
+  ## Adds a route directly to the router.
+  ## Uses compile-time reflection to wrap the handler.
+  ##
+  ##   router.add(MethodGet, "/users/{name}", getUser)
+  let patternStr = pattern.strVal
+  let wrappedHandler = generateHandlerWrapper(handlerSym, patternStr)
+  result = newCall(
+    newDotExpr(router, ident"addRoute"),
+    httpMethod,
+    pattern,
+    wrappedHandler,
+  )
+
+macro add*(router: typed, httpMethod: typed, pattern: untyped,
+           handlerSym: typed, middleware: untyped): untyped =
+  ## Adds a route with middleware directly to the router.
+  ##
+  ##   router.add(MethodGet, "/admin", adminPanel, middleware = [authMiddleware])
+  let patternStr = pattern.strVal
+  let wrappedHandler = generateHandlerWrapper(handlerSym, patternStr)
+  let mwNode = if middleware.kind == nnkBracket:
+    newNimNode(nnkPrefix).add(ident"@", middleware)
+  else:
+    middleware
+  result = newCall(
+    newDotExpr(router, ident"addRoute"),
+    httpMethod,
+    pattern,
+    wrappedHandler,
+    mwNode,
+  )
