@@ -201,7 +201,30 @@ layout Comment(userInput: string):
 
 ## Handlers
 
-The `handler` macro generates async handler procs. Use pragmas to specify the response type:
+The `handler` macro generates a proc with the `HandlerProc` signature:
+
+```nim
+type HandlerProc = proc(ctx: Context): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.}
+```
+
+Every handler — regardless of path parameters or pragmas — is a `HandlerProc`. Path parameters declared in the handler signature are syntactic sugar: the macro extracts them from `ctx.pathParams` inside the proc body:
+
+```nim
+# What you write:
+handler getUser(name: string) {.html.}:
+  return UserProfile(name=name)
+
+# What the macro generates:
+proc getUser*(ctx: Context): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
+  let name = ctx.pathParams["name"]
+  return answer(UserProfile(name=name))
+```
+
+This means all handlers have the same signature and are fully compatible with middleware. The router populates `ctx.pathParams` before the middleware chain runs, so middleware like `withTimeout` works identically for handlers with and without path parameters.
+
+Use pragmas to specify the response type:
 
 - `{.html.}` — wraps `return` expressions in `answer()` (Content-Type: text/html)
 - `{.json.}` — wraps `return` expressions in `answerJson()` (Content-Type: application/json)
@@ -280,17 +303,20 @@ proc getCached(ctx: Context): Future[Response] {.async, gcsafe.} =
 
 ### Path Parameters
 
-Path parameters are declared in the handler signature with their types. They are automatically extracted from `ctx.pathParams` and converted to the specified type:
+Supported parameter types in the handler signature:
+
+| Type | Conversion |
+|------|------------|
+| `string` | No conversion (default) |
+| `int` | `parseInt(ctx.pathParams[key])` |
+| `float` | `parseFloat(ctx.pathParams[key])` |
+| `bool` | `parseBool(ctx.pathParams[key])` |
 
 ```nim
-# Route: get("/{name}", getUser)
 handler getUser(name: string) {.html.}:
-  # name is automatically bound from ctx.pathParams["name"]
   return Page(pageTitle=name, content=UserProfile(name=name))
 
-# Route: get("/{id:int}", getItem)
 handler getItem(id: int) {.json.}:
-  # id is automatically parsed as int from ctx.pathParams["id"]
   let item = fetchItem(id)
   return %*{"id": id, "name": item.name}
 ```
