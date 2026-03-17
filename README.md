@@ -473,6 +473,8 @@ handler oldEndpoint() {.json.}:
 
 The router reference is stored in `ctx` automatically, so `forward` works from any handler without extra imports.
 
+`forward` creates a lightweight clone of the context — only `path`, `httpMethod` and `pathParams` are new. Request data (headers, body, query, ip) is shared via a single `RequestData` ref, not copied.
+
 ### Absolute and Relative Paths
 
 `forward` resolves paths relative to the current `ctx.path`:
@@ -823,13 +825,13 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `answer(body, code)` | proc | Builds an HTML Response |
 | `answerJson(body, code)` | proc | Builds a JSON Response (accepts string or JsonNode) |
 | `redirect(url, code)` | proc | Builds a redirect Response (302, client-side) |
-| `ctx.body` | field | Request body |
-| `ctx.headers` | field | Request headers |
-| `ctx.query` | field | Query parameters |
-| `ctx.pathParams` | field | Path parameters |
-| `ctx.path` | field | Request path |
-| `ctx.ip` | field | Client IP |
-| `ctx.httpMethod` | field | HTTP method |
+| `ctx.path` | field | Request path (per-dispatch, copied on forward) |
+| `ctx.httpMethod` | field | HTTP method (per-dispatch, copied on forward) |
+| `ctx.pathParams` | field | Path parameters (per-dispatch, new on forward) |
+| `ctx.body` | accessor | Request body (shared via `RequestData`) |
+| `ctx.headers` | accessor | Request headers (shared via `RequestData`) |
+| `ctx.query` | accessor | Query parameters (shared via `RequestData`) |
+| `ctx.ip` | accessor | Client IP (shared via `RequestData`) |
 | `raw expr` | keyword | Insert content without escaping (inside layout) |
 | `escapeHtml(s)` | proc | HTML-escape a string (`&` → `&amp;`, `<` → `&lt;`, etc.) |
 | `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer |
