@@ -63,7 +63,7 @@ handler getStatus() {.json.}:
   return %*{"status": "ok", "version": "0.1.0"}
 
 handler echoBody() {.json.}:
-  return parseJson(ctx.body)
+  return parseJson(ctx.request.body)
 
 handler unauthorized() {.json.}:
   return (%*{"error": "not authorized"}, Http401)

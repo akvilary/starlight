@@ -328,9 +328,9 @@ The `ctx` object is available in every handler:
 ```nim
 handler search() {.json.}:
   let query = ctx.getQuery("q")
-  let token = ctx.headers["Authorization"]
-  let data = parseJson(ctx.body)
-  return %*{"query": query, "ip": ctx.ip}
+  let token = ctx.request.headers["Authorization"]
+  let data = parseJson(ctx.request.body)
+  return %*{"query": query, "ip": ctx.request.ip}
 ```
 
 ## Routing
@@ -396,7 +396,7 @@ proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
 
 proc authMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
     async: (raises: [CatchableError]), gcsafe.} =
-  if ctx.headers.hasKey("Authorization"):
+  if ctx.request.headers.hasKey("Authorization"):
     result = await next(ctx)
   else:
     result = answerJson(%*{"error": "Unauthorized"}, Http401)
@@ -828,10 +828,10 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `ctx.path` | field | Request path (per-dispatch, copied on forward) |
 | `ctx.httpMethod` | field | HTTP method (per-dispatch, copied on forward) |
 | `ctx.pathParams` | field | Path parameters (per-dispatch, new on forward) |
-| `ctx.body` | accessor | Request body (shared via `RequestData`) |
-| `ctx.headers` | accessor | Request headers (shared via `RequestData`) |
-| `ctx.query` | accessor | Query parameters (shared via `RequestData`) |
-| `ctx.ip` | accessor | Client IP (shared via `RequestData`) |
+| `ctx.request.body` | field | Request body |
+| `ctx.request.headers` | field | Request headers |
+| `ctx.request.query` | field | Query parameters |
+| `ctx.request.ip` | field | Client IP |
 | `raw expr` | keyword | Insert content without escaping (inside layout) |
 | `escapeHtml(s)` | proc | HTML-escape a string (`&` → `&amp;`, `<` → `&lt;`, etc.) |
 | `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer |

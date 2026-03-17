@@ -28,25 +28,6 @@ proc clone*(ctx: Context): Context =
     router: ctx.router,
   )
 
-# --- RequestData accessors on Context ---
-
-proc headers*(ctx: Context): HttpTable {.inline.} = ctx.request.headers
-proc body*(ctx: Context): string {.inline.} = ctx.request.body
-proc query*(ctx: Context): Table[string, string] {.inline.} = ctx.request.query
-proc ip*(ctx: Context): string {.inline.} = ctx.request.ip
-
-proc `body=`*(ctx: Context, value: string) {.inline.} =
-  ctx.request.body = value
-
-proc `ip=`*(ctx: Context, value: string) {.inline.} =
-  ctx.request.ip = value
-
-proc `headers=`*(ctx: Context, value: HttpTable) {.inline.} =
-  ctx.request.headers = value
-
-proc `query=`*(ctx: Context, value: Table[string, string]) {.inline.} =
-  ctx.request.query = value
-
 proc getQuery*(ctx: Context, key: string, default: string = ""): string =
   ctx.request.query.getOrDefault(key, default)
 
