@@ -1,10 +1,18 @@
 ## PrefixTree-based router with typed path parameters.
 
 import std/[tables, options, strutils]
-import types
+import types, middleware, context
 
 proc newRouter*(): Router =
-  Router(root: PrefixTreeNode(kind: skStatic, segment: ""))
+  Router(
+    root: PrefixTreeNode(kind: skStatic, segment: ""),
+    globalMiddlewares: @[],
+    notFoundHandler: nil,
+  )
+
+proc use*(router: Router, mw: MiddlewareProc) =
+  ## Adds a global middleware to the router.
+  router.globalMiddlewares.add mw
 
 proc parsePattern*(pattern: string): seq[PatternSegment] =
   let stripped = pattern.strip(chars = {'/'})
@@ -54,6 +62,15 @@ proc addRoute*(router: Router, httpMethod: HttpMethod, pattern: string,
     handler: handler,
     middlewares: middlewares,
   )
+
+proc mount*(router: Router, prefix: string, group: RouteGroup) =
+  ## Mounts a route group at the given prefix.
+  for entry in group.entries:
+    let fullPattern = if prefix == "/": entry.pattern
+                      elif entry.pattern == "": prefix
+                      else: prefix & entry.pattern
+    router.addRoute(entry.httpMethod, fullPattern,
+                    entry.handler, entry.middlewares)
 
 proc validateParam(value: string, kind: ParamKind): bool =
   case kind
@@ -115,3 +132,47 @@ proc match*(router: Router, httpMethod: HttpMethod, path: string): Option[MatchR
     except KeyError:
       discard
   return none(MatchResult)
+
+proc resolvePath*(currentPath, target: string): string =
+  ## Resolves a target path relative to the current path.
+  ## Absolute paths (starting with /) are returned as-is.
+  ## Relative paths (./ and ../) are resolved against currentPath.
+  if target.startsWith("/"):
+    return target
+  var segments = currentPath.strip(chars = {'/'}).split('/')
+  if segments == @[""]:
+    segments = @[]
+  for part in target.split('/'):
+    case part
+    of "..":
+      if segments.len > 0: segments.setLen(segments.len - 1)
+    of ".": discard
+    else: segments.add(part)
+  "/" & segments.join("/")
+
+proc dispatch*(router: Router, ctx: Context): Future[Response] {.
+    async: (raises: [CatchableError]).} =
+  ## Dispatches a context through the router with full middleware chain.
+  let matched = router.match(ctx.httpMethod, ctx.path)
+  if matched.isSome:
+    let m = matched.get
+    ctx.pathParams = m.params
+    let allMw = router.globalMiddlewares & m.middlewares
+    let chain = buildChain(m.handler, allMw)
+    return await chain(ctx)
+  elif router.notFoundHandler != nil:
+    return await router.notFoundHandler(ctx)
+  else:
+    return Response(code: Http404, body: "Not Found",
+                    headers: HttpTable.init([("Content-Type", "text/plain")]))
+
+proc forward*(ctx: Context,
+              httpMethod: HttpMethod, path: string): Future[Response] {.
+    async: (raises: [CatchableError]).} =
+  ## Dispatches an internal request through the router.
+  ## Creates a cloned context — the original ctx is not modified.
+  ## Supports absolute (/path) and relative (./path, ../path) paths.
+  var newCtx = ctx.clone()
+  newCtx.path = resolvePath(ctx.path, path)
+  newCtx.httpMethod = httpMethod
+  return await ctx.router.dispatch(newCtx)

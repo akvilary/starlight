@@ -45,9 +45,9 @@ handler home() {.html.}:
 route Main:
   get("", home)
 
-var app = newApp()
-app.mount("/", Main)
-app.serve("127.0.0.1", 5000)
+var router = newRouter()
+router.mount("/", Main)
+router.serve("127.0.0.1", 5000)
 ```
 
 Run:
@@ -372,14 +372,14 @@ Type validation happens during route matching — if `{id:int}` receives a non-n
 
 ### Mounting Routes
 
-Mount route groups on the app with a prefix:
+Mount route groups on the router with a prefix:
 
 ```nim
-var app = newApp()
-app.mount("/users", UsersApi)
-app.mount("/api", ApiRoutes)
-app.mount("/", Pages)
-app.serve("127.0.0.1", 5000)
+var router = newRouter()
+router.mount("/users", UsersApi)
+router.mount("/api", ApiRoutes)
+router.mount("/", Pages)
+router.serve("127.0.0.1", 5000)
 ```
 
 Routes are combined: a `get "/{id}"` inside `UsersApi` mounted at `/users` becomes `GET /users/{id}`.
@@ -405,16 +405,16 @@ proc authMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
 Register middleware globally:
 
 ```nim
-var app = newApp()
-app.use(loggingMiddleware)
-app.use(authMiddleware)
+var router = newRouter()
+router.use(loggingMiddleware)
+router.use(authMiddleware)
 ```
 
 Execution order: middlewares run in registration order. Each middleware can choose to call `next` (continue) or not (stop the chain).
 
 ### Built-in Middleware
 
-Starlight ships with ready-to-use middleware helpers. Each returns a `MiddlewareProc` that can be used globally (`app.use`) or per-route.
+Starlight ships with ready-to-use middleware helpers. Each returns a `MiddlewareProc` that can be used globally via `router.use()` or per-route.
 
 #### `withTimeout(ms)`
 
@@ -422,7 +422,7 @@ Aborts handler execution after `ms` milliseconds. Returns `Http408 Request Timeo
 
 ```nim
 # Global — all routes get a 5-second deadline:
-app.use(withTimeout(5000))
+router.use(withTimeout(5000))
 
 # Per-route — only this group has a timeout:
 route ApiRoutes:
@@ -461,6 +461,40 @@ proc withTiming(ctx: Context, next: HandlerProc): Future[Response] {.
   let elapsed = Moment.now() - start
   result.headers.add("X-Response-Time", $elapsed)
 ```
+
+## Internal Dispatch
+
+`ctx.forward` dispatches a request internally through the router. The client receives one response and never knows about the forward. All middleware of the target route is applied.
+
+```nim
+handler oldEndpoint() {.json.}:
+  return await ctx.forward(MethodGet, "/api/v2/data")
+```
+
+The router reference is stored in `ctx` automatically, so `forward` works from any handler without extra imports.
+
+### Absolute and Relative Paths
+
+`forward` resolves paths relative to the current `ctx.path`:
+
+```nim
+# Current request path: /users/alice
+
+await ctx.forward(MethodGet, "/items/42")        # absolute → /items/42
+await ctx.forward(MethodGet, "./profile")         # relative → /users/alice/profile
+await ctx.forward(MethodGet, "../bob")            # up one   → /users/bob
+await ctx.forward(MethodGet, "../../admin/panel") # up two   → /admin/panel
+```
+
+### Forward vs Redirect
+
+| | `ctx.forward` | `redirect` |
+|---|---|---|
+| Where | Server-side | Client-side |
+| HTTP requests | 1 | 2 |
+| Middleware | Applied on target route | New request from client |
+| Client URL | Does not change | Changes to new URL |
+| Context | Cloned (original not mutated) | New request, new context |
 
 ## Compile-Time Optimization
 
@@ -750,14 +784,14 @@ proc logger(ctx: Context, next: HandlerProc): Future[Response] {.
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
-# --- App ---
+# --- Router ---
 
-var app = newApp()
-app.use(logger)
-app.mount("/users", UsersApi)
-app.mount("/api", ApiRoutes)
-app.mount("/", MainRoute)
-app.serve("127.0.0.1", 5000)
+var router = newRouter()
+router.use(logger)
+router.mount("/users", UsersApi)
+router.mount("/api", ApiRoutes)
+router.mount("/", MainRoute)
+router.serve("127.0.0.1", 5000)
 ```
 
 In this example, every HTML page shares the same `Shell` layout via `lazy content=`. When a handler calls `HomePage(pageTitle="Home")`:
@@ -781,13 +815,14 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `handler Name(params):` | macro | Raw handler, return must be a `Response` |
 | `withTimeout(ms)` | proc | Middleware: aborts handler after `ms` milliseconds (Http408) |
 | `route Name:` | macro | Defines a route group |
-| `newApp()` | proc | Creates a new application |
-| `app.mount(prefix, group)` | proc | Mounts a route group at prefix |
-| `app.use(middleware)` | proc | Adds global middleware |
-| `app.serve(host, port)` | proc | Starts the HTTP server |
+| `newRouter()` | proc | Creates a new router |
+| `router.mount(prefix, group)` | proc | Mounts a route group at prefix |
+| `router.use(middleware)` | proc | Adds global middleware |
+| `router.serve(host, port)` | proc | Starts the HTTP server |
+| `ctx.forward(method, path)` | proc | Internal dispatch through the router (supports relative paths) |
 | `answer(body, code)` | proc | Builds an HTML Response |
 | `answerJson(body, code)` | proc | Builds a JSON Response (accepts string or JsonNode) |
-| `redirect(url, code)` | proc | Builds a redirect Response |
+| `redirect(url, code)` | proc | Builds a redirect Response (302, client-side) |
 | `ctx.body` | field | Request body |
 | `ctx.headers` | field | Request headers |
 | `ctx.query` | field | Query parameters |

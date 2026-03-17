@@ -26,6 +26,7 @@ type
     query*: Table[string, string]
     pathParams*: Table[string, string]
     ip*: string
+    router*: Router
 
   Response* = object
     code*: HttpCode = Http200
@@ -51,6 +52,8 @@ type
 
   Router* = ref object
     root*: PrefixTreeNode
+    globalMiddlewares*: seq[MiddlewareProc]
+    notFoundHandler*: HandlerProc
 
   MatchResult* = object
     handler*: HandlerProc
@@ -65,8 +68,3 @@ type
 
   RouteGroup* = object
     entries*: seq[RouteEntry]
-
-  App* = ref object
-    router*: Router
-    globalMiddlewares*: seq[MiddlewareProc]
-    notFoundHandler*: HandlerProc

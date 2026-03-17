@@ -3,7 +3,7 @@
 import std/[tables, options, strutils, uri]
 import chronos
 import chronos/apps/http/httpserver
-import types, router, middleware, context
+import types, router, context
 
 proc parseQueryString(qs: string): Table[string, string] =
   result = initTable[string, string]()
@@ -32,29 +32,11 @@ proc newContextFromRequest(req: HttpRequestRef): Context =
     ""
   ctx
 
-proc newApp*(): App =
-  App(
-    router: newRouter(),
-    globalMiddlewares: @[],
-    notFoundHandler: nil,
-  )
-
-proc use*(app: App, mw: MiddlewareProc) =
-  app.globalMiddlewares.add mw
-
-proc mount*(app: App, prefix: string, group: RouteGroup) =
-  for entry in group.entries:
-    let fullPattern = if prefix == "/": entry.pattern
-                      elif entry.pattern == "": prefix
-                      else: prefix & entry.pattern
-    app.router.addRoute(entry.httpMethod, fullPattern,
-                        entry.handler, entry.middlewares)
-
 proc finalizeResponse(res: var Response) =
   if res.code == HttpCode(0):
     res.code = Http200
 
-proc serve*(app: App, host: string, port: int) =
+proc serve*(router: Router, host: string, port: int) =
   proc onRequest(reqFence: RequestFence): Future[HttpResponseRef] {.
       async: (raises: [CancelledError]).} =
     if reqFence.isErr():
@@ -73,33 +55,17 @@ proc serve*(app: App, host: string, port: int) =
       except CatchableError:
         ctx.body = ""
 
+    ctx.router = router
+
     var res: Response
 
-    let matched = app.router.match(ctx.httpMethod, ctx.path)
-    if matched.isSome:
-      let m = matched.get
-      ctx.pathParams = m.params
-      let allMw = app.globalMiddlewares & m.middlewares
-      let chain = buildChain(m.handler, allMw)
-      try:
-        res = await chain(ctx)
-      except CancelledError as exc:
-        raise exc
-      except CatchableError:
-        res = Response(code: Http500, body: "Internal Server Error",
-                       headers: HttpTable.init([("Content-Type", "text/plain")]))
-    else:
-      if app.notFoundHandler != nil:
-        try:
-          res = await app.notFoundHandler(ctx)
-        except CancelledError as exc:
-          raise exc
-        except CatchableError:
-          res = Response(code: Http500, body: "Internal Server Error",
-                         headers: HttpTable.init([("Content-Type", "text/plain")]))
-      else:
-        res = Response(code: Http404, body: "Not Found",
-                       headers: HttpTable.init([("Content-Type", "text/plain")]))
+    try:
+      res = await router.dispatch(ctx)
+    except CancelledError as exc:
+      raise exc
+    except CatchableError:
+      res = Response(code: Http500, body: "Internal Server Error",
+                     headers: HttpTable.init([("Content-Type", "text/plain")]))
 
     finalizeResponse(res)
 

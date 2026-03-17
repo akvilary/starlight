@@ -100,12 +100,12 @@ proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
-# --- App ---
+# --- Router ---
 
-var app = newApp()
-app.use(loggingMiddleware)
-app.mount("/users", UsersApi)
-app.mount("/api", ApiRoutes)
-app.mount("/", MainPage)
+var router = newRouter()
+router.use(loggingMiddleware)
+router.mount("/users", UsersApi)
+router.mount("/api", ApiRoutes)
+router.mount("/", MainPage)
 
-app.serve("127.0.0.1", 5000)
+router.serve("127.0.0.1", 5000)
