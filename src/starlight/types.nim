@@ -18,14 +18,17 @@ type
     kind*: SegmentKind
     paramKind*: ParamKind
 
-  Context* = ref object
-    path*: string
-    httpMethod*: HttpMethod
+  RequestData* = ref object
     headers*: HttpTable
     body*: string
     query*: Table[string, string]
-    pathParams*: Table[string, string]
     ip*: string
+
+  Context* = ref object
+    path*: string
+    httpMethod*: HttpMethod
+    pathParams*: Table[string, string]
+    request*: RequestData
     router*: Router
 
   Response* = object

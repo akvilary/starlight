@@ -21,12 +21,12 @@ proc newContextFromRequest(req: HttpRequestRef): Context =
   let qIdx = fullPath.find('?')
   if qIdx >= 0:
     ctx.path = fullPath[0..<qIdx]
-    ctx.query = parseQueryString(fullPath[qIdx + 1..^1])
+    ctx.request.query = parseQueryString(fullPath[qIdx + 1..^1])
   else:
     ctx.path = fullPath
   ctx.httpMethod = req.meth
-  ctx.headers = req.headers
-  ctx.ip = try:
+  ctx.request.headers = req.headers
+  ctx.request.ip = try:
     $req.remote().get()
   except:
     ""
@@ -49,11 +49,11 @@ proc serve*(router: Router, host: string, port: int) =
     if req.hasBody():
       try:
         let bodyBytes = await req.getBody()
-        ctx.body = cast[string](bodyBytes)
+        ctx.request.body = cast[string](bodyBytes)
       except CancelledError as exc:
         raise exc
       except CatchableError:
-        ctx.body = ""
+        ctx.request.body = ""
 
     ctx.router = router
 
