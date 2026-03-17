@@ -72,6 +72,9 @@ macro route*(name: untyped, body: untyped): untyped =
         var handlerIdent: NimNode
         let pattern = stmt[1]
 
+        var middlewaresNode = newNimNode(nnkPrefix).add(ident"@",
+          newNimNode(nnkBracket))
+
         if stmt.len == 3 and stmt[2].kind == nnkStmtList:
           # Inline body: get("/path"):
           #   ...body...
@@ -80,10 +83,15 @@ macro route*(name: untyped, body: untyped): untyped =
         elif stmt.len == 3:
           # Reference: get("/path", handlerProc)
           handlerIdent = stmt[2]
+        elif stmt.len == 4:
+          # Reference with middleware: get("/path", handlerProc, @[mw1, mw2])
+          handlerIdent = stmt[2]
+          middlewaresNode = stmt[3]
         else:
           error(
             "Invalid route syntax. Use " &
             httpMethodName & "(\"path\", handler) or " &
+            httpMethodName & "(\"path\", handler, @[middleware]) or " &
             httpMethodName & "(\"path\"): body",
             stmt
           )
@@ -93,6 +101,7 @@ macro route*(name: untyped, body: untyped): untyped =
           newNimNode(nnkExprColonExpr).add(ident"httpMethod", methodIdent(httpMethodName)),
           newNimNode(nnkExprColonExpr).add(ident"pattern", pattern),
           newNimNode(nnkExprColonExpr).add(ident"handler", handlerIdent),
+          newNimNode(nnkExprColonExpr).add(ident"middlewares", middlewaresNode),
         )
         result.add newCall(
           newDotExpr(newDotExpr(name, ident"entries"), ident"add"),

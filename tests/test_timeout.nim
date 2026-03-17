@@ -1,33 +1,33 @@
 import std/unittest
 import ../src/starlight
 
-# Handler with timeout and html pragma
-handler fastHandler() {.html, timeout: 1000.}:
+handler fastHandler() {.html.}:
   return "Hello"
 
-# Handler with timeout that will expire
-handler slowHandler() {.html, timeout: 100.}:
+handler slowHandler() {.html.}:
   await sleepAsync(milliseconds(110))
   return "Too late"
 
-# Handler with timeout only (no html/json)
-handler rawTimeout() {.timeout: 2000.}:
+handler rawHandler():
   return answer("OK")
 
-suite "timeout pragma":
+suite "withTimeout middleware":
   let ctx = newContext()
 
   test "fast handler completes within timeout":
-    let res = waitFor fastHandler(ctx)
+    let chain = buildChain(fastHandler, @[withTimeout(1000)])
+    let res = waitFor chain(ctx)
     check res.code == Http200
     check res.body == "Hello"
 
   test "slow handler times out with 408":
-    let res = waitFor slowHandler(ctx)
+    let chain = buildChain(slowHandler, @[withTimeout(100)])
+    let res = waitFor chain(ctx)
     check res.code == Http408
     check res.body == "Request Timeout"
 
-  test "timeout without html/json pragma":
-    let res = waitFor rawTimeout(ctx)
+  test "timeout with raw handler":
+    let chain = buildChain(rawHandler, @[withTimeout(2000)])
+    let res = waitFor chain(ctx)
     check res.code == Http200
     check res.body == "OK"
