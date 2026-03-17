@@ -109,9 +109,4 @@ router.mount("/users", UsersApi)
 router.mount("/api", ApiRoutes)
 router.mount("/", MainPage)
 
-# Alternative: add routes directly
-# router.add(MethodGet, "/users", listUsers)
-# router.add(MethodGet, "/users/{name}", getUser)
-# router.add(MethodGet, "/api/status", getStatus)
-
 router.serve("127.0.0.1", 5000)

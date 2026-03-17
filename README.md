@@ -220,7 +220,7 @@ Handler parameters are real proc parameters — not extracted from `ctx.pathPara
 let resp = await getUser(ctx, "Alice")
 ```
 
-The routing layer (`route` macro / `router.add`) uses compile-time reflection to generate a `HandlerProc` wrapper that extracts path params from `ctx.pathParams` and calls the typed handler. The handler itself knows nothing about routing.
+The `route` macro uses compile-time reflection to generate a `HandlerProc` wrapper that extracts path params from `ctx.pathParams` and calls the typed handler. The handler itself knows nothing about routing.
 
 Use pragmas to specify the response type:
 
@@ -312,7 +312,7 @@ handler getItem(id: int) {.json.}:
   return %*{"id": id, "name": item.name}
 ```
 
-When the route is registered (via `route` macro or `router.add`), the pattern determines type conversion:
+When the route is registered (via the `route` macro), the pattern determines type conversion:
 
 | Pattern syntax  | Handler param | Conversion at routing |
 |-----------------|---------------|-----------------------|
@@ -337,7 +337,7 @@ handler search() {.json.}:
 
 ## Routing
 
-Routes connect URL patterns to handlers. Two approaches: route groups (for mounting with prefixes) and `router.add` (for adding routes directly).
+Routes connect URL patterns to handlers via route groups.
 
 ### Route Groups
 
@@ -367,27 +367,6 @@ router.serve("127.0.0.1", 5000)
 
 Routes are combined: `get("/{name}", getUser)` inside `UsersApi` mounted at `/users` becomes `GET /users/{name}`.
 
-### Adding Routes Directly
-
-Use `router.add` to register routes without groups:
-
-```nim
-var router = newRouter()
-router.add(MethodGet, "/users", listUsers)
-router.add(MethodGet, "/users/{name}", getUser)
-router.add(MethodPost, "/api/echo", echoBody)
-```
-
-`router.add` is a macro that uses compile-time reflection to generate a `HandlerProc` wrapper — it parses the pattern, extracts parameter names and types, and generates a proc that calls the typed handler with the right arguments:
-
-```nim
-# What router.add(MethodGet, "/users/{name}", getUser) generates:
-router.addRoute(MethodGet, "/users/{name}",
-  proc(ctx: Context): Future[Response] {.async, gcsafe.} =
-    return await getUser(ctx, name=ctx.pathParams["name"])
-)
-```
-
 ### Per-Route Middleware
 
 Attach middleware to individual routes:
@@ -398,8 +377,6 @@ route AdminApi:
   get("", adminPanel, middleware = [authMiddleware])
   get("/stats", adminStats, middleware = [authMiddleware, adminOnly])
 
-# With router.add:
-router.add(MethodGet, "/admin", adminPanel, middleware = [authMiddleware])
 ```
 
 Middleware can also be applied to an entire group at mount time:
@@ -420,7 +397,7 @@ Path parameters are defined with `{name:type}` syntax:
 | `{slug}`        | `string`  | `/posts/my-post` |
 | `{name:string}` | `string`  | `/users/alice`   |
 
-Supported HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options` (in route groups) and `MethodGet`, `MethodPost`, `MethodPut`, `MethodPatch`, `MethodDelete`, `MethodHead`, `MethodOptions` (in `router.add`).
+Supported HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
 
 ## Middleware
 
@@ -855,8 +832,6 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `handler Name(params):` | macro | Generates typed async proc, return must be a `Response` |
 | `withTimeout(ms)` | proc | Middleware: aborts handler after `ms` milliseconds (Http408) |
 | `route Name:` | macro | Defines a route group |
-| `router.add(Method, path, handler)` | macro | Adds a route with compile-time handler wrapping |
-| `router.add(Method, path, handler, middleware = [...])` | macro | Adds a route with per-route middleware |
 | `newRouter()` | proc | Creates a new router |
 | `router.mount(prefix, group)` | proc | Mounts a route group at prefix |
 | `router.mount(prefix, group, middlewares)` | proc | Mounts a route group with group-level middleware |

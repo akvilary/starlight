@@ -1,7 +1,7 @@
 ## PrefixTree-based router with typed path parameters.
 
-import std/[tables, options, strutils, macros]
-import types, middleware, context, handler
+import std/[tables, options, strutils]
+import types, middleware, context
 
 proc newRouter*(): Router =
   Router(
@@ -178,37 +178,3 @@ proc forward*(ctx: Context,
   newCtx.path = resolvePath(ctx.path, path)
   newCtx.httpMethod = httpMethod
   return await ctx.router.dispatch(newCtx)
-
-macro add*(router: typed, httpMethod: typed, pattern: untyped,
-           handlerSym: typed): untyped =
-  ## Adds a route directly to the router.
-  ## Uses compile-time reflection to wrap the handler.
-  ##
-  ##   router.add(MethodGet, "/users/{name}", getUser)
-  let patternStr = pattern.strVal
-  let wrappedHandler = generateHandlerWrapper(handlerSym, patternStr)
-  result = newCall(
-    newDotExpr(router, ident"addRoute"),
-    httpMethod,
-    pattern,
-    wrappedHandler,
-  )
-
-macro add*(router: typed, httpMethod: typed, pattern: untyped,
-           handlerSym: typed, middleware: untyped): untyped =
-  ## Adds a route with middleware directly to the router.
-  ##
-  ##   router.add(MethodGet, "/admin", adminPanel, middleware = [authMiddleware])
-  let patternStr = pattern.strVal
-  let wrappedHandler = generateHandlerWrapper(handlerSym, patternStr)
-  let mwNode = if middleware.kind == nnkBracket:
-    newNimNode(nnkPrefix).add(ident"@", middleware)
-  else:
-    middleware
-  result = newCall(
-    newDotExpr(router, ident"addRoute"),
-    httpMethod,
-    pattern,
-    wrappedHandler,
-    mwNode,
-  )
