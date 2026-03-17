@@ -168,13 +168,34 @@ proc dispatch*(router: Router, ctx: Context): Future[Response] {.
     return Response(code: Http404, body: "Not Found",
                     headers: HttpTable.init([("Content-Type", "text/plain")]))
 
+proc prepareForward(ctx: Context, httpMethod: HttpMethod,
+                    path: string): Context =
+  ## Creates a cloned context for internal dispatch.
+  var newCtx = ctx.clone()
+  newCtx.path = resolvePath(ctx.path, path)
+  newCtx.httpMethod = httpMethod
+  newCtx
+
 proc forward*(ctx: Context,
               httpMethod: HttpMethod, path: string): Future[Response] {.
     async: (raises: [CatchableError]).} =
   ## Dispatches an internal request through the router.
   ## Creates a cloned context — the original ctx is not modified.
   ## Supports absolute (/path) and relative (./path, ../path) paths.
-  var newCtx = ctx.clone()
-  newCtx.path = resolvePath(ctx.path, path)
-  newCtx.httpMethod = httpMethod
+  let newCtx = prepareForward(ctx, httpMethod, path)
+  return await ctx.router.dispatch(newCtx)
+
+proc forward*(ctx: Context,
+              httpMethod: HttpMethod, path: string,
+              query: Table[string, string]): Future[Response] {.
+    async: (raises: [CatchableError]).} =
+  ## Dispatches an internal request with custom query parameters.
+  ## Creates a new RequestData with the given query — the original ctx is not modified.
+  var newCtx = prepareForward(ctx, httpMethod, path)
+  newCtx.request = RequestData(
+    headers: ctx.request.headers,
+    body: ctx.request.body,
+    query: query,
+    ip: ctx.request.ip,
+  )
   return await ctx.router.dispatch(newCtx)

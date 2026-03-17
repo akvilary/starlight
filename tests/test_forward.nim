@@ -1,4 +1,4 @@
-import std/unittest
+import std/[unittest, json]
 import ../src/starlight
 
 handler greetUser(name: string) {.html.}:
@@ -10,16 +10,28 @@ handler fallback() {.html.}:
 handler relative() {.html.}:
   return await ctx.forward(MethodGet, "../bob")
 
+handler searchHandler() {.json.}:
+  let q = ctx.getQuery("q")
+  return %*{"query": q}
+
+handler forwardWithQuery() {.json.}:
+  return await ctx.forward(MethodGet, "/api/search", {"q": "nim"}.toTable())
+
 var router = newRouter()
 
 route Users:
   get("/{name}", greetUser)
+
+route Api:
+  get("/search", searchHandler)
+  get("/forward-search", forwardWithQuery)
 
 route Main:
   get("/fallback", fallback)
   get("/users/alice", relative)
 
 router.mount("/users", Users)
+router.mount("/api", Api)
 router.mount("/", Main)
 
 suite "resolvePath":
@@ -76,3 +88,23 @@ suite "ctx.forward":
     ctx.router = router
     let res = waitFor ctx.forward(MethodGet, "/nonexistent")
     check res.code == Http404
+
+  test "forward with custom query parameters":
+    let ctx = newContext()
+    ctx.path = "/api/forward-search"
+    ctx.httpMethod = MethodGet
+    ctx.router = router
+    let res = waitFor router.dispatch(ctx)
+    check res.code == Http200
+    check parseJson(res.body)["query"].getStr() == "nim"
+
+  test "forward with query does not mutate original ctx":
+    let ctx = newContext()
+    ctx.path = "/anything"
+    ctx.httpMethod = MethodGet
+    ctx.router = router
+    ctx.request.query["original"] = "yes"
+    let res = waitFor ctx.forward(MethodGet, "/api/search", {"q": "test"}.toTable())
+    check parseJson(res.body)["query"].getStr() == "test"
+    check ctx.request.query["original"] == "yes"
+    check "q" notin ctx.request.query

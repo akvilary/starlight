@@ -490,6 +490,15 @@ The router reference is stored in `ctx` automatically, so `forward` works from a
 
 `forward` creates a lightweight clone of the context — only `path`, `httpMethod` and `pathParams` are new. Request data (headers, body, query, ip) is shared via a single `RequestData` ref, not copied.
 
+### Custom Query Parameters
+
+To forward with different query parameters, pass a `Table[string, string]`. This creates a new `RequestData` — the original context is not modified:
+
+```nim
+handler searchProxy() {.json.}:
+  return await ctx.forward(MethodGet, "/api/search", {"q": "nim", "page": "1"}.toTable())
+```
+
 ### Absolute and Relative Paths
 
 `forward` resolves paths relative to the current `ctx.path`:
@@ -838,6 +847,7 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `router.use(middleware)` | proc | Adds global middleware |
 | `router.serve(host, port)` | proc | Starts the HTTP server |
 | `ctx.forward(method, path)` | proc | Internal dispatch through the router (supports relative paths) |
+| `ctx.forward(method, path, query)` | proc | Internal dispatch with custom query parameters |
 | `answer(body, code)` | proc | Builds an HTML Response |
 | `answerJson(body, code)` | proc | Builds a JSON Response (accepts string or JsonNode) |
 | `redirect(url, code)` | proc | Builds a redirect Response (302, client-side) |
