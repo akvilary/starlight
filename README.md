@@ -363,11 +363,13 @@ Routes are combined: a `get "/{id}"` inside `UsersApi` mounted at `/users` becom
 Middleware functions wrap handlers with a `next` callback:
 
 ```nim
-proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.async.} =
+proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
-proc authMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.async.} =
+proc authMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
   if ctx.headers.hasKey("Authorization"):
     result = await next(ctx)
   else:
@@ -405,7 +407,8 @@ Internally, `withTimeout` calls Chronos `wait()` on the handler future and catch
 
 ```nim
 # What withTimeout(2000) does:
-proc(ctx: Context, next: HandlerProc): Future[Response] {.async.} =
+proc(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
   try:
     return await next(ctx).wait(milliseconds(2000))
   except AsyncTimeoutError:
@@ -425,7 +428,8 @@ type MiddlewareProc = proc(ctx: Context, next: HandlerProc): Future[Response] {.
 Example — response timing header:
 
 ```nim
-proc withTiming(ctx: Context, next: HandlerProc): Future[Response] {.async.} =
+proc withTiming(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
   let start = Moment.now()
   result = await next(ctx)
   let elapsed = Moment.now() - start
@@ -715,7 +719,8 @@ route MainRoute:
 
 # --- Middleware ---
 
-proc logger(ctx: Context, next: HandlerProc): Future[Response] {.async.} =
+proc logger(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
