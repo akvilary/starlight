@@ -1,10 +1,10 @@
 ## Core types for the SSR framework.
 
-import std/tables
+import std/[tables, sets]
 import chronos
 import chronos/apps/http/httpserver
 
-export tables, chronos, httpserver
+export tables, sets, chronos, httpserver
 
 type
   ParamKind* = enum
@@ -57,6 +57,7 @@ type
     root*: PrefixTreeNode
     globalMiddlewares*: seq[MiddlewareProc]
     notFoundHandler*: HandlerProc
+    cdnDirs*: seq[CDNEntry]
 
   MatchResult* = object
     handler*: HandlerProc
@@ -71,3 +72,8 @@ type
 
   RouteGroup* = object
     entries*: seq[RouteEntry]
+
+  CDNEntry* = object
+    path*: string
+    proxy*: string
+    extensions*: HashSet[string]

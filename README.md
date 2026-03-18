@@ -522,6 +522,62 @@ await ctx.forward(MethodGet, "../../admin/panel") # up two   → /admin/panel
 | Client URL | Does not change | Changes to new URL |
 | Context | Cloned (original not mutated) | New request, new context |
 
+## Static Files & CDN Proxy
+
+`addCDN` serves static files from a local directory or proxies requests to a remote CDN. The path parameter is both the URL prefix and the filesystem directory (relative to CWD).
+
+### Local Files
+
+```nim
+var router = newRouter()
+router.addCDN("/public")
+router.serve("127.0.0.1", 5000)
+# GET /public/style.css → ./public/style.css
+# GET /public/js/app.js → ./public/js/app.js
+```
+
+Only `GET` requests are served. If no file is found, the request falls through to the normal 404 handler.
+
+### Extension Filter
+
+Restrict which file types are served:
+
+```nim
+router.addCDN("/assets", extensions = ["css", "js", "png", "jpg", "svg", "woff2"])
+# GET /assets/style.css  → served
+# GET /assets/secret.env → rejected (not in extensions list)
+```
+
+### CDN Proxy
+
+Proxy requests to a remote CDN. The `proxy` parameter specifies the remote base URL:
+
+```nim
+router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm")
+# GET /libs/vue@3/dist/vue.js → proxies https://cdn.jsdelivr.net/npm/vue@3/dist/vue.js
+```
+
+Extension filtering works with proxy entries too:
+
+```nim
+router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm", extensions = ["js", "css"])
+```
+
+### Resolution Order
+
+When a request doesn't match any route, the router tries CDN entries (GET only):
+
+1. Local file entries — checked first, matched by URL prefix
+2. Proxy entries — tried if no local file matched
+
+### Security
+
+Local file serving includes path traversal protection:
+
+- Paths containing `..` are rejected
+- Resolved paths are verified to stay inside the served directory
+- Only regular files are served (no directories, no symlinks escaping the root)
+
 ## Compile-Time Optimization
 
 Starlight's key advantage: the HTML engine analyzes templates at compile time and separates static from dynamic parts.
@@ -845,6 +901,10 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `router.mount(prefix, group)` | proc | Mounts a route group at prefix |
 | `router.mount(prefix, group, middlewares)` | proc | Mounts a route group with group-level middleware |
 | `router.use(middleware)` | proc | Adds global middleware |
+| `router.addCDN(path)` | proc | Serves static files from a local directory |
+| `router.addCDN(path, extensions)` | proc | Serves static files filtered by extension |
+| `router.addCDN(path, proxy)` | proc | Proxies requests to a remote CDN |
+| `router.addCDN(path, proxy, extensions)` | proc | Proxies requests filtered by extension |
 | `router.serve(host, port)` | proc | Starts the HTTP server |
 | `ctx.forward(method, path)` | proc | Internal dispatch through the router (supports relative paths) |
 | `ctx.forward(method, path, query)` | proc | Internal dispatch with custom query parameters |

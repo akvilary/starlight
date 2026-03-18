@@ -1,7 +1,7 @@
 ## PrefixTree-based router with typed path parameters.
 
 import std/[tables, options, strutils]
-import types, middleware, context
+import types, middleware, context, cdn
 
 proc newRouter*(): Router =
   Router(
@@ -162,11 +162,18 @@ proc dispatch*(router: Router, ctx: Context): Future[Response] {.
     let allMw = router.globalMiddlewares & m.middlewares
     let chain = buildChain(m.handler, allMw)
     return await chain(ctx)
-  elif router.notFoundHandler != nil:
-    return await router.notFoundHandler(ctx)
   else:
-    return Response(code: Http404, body: "Not Found",
-                    headers: HttpTable.init([("Content-Type", "text/plain")]))
+    # Try CDN static/proxy serving for GET requests
+    if ctx.httpMethod == MethodGet:
+      let cdnResp = await router.tryServeCDN(ctx.path)
+      if cdnResp.isSome:
+        return cdnResp.get
+
+    if router.notFoundHandler != nil:
+      return await router.notFoundHandler(ctx)
+    else:
+      return Response(code: Http404, body: "Not Found",
+                      headers: HttpTable.init([("Content-Type", "text/plain")]))
 
 proc prepareForward(ctx: Context, httpMethod: HttpMethod,
                     path: string): Context =
