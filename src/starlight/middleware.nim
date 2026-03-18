@@ -3,8 +3,8 @@
 import types
 
 proc buildChain*(
-    handler: HandlerProc,
-    middlewares: seq[MiddlewareProc],
+  handler: HandlerProc,
+  middlewares: seq[MiddlewareProc],
 ): HandlerProc =
   ## Wraps handler in middleware chain (outermost middleware first).
   result = handler

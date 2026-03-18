@@ -39,11 +39,11 @@ proc parsePattern*(pattern: string): seq[PatternSegment] =
       result.add PatternSegment(name: part, kind: skStatic)
 
 proc addRoute*(
-    router: Router,
-    httpMethod: HttpMethod,
-    pattern: string,
-    handler: HandlerProc,
-    middlewares: seq[MiddlewareProc] = default(seq[MiddlewareProc]),
+  router: Router,
+  httpMethod: HttpMethod,
+  pattern: string,
+  handler: HandlerProc,
+  middlewares: seq[MiddlewareProc] = default(seq[MiddlewareProc]),
 ) =
   let segments = parsePattern(pattern)
   var node = router.root
@@ -69,10 +69,10 @@ proc addRoute*(
   )
 
 proc mount*(
-    router: Router,
-    prefix: string,
-    group: RouteGroup,
-    middlewares: seq[MiddlewareProc] = default(seq[MiddlewareProc]),
+  router: Router,
+  prefix: string,
+  group: RouteGroup,
+  middlewares: seq[MiddlewareProc] = default(seq[MiddlewareProc]),
 ) =
   ## Mounts a route group at the given prefix.
   ## Optional middlewares are prepended to each route's middleware chain.
@@ -162,8 +162,8 @@ proc resolvePath*(currentPath, target: string): string =
   "/" & segments.join("/")
 
 proc dispatch*(
-    router: Router,
-    ctx: Context,
+  router: Router,
+  ctx: Context,
 ): Future[Response] {.async: (raises: [CatchableError]).} =
   ## Dispatches a context through the router with full middleware chain.
   let matched = router.match(ctx.httpMethod, ctx.path)
@@ -187,9 +187,9 @@ proc dispatch*(
                       headers: HttpTable.init([("Content-Type", "text/plain")]))
 
 proc prepareForward(
-    ctx: Context,
-    httpMethod: HttpMethod,
-    path: string,
+  ctx: Context,
+  httpMethod: HttpMethod,
+  path: string,
 ): Context =
   ## Creates a cloned context for internal dispatch.
   var newCtx = ctx.clone()
@@ -198,9 +198,9 @@ proc prepareForward(
   newCtx
 
 proc forward*(
-    ctx: Context,
-    httpMethod: HttpMethod,
-    path: string,
+  ctx: Context,
+  httpMethod: HttpMethod,
+  path: string,
 ): Future[Response] {.async: (raises: [CatchableError]).} =
   ## Dispatches an internal request through the router.
   ## Creates a cloned context — the original ctx is not modified.
@@ -209,10 +209,10 @@ proc forward*(
   return await ctx.router.dispatch(newCtx)
 
 proc forward*(
-    ctx: Context,
-    httpMethod: HttpMethod,
-    path: string,
-    query: Table[string, string],
+  ctx: Context,
+  httpMethod: HttpMethod,
+  path: string,
+  query: Table[string, string],
 ): Future[Response] {.async: (raises: [CatchableError]).} =
   ## Dispatches an internal request with custom query parameters.
   ## Creates a new RequestData with the given query — the original ctx is not modified.

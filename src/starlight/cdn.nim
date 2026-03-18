@@ -30,9 +30,9 @@ proc getMimeType*(ext: string): string =
   else: "application/octet-stream"
 
 proc addCDN*(
-    router: Router,
-    path: string,
-    extensions: seq[string] = default(seq[string]),
+  router: Router,
+  path: string,
+  extensions: seq[string] = default(seq[string]),
 ) =
   router.cdnDirs.add CDNEntry(
     path: path.strip(chars = {'/'}),
@@ -40,10 +40,10 @@ proc addCDN*(
   )
 
 proc addCDN*(
-    router: Router,
-    path: string,
-    proxy: string,
-    extensions: seq[string] = default(seq[string]),
+  router: Router,
+  path: string,
+  proxy: string,
+  extensions: seq[string] = default(seq[string]),
 ) =
   router.cdnDirs.add CDNEntry(
     path: path.strip(chars = {'/'}),
@@ -100,8 +100,8 @@ proc tryServeStatic(entry: CDNEntry, reqPath: string): Option[Response] =
   ))
 
 proc tryProxyCDN(
-    entry: CDNEntry,
-    reqPath: string,
+  entry: CDNEntry,
+  reqPath: string,
 ): Future[Option[Response]] {.async: (raises: [CatchableError]).} =
   let prefix = "/" & entry.path
   if not reqPath.startsWith(prefix):
@@ -141,8 +141,8 @@ proc tryProxyCDN(
     await session.closeWait()
 
 proc tryServeCDN*(
-    router: Router,
-    path: string,
+  router: Router,
+  path: string,
 ): Future[Option[Response]] {.async: (raises: [CatchableError]).} =
   for entry in router.cdnDirs:
     if entry.proxy.len > 0:

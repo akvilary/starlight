@@ -38,7 +38,7 @@ proc finalizeResponse(res: var Response) =
 
 proc serve*(router: Router, host: string, port: int) =
   proc onRequest(
-      reqFence: RequestFence,
+    reqFence: RequestFence,
   ): Future[HttpResponseRef] {.async: (raises: [CancelledError]).} =
     if reqFence.isErr():
       return defaultResponse()

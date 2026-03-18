@@ -38,8 +38,8 @@ proc collectLazyParams(signature: NimNode): seq[string] =
       result.add param[0].strVal
 
 proc extractParams(
-    signature: NimNode,
-    lazyNames: seq[string] = default(seq[string]),
+  signature: NimNode,
+  lazyNames: seq[string] = default(seq[string]),
 ): tuple[procParams, tmplParams, callArgs: seq[NimNode]] =
   ## Extract parameter lists from layout signature.
   ## Parameters with `lazyLayout` type are excluded — handled separately.
@@ -80,11 +80,11 @@ proc buildCapExpr(stmts: NimNode, hintKb: int): NimNode =
   result = capExpr
 
 proc generateBuffered(
-    name: NimNode,
-    body: NimNode,
-    procParams, tmplParams, callArgs: seq[NimNode],
-    lazyNames: seq[string],
-    hintKb: int,
+  name: NimNode,
+  body: NimNode,
+  procParams, tmplParams, callArgs: seq[NimNode],
+  lazyNames: seq[string],
+  hintKb: int,
 ): NimNode =
   ## Generate buffered layout code (with {.buf.} pragma).
   let implName = layoutImplName(name.strVal)
