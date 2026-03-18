@@ -33,10 +33,12 @@ proc addCDN*(
   router: Router,
   path: string,
   extensions: seq[string] = default(seq[string]),
+  ignoreExtensions: seq[string] = default(seq[string]),
 ) =
   router.cdnDirs.add CDNEntry(
     path: path.strip(chars = {'/'}),
     extensions: extensions.toHashSet(),
+    ignoreExtensions: ignoreExtensions.toHashSet(),
   )
 
 proc addCDN*(
@@ -44,11 +46,13 @@ proc addCDN*(
   path: string,
   proxy: string,
   extensions: seq[string] = default(seq[string]),
+  ignoreExtensions: seq[string] = default(seq[string]),
 ) =
   router.cdnDirs.add CDNEntry(
     path: path.strip(chars = {'/'}),
     proxy: proxy.strip(chars = {'/'}),
     extensions: extensions.toHashSet(),
+    ignoreExtensions: ignoreExtensions.toHashSet(),
   )
 
 proc tryServeStatic(entry: CDNEntry, reqPath: string): Option[Response] =
@@ -90,6 +94,8 @@ proc tryServeStatic(entry: CDNEntry, reqPath: string): Option[Response] =
   let ext = filePath.splitFile().ext.strip(chars = {'.'}).toLowerAscii()
   if entry.extensions.len > 0 and ext notin entry.extensions:
     return none(Response)
+  if ext in entry.ignoreExtensions:
+    return none(Response)
 
   let body = readFile(filePath)
   let mime = getMimeType(ext)
@@ -124,6 +130,8 @@ proc tryProxyCDN(
   # Extension filter
   let ext = targetUrl.splitFile().ext.strip(chars = {'.'}).toLowerAscii()
   if entry.extensions.len > 0 and ext notin entry.extensions:
+    return none(Response)
+  if ext in entry.ignoreExtensions:
     return none(Response)
 
   let session = HttpSessionRef.new()

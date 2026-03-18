@@ -123,6 +123,20 @@ suite "tryServeCDN — extension filter":
     let resp = waitFor r.tryServeCDN("/" & base & "/assets/blocked.txt")
     check resp.isNone
 
+suite "tryServeCDN — ignore extension filter":
+  setup:
+    let r = newRouter()
+    r.addCDN("/" & base & "/assets", ignoreExtensions = @["txt"])
+
+  test "serves non-ignored extension":
+    let resp = waitFor r.tryServeCDN("/" & base & "/assets/data.json")
+    check resp.isSome
+    check resp.get.code == Http200
+
+  test "rejects ignored extension":
+    let resp = waitFor r.tryServeCDN("/" & base & "/assets/blocked.txt")
+    check resp.isNone
+
 suite "dispatch integration — CDN fallback":
   setup:
     let r = newRouter()

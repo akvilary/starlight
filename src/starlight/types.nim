@@ -77,3 +77,4 @@ type
     path*: string
     proxy*: string
     extensions*: HashSet[string]
+    ignoreExtensions*: HashSet[string]

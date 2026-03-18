@@ -599,13 +599,23 @@ router.addCDN("/robots.txt")
 
 ### Extension Filter
 
-Restrict which file types are served:
+Restrict which file types are served (whitelist):
 
 ```nim
 router.addCDN("/assets", extensions = @["css", "js", "png", "jpg", "svg", "woff2"])
 # GET /assets/style.css  → served
 # GET /assets/secret.env → rejected (not in extensions list)
 ```
+
+Or block specific extensions (blacklist):
+
+```nim
+router.addCDN("/public", ignoreExtensions = @["env", "key", "pem"])
+# GET /public/style.css  → served
+# GET /public/secret.env → rejected
+```
+
+Both parameters can be combined — `extensions` is checked first (whitelist), then `ignoreExtensions` (blacklist).
 
 ### CDN Proxy
 
@@ -623,7 +633,7 @@ router.addCDN("/libs/vue.js", proxy = "https://cdn.jsdelivr.net/npm/vue@3/dist/v
 # GET /libs/vue.js → proxies the exact URL
 ```
 
-Extension filtering works with proxy entries too:
+Extension filtering (`extensions` and `ignoreExtensions`) works with proxy entries too:
 
 ```nim
 router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm", extensions = @["js", "css"])
@@ -965,9 +975,9 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `router.mount(prefix, group, middlewares)` | proc | Mounts a route group with group-level middleware |
 | `router.use(middleware)` | proc | Adds global middleware |
 | `router.addCDN(path)` | proc | Serves static files from a local directory |
-| `router.addCDN(path, extensions)` | proc | Serves static files filtered by extension |
+| `router.addCDN(path, extensions, ignoreExtensions)` | proc | Serves static files with extension whitelist/blacklist |
 | `router.addCDN(path, proxy)` | proc | Proxies requests to a remote CDN |
-| `router.addCDN(path, proxy, extensions)` | proc | Proxies requests filtered by extension |
+| `router.addCDN(path, proxy, extensions, ignoreExtensions)` | proc | Proxies requests with extension whitelist/blacklist |
 | `router.serve(host, port)` | proc | Starts the HTTP server |
 | `ctx.forward(method, path)` | proc | Internal dispatch through the router (supports relative paths) |
 | `ctx.forward(method, path, query)` | proc | Internal dispatch with custom query parameters |
