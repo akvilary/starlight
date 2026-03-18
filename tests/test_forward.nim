@@ -1,20 +1,20 @@
 import std/[unittest, json]
 import ../src/starlight
 
-handler greetUser(name: string) {.html.}:
+handler greetUser(ctx: Context, name: string) {.html.}:
   return "Hello, " & name
 
-handler fallback() {.html.}:
+handler fallback(ctx: Context) {.html.}:
   return await ctx.forward(MethodGet, "/users/default")
 
-handler relative() {.html.}:
+handler relative(ctx: Context) {.html.}:
   return await ctx.forward(MethodGet, "../bob")
 
-handler searchHandler() {.json.}:
+handler searchHandler(ctx: Context) {.json.}:
   let q = ctx.getQuery("q")
   return %*{"query": q}
 
-handler forwardWithQuery() {.json.}:
+handler forwardWithQuery(ctx: Context) {.json.}:
   return await ctx.forward(MethodGet, "/api/search", {"q": "nim"}.toTable())
 
 var router = newRouter()

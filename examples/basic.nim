@@ -53,29 +53,29 @@ layout NotFoundPage():
 # --- Handlers ---
 # Each handler is a typed proc. Direct call: await getUser(ctx, "Alice")
 
-handler listUsers() {.html.}:
+handler listUsers(ctx: Context) {.html.}:
   let users = @["Alice", "Bob", "Charlie"]
   return Page(title="Users", content=UserList(users=users))
 
-handler getUser(name: string) {.html.}:
+handler getUser(ctx: Context, name: string) {.html.}:
   return Page(title=name, content=UserProfile(name=name))
 
-handler getStatus() {.json.}:
+handler getStatus(ctx: Context) {.json.}:
   return %*{"status": "ok", "version": "0.1.0"}
 
-handler echoBody() {.json.}:
+handler echoBody(ctx: Context) {.json.}:
   return parseJson(ctx.request.body)
 
-handler unauthorized() {.json.}:
+handler unauthorized(ctx: Context) {.json.}:
   return (%*{"error": "not authorized"}, Http401)
 
-handler homePage() {.html.}:
+handler homePage(ctx: Context) {.html.}:
   return Page(title="Starlight", content=HomePage())
 
-handler aboutPage() {.html.}:
+handler aboutPage(ctx: Context) {.html.}:
   return Page(title="About", content=AboutPage())
 
-handler notFoundPage() {.html.}:
+handler notFoundPage(ctx: Context) {.html.}:
   return (Page(title="404", content=NotFoundPage()), Http404)
 
 # --- Route groups ---

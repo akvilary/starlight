@@ -1,14 +1,14 @@
 import std/unittest
 import ../src/starlight
 
-handler fastHandler() {.html.}:
+handler fastHandler(ctx: Context) {.html.}:
   return "Hello"
 
-handler slowHandler() {.html.}:
+handler slowHandler(ctx: Context) {.html.}:
   await sleepAsync(milliseconds(110))
   return "Too late"
 
-handler rawHandler():
+handler rawHandler(ctx: Context):
   return answer("OK")
 
 suite "withTimeout middleware":

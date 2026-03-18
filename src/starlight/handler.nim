@@ -1,13 +1,13 @@
 ## Handler macro for generating typed async handler procs.
 ##
 ## Usage:
-##   handler home() {.html.}:
+##   handler home(ctx: Context) {.html.}:
 ##     return Page(title="Home")
 ##
-##   handler getUser(name: string) {.html.}:
+##   handler getUser(ctx: Context, name: string) {.html.}:
 ##     return Page(title=name, content=UserProfile(name=name))
 ##
-## Generates a proc with real typed parameters:
+## Generates a proc with the exact parameters you specify:
 ##   proc getUser*(ctx: Context, name: string): Future[Response] {.async, gcsafe.}
 ##
 ## Direct call: await getUser(ctx, "Alice")
@@ -68,10 +68,9 @@ proc buildHandler(nameAndParams: NimNode, body: NimNode,
   for child in transformed:
     procBody.add child
 
-  # Build params: (Future[Response], ctx: Context, param1: type1, ...)
+  # Build params: (Future[Response], param1: type1, ...)
   let retType = newNimNode(nnkBracketExpr).add(ident"Future", ident"Response")
-  let ctxParam = newIdentDefs(ident"ctx", ident"Context")
-  var formalParams: seq[NimNode] = @[retType, ctxParam]
+  var formalParams: seq[NimNode] = @[retType]
 
   for i in 1..<nameAndParams.len:
     let param = nameAndParams[i]

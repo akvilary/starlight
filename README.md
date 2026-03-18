@@ -39,7 +39,7 @@ layout HomePage():
     Body:
       H1: "It works!"
 
-handler home() {.html.}:
+handler home(ctx: Context) {.html.}:
   return HomePage()
 
 route Main:
@@ -132,7 +132,7 @@ layout Page(title: string) {.buf.}:
 Layouts are called like regular functions:
 
 ```nim
-handler home() {.html.}:
+handler home(ctx: Context) {.html.}:
   return Page(pageTitle="Home", content=Card(title="Welcome", body="Hello!"))
 ```
 
@@ -205,7 +205,7 @@ The `handler` macro generates a typed async proc with real parameters:
 
 ```nim
 # What you write:
-handler getUser(name: string) {.html.}:
+handler getUser(ctx: Context, name: string) {.html.}:
   return UserProfile(name=name)
 
 # What the macro generates:
@@ -214,7 +214,7 @@ proc getUser*(ctx: Context, name: string): Future[Response] {.
   return answer(UserProfile(name=name))
 ```
 
-Handler parameters are real proc parameters — not extracted from `ctx.pathParams`. This means handlers are ordinary functions you can call directly from code:
+The macro generates exactly the parameters you declare. Handlers are ordinary functions you can call directly from code:
 
 ```nim
 let resp = await getUser(ctx, "Alice")
@@ -233,7 +233,7 @@ If no `return` is specified, the handler returns `Http200` with an empty body.
 ### HTML Handler
 
 ```nim
-handler home() {.html.}:
+handler home(ctx: Context) {.html.}:
   return Page(pageTitle="Home", content=HomePage())
 
 # Equivalent to:
@@ -244,7 +244,7 @@ handler home() {.html.}:
 ### JSON Handler
 
 ```nim
-handler getStatus() {.json.}:
+handler getStatus(ctx: Context) {.json.}:
   return %*{"status": "ok", "version": "0.1.0"}
 
 # Equivalent to:
@@ -257,17 +257,17 @@ handler getStatus() {.json.}:
 To return a response with a custom status code, use a tuple `(body, HttpCode)`:
 
 ```nim
-handler unauthorized() {.json.}:
+handler unauthorized(ctx: Context) {.json.}:
   return (%*{"error": "not authorized"}, Http401)
 
-handler notFound() {.html.}:
+handler notFound(ctx: Context) {.html.}:
   return (Page(title="404", content=NotFound()), Http404)
 ```
 
 ### Raw Response Handler
 
 ```nim
-handler customHandler():
+handler customHandler(ctx: Context):
   return answer("plain text", Http200)
 ```
 
@@ -276,7 +276,7 @@ handler customHandler():
 If no `return` is specified, the handler returns `Http200` with an empty body (`""`):
 
 ```nim
-handler fireAndForget():
+handler fireAndForget(ctx: Context):
   echo "doing work, no return"
   # return "" # Http200
 ```
@@ -287,11 +287,11 @@ handler fireAndForget():
 
 ```nim
 # JsonNode — serialized by the framework:
-handler getStatus() {.json.}:
+handler getStatus(ctx: Context) {.json.}:
   return %*{"status": "ok"}
 
 # Pre-serialized string — zero serialization overhead:
-handler getCached() {.json.}:
+handler getCached(ctx: Context) {.json.}:
   return cachedJsonString
 
 # Without macro:
@@ -304,10 +304,10 @@ proc getCached(ctx: Context): Future[Response] {.async, gcsafe.} =
 Declare path parameters as typed proc parameters. The type in the handler must match the type in the route pattern:
 
 ```nim
-handler getUser(name: string) {.html.}:
+handler getUser(ctx: Context, name: string) {.html.}:
   return Page(pageTitle=name, content=UserProfile(name=name))
 
-handler getItem(id: int) {.json.}:
+handler getItem(ctx: Context, id: int) {.json.}:
   let item = fetchItem(id)
   return %*{"id": id, "name": item.name}
 ```
@@ -328,7 +328,7 @@ Type validation happens during route matching — if `{id:int}` receives a non-n
 The `ctx` object is available in every handler:
 
 ```nim
-handler search() {.json.}:
+handler search(ctx: Context) {.json.}:
   let query = ctx.getQuery("q")
   let token = ctx.request.headers["Authorization"]
   let data = parseJson(ctx.request.body)
@@ -482,7 +482,7 @@ proc withTiming(ctx: Context, next: HandlerProc): Future[Response] {.
 `ctx.forward` dispatches a request internally through the router. The client receives one response and never knows about the forward. All middleware of the target route is applied.
 
 ```nim
-handler oldEndpoint() {.json.}:
+handler oldEndpoint(ctx: Context) {.json.}:
   return await ctx.forward(MethodGet, "/api/v2/data")
 ```
 
@@ -495,7 +495,7 @@ The router reference is stored in `ctx` automatically, so `forward` works from a
 To forward with different query parameters, pass a `Table[string, string]`. This creates a new `RequestData` — the original context is not modified:
 
 ```nim
-handler searchProxy() {.json.}:
+handler searchProxy(ctx: Context) {.json.}:
   return await ctx.forward(MethodGet, "/api/search", {"q": "nim", "page": "1"}.toTable())
 ```
 
@@ -578,7 +578,7 @@ A `{.buf.}` layout automatically detects its calling context at compile time via
 **Called from a handler** (no `buf` in scope):
 
 ```nim
-handler home() {.html.}:
+handler home(ctx: Context) {.html.}:
   return Page(title="Hello")
 
 # What actually happens:
@@ -778,17 +778,17 @@ layout UserProfilePage(pageTitle: string, name: string) {.buf.}:
 # Each handler is a typed proc with real parameters.
 # Direct call: await getUser(ctx, "Alice")
 
-handler listUsers() {.html.}:
+handler listUsers(ctx: Context) {.html.}:
   let users = @["Alice", "Bob", "Charlie"]
   return UsersPage(pageTitle="Users", users=users)
 
-handler getUser(name: string) {.html.}:
+handler getUser(ctx: Context, name: string) {.html.}:
   return UserProfilePage(pageTitle=name, name=name)
 
-handler getStatus() {.json.}:
+handler getStatus(ctx: Context) {.json.}:
   return %*{"status": "ok"}
 
-handler home() {.html.}:
+handler home(ctx: Context) {.html.}:
   return HomePage(pageTitle="Home")
 
 # --- Routes ---
