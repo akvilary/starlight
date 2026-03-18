@@ -2,8 +2,10 @@
 
 import types
 
-proc buildChain*(handler: HandlerProc,
-                 middlewares: seq[MiddlewareProc]): HandlerProc =
+proc buildChain*(
+    handler: HandlerProc,
+    middlewares: seq[MiddlewareProc],
+): HandlerProc =
   ## Wraps handler in middleware chain (outermost middleware first).
   result = handler
   for i in countdown(middlewares.high, 0):

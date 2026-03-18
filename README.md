@@ -550,7 +550,7 @@ router.addCDN("/robots.txt")
 Restrict which file types are served:
 
 ```nim
-router.addCDN("/assets", extensions = ["css", "js", "png", "jpg", "svg", "woff2"])
+router.addCDN("/assets", extensions = @["css", "js", "png", "jpg", "svg", "woff2"])
 # GET /assets/style.css  → served
 # GET /assets/secret.env → rejected (not in extensions list)
 ```
@@ -574,7 +574,7 @@ router.addCDN("/libs/vue.js", proxy = "https://cdn.jsdelivr.net/npm/vue@3/dist/v
 Extension filtering works with proxy entries too:
 
 ```nim
-router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm", extensions = ["js", "css"])
+router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm", extensions = @["js", "css"])
 ```
 
 ### Resolution Order

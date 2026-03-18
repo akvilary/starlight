@@ -4,7 +4,7 @@ import std/[tables, sets]
 import chronos
 import chronos/apps/http/httpserver
 
-export tables, sets, chronos, httpserver
+export tables, chronos, httpserver
 
 type
   ParamKind* = enum

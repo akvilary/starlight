@@ -1,4 +1,4 @@
-import std/[unittest, options]
+import std/[unittest, options, sets]
 import ../src/starlight/[types, cdn, router, context]
 
 # Fixtures live at tests/test_cdn/{public,assets}
@@ -30,7 +30,7 @@ suite "addCDN":
 
   test "local entry with extensions":
     let r = newRouter()
-    r.addCDN("/assets", extensions = ["css", "js"])
+    r.addCDN("/assets", extensions = @["css", "js"])
     check r.cdnDirs[0].extensions.len == 2
     check "css" in r.cdnDirs[0].extensions
     check "js" in r.cdnDirs[0].extensions
@@ -112,7 +112,7 @@ suite "tryServeCDN — path traversal rejection":
 suite "tryServeCDN — extension filter":
   setup:
     let r = newRouter()
-    r.addCDN("/" & base & "/assets", extensions = ["json"])
+    r.addCDN("/" & base & "/assets", extensions = @["json"])
 
   test "serves allowed extension":
     let resp = waitFor r.tryServeCDN("/" & base & "/assets/data.json")

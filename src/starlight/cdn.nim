@@ -29,15 +29,22 @@ proc getMimeType*(ext: string): string =
   of "zip": "application/zip"
   else: "application/octet-stream"
 
-proc addCDN*(router: Router, path: string,
-             extensions: openArray[string] = []) =
+proc addCDN*(
+    router: Router,
+    path: string,
+    extensions: seq[string] = default(seq[string]),
+) =
   router.cdnDirs.add CDNEntry(
     path: path.strip(chars = {'/'}),
     extensions: extensions.toHashSet(),
   )
 
-proc addCDN*(router: Router, path: string, proxy: string,
-             extensions: openArray[string] = []) =
+proc addCDN*(
+    router: Router,
+    path: string,
+    proxy: string,
+    extensions: seq[string] = default(seq[string]),
+) =
   router.cdnDirs.add CDNEntry(
     path: path.strip(chars = {'/'}),
     proxy: proxy.strip(chars = {'/'}),
@@ -92,9 +99,10 @@ proc tryServeStatic(entry: CDNEntry, reqPath: string): Option[Response] =
     headers: HttpTable.init([("Content-Type", mime)]),
   ))
 
-proc tryProxyCDN(entry: CDNEntry,
-                 reqPath: string): Future[Option[Response]] {.
-    async: (raises: [CatchableError]).} =
+proc tryProxyCDN(
+    entry: CDNEntry,
+    reqPath: string,
+): Future[Option[Response]] {.async: (raises: [CatchableError]).} =
   let prefix = "/" & entry.path
   if not reqPath.startsWith(prefix):
     return none(Response)
@@ -132,8 +140,10 @@ proc tryProxyCDN(entry: CDNEntry,
   finally:
     await session.closeWait()
 
-proc tryServeCDN*(router: Router, path: string): Future[Option[Response]] {.
-    async: (raises: [CatchableError]).} =
+proc tryServeCDN*(
+    router: Router,
+    path: string,
+): Future[Option[Response]] {.async: (raises: [CatchableError]).} =
   for entry in router.cdnDirs:
     if entry.proxy.len > 0:
       let resp = await tryProxyCDN(entry, path)

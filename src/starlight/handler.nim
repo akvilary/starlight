@@ -58,8 +58,11 @@ proc transformReturns(node: NimNode, wrapProc: string): NimNode =
   for child in node:
     result.add transformReturns(child, wrapProc)
 
-proc buildHandler(nameAndParams: NimNode, body: NimNode,
-                  wrapProc: string): NimNode =
+proc buildHandler(
+    nameAndParams: NimNode,
+    body: NimNode,
+    wrapProc: string,
+): NimNode =
   ## Generates the typed async handler proc.
   let name = nameAndParams[0]
 

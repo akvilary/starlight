@@ -81,13 +81,28 @@ proc hasLazyArgs(node: NimNode): bool =
       return true
   return false
 
-proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
-                    lazyParams: HashSet[string])
-proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
-                 lazyParams: HashSet[string])
+proc processContent(
+    node: NimNode,
+    stmts: NimNode,
+    buf: NimNode,
+    lit: var string,
+    lazyParams: HashSet[string],
+)
+proc processNode(
+    node: NimNode,
+    stmts: NimNode,
+    buf: NimNode,
+    lit: var string,
+    lazyParams: HashSet[string],
+)
 
-proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
-                    lazyParams: HashSet[string]) =
+proc processContent(
+    node: NimNode,
+    stmts: NimNode,
+    buf: NimNode,
+    lit: var string,
+    lazyParams: HashSet[string],
+) =
   ## Process a content expression (not a tag).
   case node.kind
   of nnkStrLit, nnkTripleStrLit, nnkRStrLit:
@@ -100,8 +115,14 @@ proc processContent(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string
     flushLit(stmts, buf, lit)
     addDynamic(stmts, buf, node)
 
-proc processTag(node: NimNode, tagName: string, stmts: NimNode,
-                buf: NimNode, lit: var string, lazyParams: HashSet[string]) =
+proc processTag(
+    node: NimNode,
+    tagName: string,
+    stmts: NimNode,
+    buf: NimNode,
+    lit: var string,
+    lazyParams: HashSet[string],
+) =
   ## Process an HTML tag node.
   let htmlTag = tagToHtml(tagName)
   lit.add "<" & htmlTag
@@ -143,8 +164,13 @@ proc processTag(node: NimNode, tagName: string, stmts: NimNode,
         processContent(child, stmts, buf, lit, lazyParams)
     lit.add "</" & htmlTag & ">"
 
-proc transformLazyCall(node: NimNode, stmts: NimNode, buf: NimNode,
-                       lit: var string, lazyParams: HashSet[string]) =
+proc transformLazyCall(
+    node: NimNode,
+    stmts: NimNode,
+    buf: NimNode,
+    lit: var string,
+    lazyParams: HashSet[string],
+) =
   ## Transform a call with lazy args: call __layout__Name(buf, ...) directly,
   ## wrapping lazy exprs in closures.
   flushLit(stmts, buf, lit)
@@ -170,8 +196,13 @@ proc transformLazyCall(node: NimNode, stmts: NimNode, buf: NimNode,
       newCallNode.add arg
   stmts.add newCallNode
 
-proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
-                 lazyParams: HashSet[string]) =
+proc processNode(
+    node: NimNode,
+    stmts: NimNode,
+    buf: NimNode,
+    lit: var string,
+    lazyParams: HashSet[string],
+) =
   case node.kind
   of nnkStmtList:
     for child in node:
@@ -379,8 +410,11 @@ proc generateHtmlBlock*(body: NimNode): NimNode =
 
   result = newBlockStmt(newEmptyNode(), resultStmts)
 
-proc generateHtmlBlockBuffered*(body: NimNode, buf: NimNode,
-                                lazyParams: HashSet[string] = initHashSet[string]()): NimNode =
+proc generateHtmlBlockBuffered*(
+    body: NimNode,
+    buf: NimNode,
+    lazyParams: HashSet[string] = default(HashSet[string]),
+): NimNode =
   ## Generate HTML rendering code that writes to an existing buffer.
   ## Unlike generateHtmlBlock, does not create or return the buffer.
   var stmts = newStmtList()
