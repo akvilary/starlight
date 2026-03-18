@@ -75,6 +75,27 @@ suite "tryServeCDN — local files":
     let resp = waitFor r.tryServeCDN("/other/style.css")
     check resp.isNone
 
+suite "tryServeCDN — exact file path":
+  test "serves exact local file":
+    let r = newRouter()
+    r.addCDN("/" & base & "/public/style.css")
+    let resp = waitFor r.tryServeCDN("/" & base & "/public/style.css")
+    check resp.isSome
+    check resp.get.code == Http200
+    check "color: red" in resp.get.body
+
+  test "exact file does not match subpaths":
+    let r = newRouter()
+    r.addCDN("/" & base & "/public/style.css")
+    let resp = waitFor r.tryServeCDN("/" & base & "/public/style.css/extra")
+    check resp.isNone
+
+  test "no false prefix match":
+    let r = newRouter()
+    r.addCDN("/" & base & "/pub")
+    let resp = waitFor r.tryServeCDN("/" & base & "/public/style.css")
+    check resp.isNone
+
 suite "tryServeCDN — path traversal rejection":
   setup:
     let r = newRouter()

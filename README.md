@@ -524,9 +524,9 @@ await ctx.forward(MethodGet, "../../admin/panel") # up two   → /admin/panel
 
 ## Static Files & CDN Proxy
 
-`addCDN` serves static files from a local directory or proxies requests to a remote CDN. The path parameter is both the URL prefix and the filesystem directory (relative to CWD).
+`addCDN` serves static files from a local directory or proxies requests to a remote CDN. The path parameter is both the URL prefix and the filesystem directory (relative to CWD). Only `GET` requests are served. If no file is found, the request falls through to the normal 404 handler.
 
-### Local Files
+### Local Directory
 
 ```nim
 var router = newRouter()
@@ -536,7 +536,14 @@ router.serve("127.0.0.1", 5000)
 # GET /public/js/app.js → ./public/js/app.js
 ```
 
-Only `GET` requests are served. If no file is found, the request falls through to the normal 404 handler.
+### Local File
+
+The path can point to a specific file instead of a directory:
+
+```nim
+router.addCDN("/robots.txt")
+# GET /robots.txt → ./robots.txt
+```
 
 ### Extension Filter
 
@@ -557,6 +564,13 @@ router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm")
 # GET /libs/vue@3/dist/vue.js → proxies https://cdn.jsdelivr.net/npm/vue@3/dist/vue.js
 ```
 
+A proxy can also point to a single file:
+
+```nim
+router.addCDN("/vue.js", proxy = "https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js")
+# GET /vue.js → proxies the exact URL
+```
+
 Extension filtering works with proxy entries too:
 
 ```nim
@@ -565,10 +579,7 @@ router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm", extensions = ["js
 
 ### Resolution Order
 
-When a request doesn't match any route, the router tries CDN entries (GET only):
-
-1. Local file entries — checked first, matched by URL prefix
-2. Proxy entries — tried if no local file matched
+When a request doesn't match any route, the router tries CDN entries (GET only) in registration order. Each entry is either local or proxy — there is no fallback between them.
 
 ### Security
 
