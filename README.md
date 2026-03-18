@@ -262,7 +262,7 @@ handler getUser(ctx: Context, name: string) {.html.}:
 
 # What the macro generates:
 proc getUser*(ctx: Context, name: string): Future[Response] {.
-    async: (raises: [CatchableError]), gcsafe.} =
+    async: (raises: [CatchableError]).} =
   return answer(UserProfile(name=name))
 ```
 
@@ -457,12 +457,12 @@ Middleware functions wrap handlers with a `next` callback:
 
 ```nim
 proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]), gcsafe.} =
+    async: (raises: [CatchableError]).} =
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
 proc authMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]), gcsafe.} =
+    async: (raises: [CatchableError]).} =
   if ctx.request.headers.hasKey("Authorization"):
     result = await next(ctx)
   else:
@@ -501,7 +501,7 @@ Internally, `withTimeout` calls Chronos `wait()` on the handler future and catch
 ```nim
 # What withTimeout(2000) does:
 proc(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]), gcsafe.} =
+    async: (raises: [CatchableError]).} =
   try:
     return await next(ctx).wait(milliseconds(2000))
   except AsyncTimeoutError:
@@ -518,11 +518,13 @@ type MiddlewareProc = proc(ctx: Context, next: HandlerProc): Future[Response] {.
     async: (raises: [CatchableError]), gcsafe.}
 ```
 
+Note: You don't need to write `gcsafe` yourself — Nim infers it automatically. Just use `{.async: (raises: [CatchableError]).}`.
+
 Example — response timing header:
 
 ```nim
 proc withTiming(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]), gcsafe.} =
+    async: (raises: [CatchableError]).} =
   let start = Moment.now()
   result = await next(ctx)
   let elapsed = Moment.now() - start
@@ -935,7 +937,7 @@ route MainRoute:
 # --- Middleware ---
 
 proc logger(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]), gcsafe.} =
+    async: (raises: [CatchableError]).} =
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 

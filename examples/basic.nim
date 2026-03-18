@@ -99,7 +99,7 @@ route MainPage:
 proc loggingMiddleware(
   ctx: Context,
   next: HandlerProc,
-): Future[Response] {.async: (raises: [CatchableError]), gcsafe.} =
+): Future[Response] {.async: (raises: [CatchableError]).} =
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
