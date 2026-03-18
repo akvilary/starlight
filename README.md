@@ -567,8 +567,8 @@ router.addCDN("/libs", proxy = "https://cdn.jsdelivr.net/npm")
 A proxy can also point to a single file:
 
 ```nim
-router.addCDN("/vue.js", proxy = "https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js")
-# GET /vue.js → proxies the exact URL
+router.addCDN("/libs/vue.js", proxy = "https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js")
+# GET /libs/vue.js → proxies the exact URL
 ```
 
 Extension filtering works with proxy entries too:
