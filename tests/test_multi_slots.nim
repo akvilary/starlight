@@ -17,7 +17,7 @@ layout Page() {.buf.}:
   TwoLazy(lazy headerContent=HeaderBlock(), lazy bodyContent=FooterBlock())
 
 suite "multiple lazy parameters":
-  let ctx = newContext()
+
 
   test "two lazy params rendered in correct order":
     let html = Page()

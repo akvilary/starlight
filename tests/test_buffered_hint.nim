@@ -7,7 +7,7 @@ layout BigList(items: seq[string]) {.buf: 32.}:
       Li: item
 
 suite "buffered layout with capacity hint":
-  let ctx = newContext()
+
 
   test "renders list with {.buf: 32.} hint":
     let html = BigList(items = @["a", "b", "c"])

@@ -11,7 +11,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 - **Native Nim syntax in HTML DSL** — no special syntax like `{var}` or `x->inc()`. Just write normal Nim code inside `layout` blocks.
 - **PrefixTree router** — typed path parameters (`{id:int}`, `{slug}`, `{price:float}`) with compile-time validation.
 - **Middleware chain** — explicit `next` callback pattern for predictable handler processing.
-- **Zero-overhead layouts** — `layout` generates inline procs with implicit context passing.
+- **Zero-overhead layouts** — `layout` generates inline procs for HTML rendering.
 - **Single allocation rendering** — the HTML engine pre-calculates buffer size and builds the entire page in one string.
 - **Shared buffer mode (`{.buf.}`)** — nested layouts write to a single shared buffer with zero intermediate allocations. Buffer capacity is computed at compile time. The final string is moved (not copied) through the entire response chain thanks to Nim's ORC move semantics.
 
@@ -61,7 +61,7 @@ The project ships with `nim.cfg` that sets `--mm:orc` explicitly. ORC provides m
 
 ## Layouts
 
-`layout` creates reusable HTML templates. HTML tags are only available inside `layout` bodies. Context (`ctx`) is passed implicitly between layouts.
+`layout` creates reusable HTML templates. HTML tags are only available inside `layout` bodies. Layouts are pure rendering functions — pass any needed data explicitly via parameters.
 
 ### Basic Layout
 
@@ -129,7 +129,7 @@ layout Page(title: string) {.buf.}:
 
 ### Using Layouts in Handlers
 
-Layouts are called like regular functions. `ctx` is passed implicitly:
+Layouts are called like regular functions:
 
 ```nim
 handler home() {.html.}:
@@ -584,7 +584,7 @@ handler home() {.html.}:
 # What actually happens:
 #   1. Page template sees declared(buf) = false
 #   2. Creates: var buf = newStringOfCap(Page_staticCap)
-#   3. Calls __layout__Page(ctx, buf, title) — fills buf
+#   3. Calls __layout__Page(buf, title) — fills buf
 #      (all nested {.buf.} layouts write to this same buf)
 #   4. Returns buf as string
 #   5. answer(buf) — moves the string into Response.body (zero copies, ORC move semantics)
@@ -599,7 +599,7 @@ layout Page(title: string) {.buf.}:
   Html:
     Body:
       SiteHeader()   # SiteHeader sees declared(buf) = true
-                      # → calls __layout__SiteHeader(ctx, buf) directly
+                      # → calls __layout__SiteHeader(buf) directly
                       # → writes to the SAME buf, returns ""
                       # Zero allocation, zero copy
 ```

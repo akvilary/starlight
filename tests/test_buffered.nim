@@ -17,7 +17,7 @@ layout Page(title: string) {.buf.}:
   Wrapper(title=title, lazy content=SiteHeader())
 
 suite "buffered layouts":
-  let ctx = newContext()
+
 
   test "buffer order with lazy content":
     let html = Page(title="Hello")

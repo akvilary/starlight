@@ -8,7 +8,6 @@
 ##       Body:
 ##         raw content
 ##
-##   # In a handler (ctx is implicit):
 ##   Page(title="Hello", content="<h1>World</h1>")
 ##
 ## Buffered mode — all nested writes go to one shared buffer:
@@ -105,7 +104,6 @@ proc generateBuffered(name: NimNode, body: NimNode,
   let lazyProcType = newNimNode(nnkProcTy).add(
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),
-      newIdentDefs(ident"ctx", ident"Context"),
       newIdentDefs(ident"buf", newNimNode(nnkVarTy).add(ident"string"))
     ),
     newNimNode(nnkPragma).add(
@@ -118,11 +116,10 @@ proc generateBuffered(name: NimNode, body: NimNode,
     )
   )
 
-  # proc __layout__Name*(ctx: Context, buf: var string, params...,
+  # proc __layout__Name*(buf: var string, params...,
   #                      __lazy__content: proc(...), ...) {.inline.} =
   var implParams: seq[NimNode] = @[]
   implParams.add newEmptyNode()  # void return
-  implParams.add newIdentDefs(ident"ctx", ident"Context")
   implParams.add newIdentDefs(bufIdent, newNimNode(nnkVarTy).add(ident"string"))
   for p in procParams:
     implParams.add p
@@ -138,12 +135,11 @@ proc generateBuffered(name: NimNode, body: NimNode,
   implProc.addPragma(ident"inline")
   result.add implProc
 
-  # No-op closure for lazy params: proc(ctx: Context, buf: var string) = discard
+  # No-op closure for lazy params: proc(buf: var string) = discard
   let noopLazy = newNimNode(nnkLambda).add(
     newEmptyNode(), newEmptyNode(), newEmptyNode(),
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),
-      newIdentDefs(ident"ctx", ident"Context"),
       newIdentDefs(ident"buf", newNimNode(nnkVarTy).add(ident"string"))
     ),
     newNimNode(nnkPragma).add(ident"nimcall"), newEmptyNode(),
@@ -158,7 +154,6 @@ proc generateBuffered(name: NimNode, body: NimNode,
 
   # Build _impl call args (lazy params get no-op closures in wrapper)
   var fwdArgs: seq[NimNode] = @[]
-  fwdArgs.add ident"ctx"
   fwdArgs.add bufIdent
   for arg in callArgs:
     fwdArgs.add arg
@@ -200,8 +195,7 @@ proc generateBuffered(name: NimNode, body: NimNode,
   result.add wrapper
 
 macro layout*(signature: untyped, body: untyped): untyped =
-  ## Generates an inline proc (with ctx: Context) and a template wrapper
-  ## (without ctx) for implicit context passing.
+  ## Generates a proc with the user's name and parameters.
   ##
   ## With {.buf.} pragma, generates a buffered layout that writes
   ## directly to a shared buffer instead of returning a string.
@@ -230,45 +224,23 @@ macro layout*(signature: untyped, body: untyped): untyped =
     let (procParams, tmplParams, callArgs) = extractParams(actualSignature, lazyNames)
     return generateBuffered(name, body, procParams, tmplParams, callArgs, lazyNames, hintKb)
 
-  # --- Regular layout (unchanged) ---
+  # --- Regular layout ---
 
-  let (procParams, tmplParams, callArgs) = extractParams(actualSignature)
+  let (procParams, _, _) = extractParams(actualSignature)
 
-  # Build param list for proc: ctx: Context, then user params
+  # Build param list: just user params
   var fullProcParams: seq[NimNode] = @[]
   fullProcParams.add ident"string"  # return type
-  fullProcParams.add newIdentDefs(ident"ctx", ident"Context")
   for p in procParams:
     fullProcParams.add p
 
-  # Build param list for template: just user params (no ctx)
-  var fullTmplParams: seq[NimNode] = @[]
-  fullTmplParams.add ident"string"  # return type
-  for p in tmplParams:
-    fullTmplParams.add p
-
-  # Collect call args for template -> proc forwarding
-  var fullCallArgs: seq[NimNode] = @[]
-  fullCallArgs.add ident"ctx"
-  for arg in callArgs:
-    fullCallArgs.add arg
-
-  # proc Name_impl*(ctx: Context, ...): string {.inline.} = generateHtmlBlock(body)
-  let implProc = newProc(
-    name = postfix(implName, "*"),
+  # proc Name*(params...): string {.inline.} = generateHtmlBlock(body)
+  let resultProc = newProc(
+    name = postfix(name, "*"),
     params = fullProcParams,
     body = newStmtList(generateHtmlBlock(body)),
     procType = nnkProcDef,
   )
-  implProc.addPragma(ident"inline")
+  resultProc.addPragma(ident"inline")
 
-  # template Name*(...): string = Name_impl(ctx, ...)
-  let forwardCall = newCall(implName, fullCallArgs)
-  let tmpl = newProc(
-    name = postfix(name, "*"),
-    params = fullTmplParams,
-    body = newStmtList(forwardCall),
-    procType = nnkTemplateDef,
-  )
-
-  result = newStmtList(implProc, tmpl)
+  result = newStmtList(resultProc)

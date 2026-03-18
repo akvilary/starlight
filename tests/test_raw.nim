@@ -11,7 +11,7 @@ layout RawEscaped(userInput: string) {.buf.}:
     raw escapeHtml(userInput)
 
 suite "raw keyword":
-  let ctx = newContext()
+
 
   test "raw inserts string literal as-is":
     let html = RawText()

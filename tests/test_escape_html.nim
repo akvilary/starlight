@@ -14,7 +14,7 @@ layout MixedContent(trusted: string, untrusted: string) {.buf.}:
     P: escapeHtml(untrusted)
 
 suite "escapeHtml in layouts":
-  let ctx = newContext()
+
 
   test "escapes tag content":
     let html = SafeComment(userInput="<script>alert('xss')</script>")

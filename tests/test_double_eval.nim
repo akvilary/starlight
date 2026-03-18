@@ -18,7 +18,7 @@ layout Page() {.buf.}:
   Outer(lazy content=Inner(value=sideEffect()))
 
 suite "double evaluation":
-  let ctx = newContext()
+
 
   test "side effect called exactly once in nested lazy":
     callCount = 0

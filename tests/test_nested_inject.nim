@@ -16,7 +16,7 @@ layout Page() {.buf.}:
   Outer(lazy content=ContentBlock())
 
 suite "nested lazy forwarding":
-  let ctx = newContext()
+
 
   test "lazy param forwarded through nested layouts":
     let html = Page()

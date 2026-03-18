@@ -50,7 +50,7 @@ proc addDynamic(stmts: NimNode, buf: NimNode, expr: NimNode) =
                       newCall(ident"$", expr))
 
 proc makeLazyLambda(expr: NimNode): NimNode =
-  ## Wrap an expression in a nimcall proc: proc(ctx: Context, buf: var string) {.nimcall.} =
+  ## Wrap an expression in a nimcall proc: proc(buf: var string) {.nimcall.} =
   ##   let tmp = expr; buf.add($tmp)
   let lambdaBuf = ident"buf"
   let tmp = genSym(nskLet, "lazyTmp")
@@ -65,7 +65,6 @@ proc makeLazyLambda(expr: NimNode): NimNode =
     newEmptyNode(),  # generic params
     newNimNode(nnkFormalParams).add(
       newEmptyNode(),  # void return
-      newIdentDefs(ident"ctx", ident"Context"),
       newIdentDefs(lambdaBuf, newNimNode(nnkVarTy).add(ident"string"))
     ),
     newNimNode(nnkPragma).add(ident"nimcall"),  # nimcall — no closure env needed
@@ -146,12 +145,12 @@ proc processTag(node: NimNode, tagName: string, stmts: NimNode,
 
 proc transformLazyCall(node: NimNode, stmts: NimNode, buf: NimNode,
                        lit: var string, lazyParams: HashSet[string]) =
-  ## Transform a call with lazy args: call __layout__Name(ctx, buf, ...) directly,
+  ## Transform a call with lazy args: call __layout__Name(buf, ...) directly,
   ## wrapping lazy exprs in closures.
   flushLit(stmts, buf, lit)
-  # Call _impl directly: __layout__Name(ctx, buf, regular args..., lazy args...)
+  # Call _impl directly: __layout__Name(buf, regular args..., lazy args...)
   let implName = layoutImplName(node[0].strVal)
-  var newCallNode = newCall(implName, ident"ctx", buf)
+  var newCallNode = newCall(implName, buf)
   for i in 1..<node.len:
     let arg = node[i]
     if arg.kind == nnkExprEqExpr and arg[0].kind == nnkCommand and
@@ -210,7 +209,7 @@ proc processNode(node: NimNode, stmts: NimNode, buf: NimNode, lit: var string,
     if name in lazyParams:
       # Lazy param — call the closure at this buffer position
       flushLit(stmts, buf, lit)
-      stmts.add newCall(lazyParamName(name), ident"ctx", buf)
+      stmts.add newCall(lazyParamName(name), buf)
     elif isTag(name) and isVoid(name):
       # Only void tags can be bare identifiers (e.g., Br, Hr)
       lit.add "<" & tagToHtml(name) & "/>"
