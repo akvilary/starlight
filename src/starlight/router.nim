@@ -7,12 +7,15 @@ proc newRouter*(): Router =
   Router(
     root: PrefixTreeNode(kind: skStatic, segment: ""),
     globalMiddlewares: @[],
-    notFoundHandler: nil,
   )
 
 proc use*(router: Router, mw: MiddlewareProc) =
   ## Adds a global middleware to the router.
   router.globalMiddlewares.add mw
+
+proc onError*(router: Router, code: HttpCode, handler: HandlerProc) =
+  ## Registers a custom error handler for the given HTTP status code.
+  router.errorHandlers[code] = handler
 
 proc parsePattern*(pattern: string): seq[PatternSegment] =
   let stripped = pattern.strip(chars = {'/'})
@@ -161,6 +164,22 @@ proc resolvePath*(currentPath, target: string): string =
     else: segments.add(part)
   "/" & segments.join("/")
 
+proc resolveError*(
+  router: Router,
+  ctx: Context,
+  code: HttpCode,
+  message: string,
+): Future[Response] {.async: (raises: [CatchableError]).} =
+  ## Returns a custom error response if a handler is registered for `code`,
+  ## otherwise returns a plain-text error. If the custom handler throws,
+  ## falls back to plain text.
+  if code in router.errorHandlers:
+    try:
+      return await router.errorHandlers[code](ctx)
+    except CatchableError:
+      return errorResponse(code, message)
+  return errorResponse(code, message)
+
 proc dispatch*(
   router: Router,
   ctx: Context,
@@ -180,10 +199,7 @@ proc dispatch*(
       if cdnResp.isSome:
         return cdnResp.get
 
-    if router.notFoundHandler != nil:
-      return await router.notFoundHandler(ctx)
-    else:
-      return errorResponse(Http404, "Not Found")
+    return await router.resolveError(ctx, Http404, "Not Found")
 
 proc prepareForward(
   ctx: Context,

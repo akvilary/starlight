@@ -56,7 +56,7 @@ type
   Router* = ref object
     root*: PrefixTreeNode
     globalMiddlewares*: seq[MiddlewareProc]
-    notFoundHandler*: HandlerProc
+    errorHandlers*: Table[HttpCode, HandlerProc]
     cdnDirs*: seq[CDNEntry]
 
   MatchResult* = object

@@ -65,7 +65,12 @@ proc serve*(router: Router, host: string, port: int) =
     except CancelledError as exc:
       raise exc
     except CatchableError:
-      res = errorResponse(Http500, "Internal Server Error")
+      try:
+        res = await router.resolveError(ctx, Http500, "Internal Server Error")
+      except CancelledError as exc:
+        raise exc
+      except CatchableError:
+        res = errorResponse(Http500, "Internal Server Error")
 
     finalizeResponse(res)
 

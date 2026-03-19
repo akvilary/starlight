@@ -45,6 +45,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
   - [CDN Proxy](#cdn-proxy)
   - [Resolution Order](#resolution-order)
   - [Security](#security)
+- [Custom Error Pages](#custom-error-pages)
 - [Compile-Time Optimization](#compile-time-optimization)
 - [Shared Buffer Mode](#shared-buffer-mode)
   - [How It Works](#how-it-works)
@@ -653,6 +654,39 @@ Local file serving includes path traversal protection:
 - Resolved paths are verified to stay inside the served directory
 - Only regular files are served (no directories, no symlinks escaping the root)
 
+## Custom Error Pages
+
+By default, Starlight returns plain-text responses for errors (`"Not Found"`, `"Internal Server Error"`). Use `router.onError` to register custom error handlers for any HTTP status code:
+
+```nim
+layout NotFoundPage(path: string) {.buf.}:
+  Html:
+    Body:
+      H1: "404 — Page Not Found"
+      P: "Nothing at " & path
+      A(href="/"): "Go Home"
+
+handler notFound(ctx: Context) {.html.}:
+  return (NotFoundPage(path=ctx.path), Http404)
+
+handler serverError(ctx: Context) {.html.}:
+  return ("Something went wrong", Http500)
+
+var router = newRouter()
+router.onError(Http404, notFound)
+router.onError(Http500, serverError)
+```
+
+Error handlers are regular `HandlerProc` — they receive the full `Context` (path, headers, query, etc.) and return a `Response`. Define them with the `handler` macro just like any other handler.
+
+**How it works:**
+
+- **404** — when no route matches and no CDN file is found, the custom 404 handler is called
+- **500** — when a route handler throws an unhandled exception, the custom 500 handler is called
+- **Any code** — `onError` accepts any `HttpCode`, so you can register handlers for 403, 408, etc.
+
+**Safety:** if a custom error handler itself throws an exception, Starlight falls back to a plain-text response. Error handlers never cause cascading failures.
+
 ## Compile-Time Optimization
 
 Starlight's key advantage: the HTML engine analyzes templates at compile time and separates static from dynamic parts.
@@ -922,6 +956,19 @@ handler getStatus(ctx: Context) {.json.}:
 handler home(ctx: Context) {.html.}:
   return HomePage(pageTitle="Home")
 
+# --- Error pages ---
+
+layout NotFoundContent(path: string) {.buf.}:
+  H1: "404 — Not Found"
+  P: "Nothing at " & path
+  A(href="/"): "Go Home"
+
+layout NotFoundPage(pageTitle: string, path: string) {.buf.}:
+  Shell(pageTitle=pageTitle, lazy content=NotFoundContent(path=path))
+
+handler notFound(ctx: Context) {.html.}:
+  return (NotFoundPage(pageTitle="Not Found", path=ctx.path), Http404)
+
 # --- Routes ---
 
 route UsersApi:
@@ -945,6 +992,7 @@ proc logger(ctx: Context, next: HandlerProc): Future[Response] {.
 
 var router = newRouter()
 router.use(logger)
+router.onError(Http404, notFound)
 router.mount("/users", UsersApi)
 router.mount("/api", ApiRoutes)
 router.mount("/", MainRoute)
@@ -976,6 +1024,7 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `router.mount(prefix, group)` | proc | Mounts a route group at prefix |
 | `router.mount(prefix, group, middlewares)` | proc | Mounts a route group with group-level middleware |
 | `router.use(middleware)` | proc | Adds global middleware |
+| `router.onError(code, handler)` | proc | Registers a custom error handler for an HTTP status code |
 | `router.addCDN(path)` | proc | Serves static files from a local directory |
 | `router.addCDN(path, extensions, ignoreExtensions)` | proc | Serves static files with extension whitelist/blacklist |
 | `router.addCDN(path, proxy)` | proc | Proxies requests to a remote CDN |
