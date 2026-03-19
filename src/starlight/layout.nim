@@ -43,6 +43,8 @@ proc extractParams(
 ): tuple[procParams, tmplParams, callArgs: seq[NimNode]] =
   ## Extract parameter lists from layout signature.
   ## Parameters with `lazyLayout` type are excluded — handled separately.
+  ## procParams and tmplParams are structurally identical but must be
+  ## separate NimNode instances (Nim AST requires distinct nodes per proc).
   var procParams: seq[NimNode] = @[]
   var tmplParams: seq[NimNode] = @[]
   var callArgs: seq[NimNode] = @[]
@@ -156,29 +158,21 @@ proc generateBuffered(
   for p in tmplParams:
     wrapperParams.add p
 
-  # Build _impl call args (lazy params get no-op closures in wrapper)
-  var fwdArgs: seq[NimNode] = @[]
-  fwdArgs.add bufIdent
-  for arg in callArgs:
-    fwdArgs.add arg
-  for lazyName in lazyNames:
-    fwdArgs.add noopLazy
-
-  var fwdCallBuf = newCall(implName)
-  for arg in fwdArgs:
-    fwdCallBuf.add arg
-
-  var fwdCallStandalone = newCall(implName)
-  for arg in fwdArgs:
-    fwdCallStandalone.add arg
+  # Build _impl call: __layout__Name(buf, args..., lazy closures...)
+  proc makeFwdCall(): NimNode =
+    result = newCall(implName, bufIdent)
+    for arg in callArgs:
+      result.add arg
+    for lazyName in lazyNames:
+      result.add noopLazy
 
   # when declared(buf): __layout__Name(ctx, buf, ...); ""
-  let bufBranch = newStmtList(fwdCallBuf, newStrLitNode(""))
+  let bufBranch = newStmtList(makeFwdCall(), newStrLitNode(""))
 
   # else: block: var buf = ...; __layout__Name(ctx, buf, ...); buf
   let standaloneBranch = newBlockStmt(newEmptyNode(), newStmtList(
     newVarStmt(bufIdent, newCall(ident"newStringOfCap", staticCapName)),
-    fwdCallStandalone,
+    makeFwdCall(),
     bufIdent
   ))
 
@@ -233,15 +227,15 @@ macro layout*(signature: untyped, body: untyped): untyped =
   let (procParams, _, _) = extractParams(actualSignature)
 
   # Build param list: just user params
-  var fullProcParams: seq[NimNode] = @[]
-  fullProcParams.add ident"string"  # return type
+  var fullParams: seq[NimNode] = @[]
+  fullParams.add ident"string"  # return type
   for p in procParams:
-    fullProcParams.add p
+    fullParams.add p
 
   # proc Name*(params...): string {.inline.} = generateHtmlBlock(body)
   let resultProc = newProc(
     name = postfix(name, "*"),
-    params = fullProcParams,
+    params = fullParams,
     body = newStmtList(generateHtmlBlock(body)),
     procType = nnkProcDef,
   )

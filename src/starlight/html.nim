@@ -37,17 +37,22 @@ proc flushLit(stmts: NimNode, buf: NimNode, lit: var string) =
     stmts.add newCall(newDotExpr(buf, ident"add"), newStrLitNode(lit))
     lit = ""
 
-proc addDynamic(stmts: NimNode, buf: NimNode, expr: NimNode) =
-  ## Add a dynamic (runtime) expression to the buffer without escaping.
-  ## Uses let-binding for calls to prevent double evaluation.
+proc addToBuf(
+  stmts: NimNode,
+  buf: NimNode,
+  expr: NimNode,
+  stringify: bool = true,
+) =
+  ## Add expression to the buffer. Uses let-binding for calls to prevent
+  ## double evaluation. When stringify=true, wraps with `$`.
+  proc wrapExpr(e: NimNode): NimNode =
+    if stringify: newCall(ident"$", e) else: e
   if expr.kind in {nnkCall, nnkCommand}:
     let tmp = genSym(nskLet, "tmp")
     stmts.add newLetStmt(tmp, expr)
-    stmts.add newCall(newDotExpr(buf, ident"add"),
-                      newCall(ident"$", tmp))
+    stmts.add newCall(newDotExpr(buf, ident"add"), wrapExpr(tmp))
   else:
-    stmts.add newCall(newDotExpr(buf, ident"add"),
-                      newCall(ident"$", expr))
+    stmts.add newCall(newDotExpr(buf, ident"add"), wrapExpr(expr))
 
 proc makeLazyLambda(expr: NimNode): NimNode =
   ## Wrap an expression in a nimcall proc: proc(buf: var string) {.nimcall.} =
@@ -108,6 +113,21 @@ proc processBodyBlock(
   flushLit(body, buf, lit)
   body
 
+proc rebuildBranch(
+  kind: NimNodeKind,
+  branch: NimNode,
+  buf: NimNode,
+  lit: var string,
+  lazyParams: HashSet[string],
+): NimNode =
+  ## Rebuild an AST branch node: copy leading children, replace last with
+  ## processBodyBlock. Used for OfBranch, ExceptBranch, ForStmt.
+  let body = processBodyBlock(branch[^1], buf, lit, lazyParams)
+  result = newNimNode(kind)
+  for j in 0..<branch.len - 1:
+    result.add branch[j]
+  result.add body
+
 proc processContent(
   node: NimNode,
   stmts: NimNode,
@@ -125,7 +145,7 @@ proc processContent(
     lit.add $node.floatVal
   else:
     flushLit(stmts, buf, lit)
-    addDynamic(stmts, buf, node)
+    addToBuf(stmts, buf, node)
 
 proc processTag(
   node: NimNode,
@@ -151,7 +171,7 @@ proc processTag(
         lit.add "\""
       else:
         flushLit(stmts, buf, lit)
-        addDynamic(stmts, buf, attrVal)
+        addToBuf(stmts, buf, attrVal)
         lit = "\""
 
   if isVoid(tagName):
@@ -223,12 +243,7 @@ proc processNode(
       let content = if node.len > 1 and node[1].kind == nnkStmtList: node[1][0]
                     elif node.len > 1: node[1]
                     else: newStrLitNode("")
-      if content.kind in {nnkCall, nnkCommand}:
-        let tmp = genSym(nskLet, "raw")
-        stmts.add newLetStmt(tmp, content)
-        stmts.add newCall(newDotExpr(buf, ident"add"), tmp)
-      else:
-        stmts.add newCall(newDotExpr(buf, ident"add"), content)
+      addToBuf(stmts, buf, content, stringify = false)
     elif hasLazyArgs(node):
       # Call with lazy args — wrap lazy exprs in closures
       transformLazyCall(node, stmts, buf, lit, lazyParams)
@@ -275,12 +290,7 @@ proc processNode(
 
   of nnkForStmt:
     flushLit(stmts, buf, lit)
-    let body = processBodyBlock(node[^1], buf, lit, lazyParams)
-    var forNode = newNimNode(nnkForStmt)
-    for i in 0..<node.len - 1:
-      forNode.add node[i]
-    forNode.add body
-    stmts.add forNode
+    stmts.add rebuildBranch(nnkForStmt, node, buf, lit, lazyParams)
 
   of nnkWhileStmt:
     flushLit(stmts, buf, lit)
@@ -295,12 +305,7 @@ proc processNode(
       let branch = node[i]
       case branch.kind
       of nnkOfBranch:
-        let body = processBodyBlock(branch[^1], buf, lit, lazyParams)
-        var ofNode = newNimNode(nnkOfBranch)
-        for j in 0..<branch.len - 1:
-          ofNode.add branch[j]
-        ofNode.add body
-        caseNode.add ofNode
+        caseNode.add rebuildBranch(nnkOfBranch, branch, buf, lit, lazyParams)
       of nnkElse:
         let body = processBodyBlock(branch[0], buf, lit, lazyParams)
         caseNode.add newNimNode(nnkElse).add(body)
@@ -315,12 +320,7 @@ proc processNode(
       let branch = node[i]
       case branch.kind
       of nnkExceptBranch:
-        let body = processBodyBlock(branch[^1], buf, lit, lazyParams)
-        var exceptNode = newNimNode(nnkExceptBranch)
-        for j in 0..<branch.len - 1:
-          exceptNode.add branch[j]
-        exceptNode.add body
-        tryNode.add exceptNode
+        tryNode.add rebuildBranch(nnkExceptBranch, branch, buf, lit, lazyParams)
       of nnkFinally:
         let body = processBodyBlock(branch[0], buf, lit, lazyParams)
         tryNode.add newNimNode(nnkFinally).add(body)
