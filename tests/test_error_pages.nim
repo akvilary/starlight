@@ -1,4 +1,4 @@
-import std/unittest
+import std/[unittest, json]
 import ../src/starlight
 
 handler normalRoute(ctx: Context) {.html.}:
@@ -9,6 +9,9 @@ handler custom404(ctx: Context) {.html.}:
 
 handler custom500(ctx: Context) {.html.}:
   return ("Custom 500", Http500)
+
+handler json404(ctx: Context) {.json.}:
+  return (%*{"error": "not found", "path": ctx.path}, Http404)
 
 handler throwing500(ctx: Context):
   raise newException(CatchableError, "handler crashed")
@@ -78,6 +81,21 @@ suite "custom error pages":
     let res = waitFor r.resolveError(ctx, Http500, "Internal Server Error")
     check res.code == Http500
     check res.body == "Internal Server Error"
+
+  test "json error handler":
+    let r = newRouter()
+    r.addRoute(MethodGet, "/", normalRoute)
+    r.onError(Http404, json404)
+    let ctx = newContext()
+    ctx.path = "/missing"
+    ctx.httpMethod = MethodGet
+    ctx.router = r
+    let res = waitFor r.dispatch(ctx)
+    check res.code == Http404
+    let body = parseJson(res.body)
+    check body["error"].getStr() == "not found"
+    check body["path"].getStr() == "/missing"
+    check res.headers.getString("content-type") == "application/json; charset=utf-8"
 
   test "multiple error codes registered":
     let r = newRouter()
