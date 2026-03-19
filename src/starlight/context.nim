@@ -37,17 +37,25 @@ proc jsonBody*[T](ctx: Context, t: typedesc[T]): T =
 
 # --- Response builders ---
 
-proc answer*(body: string, code: HttpCode = Http200): Response =
+proc buildResponse(
+  body: string,
+  contentType: string,
+  code: HttpCode = Http200,
+): Response =
   Response(code: code, body: body,
-           headers: HttpTable.init([("Content-Type", "text/html; charset=utf-8")]))
+           headers: HttpTable.init([("Content-Type", contentType)]))
+
+proc errorResponse*(code: HttpCode, message: string): Response =
+  buildResponse(message, "text/plain", code)
+
+proc answer*(body: string, code: HttpCode = Http200): Response =
+  buildResponse(body, "text/html; charset=utf-8", code)
 
 proc answerJson*(body: string, code: HttpCode = Http200): Response =
-  Response(code: code, body: body,
-           headers: HttpTable.init([("Content-Type", "application/json; charset=utf-8")]))
+  buildResponse(body, "application/json; charset=utf-8", code)
 
 proc answerJson*(body: JsonNode, code: HttpCode = Http200): Response =
-  Response(code: code, body: $body,
-           headers: HttpTable.init([("Content-Type", "application/json; charset=utf-8")]))
+  buildResponse($body, "application/json; charset=utf-8", code)
 
 proc answer*(res: Response): Response = res
 

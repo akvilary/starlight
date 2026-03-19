@@ -32,40 +32,39 @@ proc getMimeType*(ext: string): string =
 proc addCDN*(
   router: Router,
   path: string,
+  proxy: string = "",
   extensions: seq[string] = default(seq[string]),
   ignoreExtensions: seq[string] = default(seq[string]),
 ) =
   router.cdnDirs.add CDNEntry(
     path: path.strip(chars = {'/'}),
+    proxy: if proxy.len > 0: proxy.strip(chars = {'/'}) else: "",
     extensions: extensions.toHashSet(),
     ignoreExtensions: ignoreExtensions.toHashSet(),
   )
 
-proc addCDN*(
-  router: Router,
-  path: string,
-  proxy: string,
-  extensions: seq[string] = default(seq[string]),
-  ignoreExtensions: seq[string] = default(seq[string]),
-) =
-  router.cdnDirs.add CDNEntry(
-    path: path.strip(chars = {'/'}),
-    proxy: proxy.strip(chars = {'/'}),
-    extensions: extensions.toHashSet(),
-    ignoreExtensions: ignoreExtensions.toHashSet(),
-  )
-
-proc tryServeStatic(entry: CDNEntry, reqPath: string): Option[Response] =
+proc matchCDNPrefix(entry: CDNEntry, reqPath: string): Option[string] =
+  ## Match request path against CDN entry prefix, return the tail after prefix.
   let prefix = "/" & entry.path
   if not reqPath.startsWith(prefix):
-    return none(Response)
-
+    return none(string)
   let tail = reqPath[prefix.len..^1]
   # After prefix: must be empty (exact match) or start with /
   if tail.len > 0 and tail[0] != '/':
+    return none(string)
+  some(tail)
+
+proc isExtensionAllowed(entry: CDNEntry, ext: string): bool =
+  ## Check if file extension passes both allow and ignore filters.
+  (entry.extensions.len == 0 or ext in entry.extensions) and
+    ext notin entry.ignoreExtensions
+
+proc tryServeStatic(entry: CDNEntry, reqPath: string): Option[Response] =
+  let tailOpt = matchCDNPrefix(entry, reqPath)
+  if tailOpt.isNone:
     return none(Response)
 
-  let relative = tail.strip(chars = {'/'})
+  let relative = tailOpt.get.strip(chars = {'/'})
 
   let filePath =
     if relative.len == 0:
@@ -90,11 +89,8 @@ proc tryServeStatic(entry: CDNEntry, reqPath: string): Option[Response] =
   if info.kind != pcFile:
     return none(Response)
 
-  # Extension filter
   let ext = filePath.splitFile().ext.strip(chars = {'.'}).toLowerAscii()
-  if entry.extensions.len > 0 and ext notin entry.extensions:
-    return none(Response)
-  if ext in entry.ignoreExtensions:
+  if not isExtensionAllowed(entry, ext):
     return none(Response)
 
   let body = readFile(filePath)
@@ -109,15 +105,11 @@ proc tryProxyCDN(
   entry: CDNEntry,
   reqPath: string,
 ): Future[Option[Response]] {.async: (raises: [CatchableError]).} =
-  let prefix = "/" & entry.path
-  if not reqPath.startsWith(prefix):
+  let tailOpt = matchCDNPrefix(entry, reqPath)
+  if tailOpt.isNone:
     return none(Response)
 
-  let tail = reqPath[prefix.len..^1]
-  if tail.len > 0 and tail[0] != '/':
-    return none(Response)
-
-  let relative = tail.strip(leading = false, chars = {'/'})
+  let relative = tailOpt.get.strip(leading = false, chars = {'/'})
 
   # Build target URL
   let targetUrl =
@@ -127,11 +119,8 @@ proc tryProxyCDN(
     else:
       entry.proxy & relative
 
-  # Extension filter
   let ext = targetUrl.splitFile().ext.strip(chars = {'.'}).toLowerAscii()
-  if entry.extensions.len > 0 and ext notin entry.extensions:
-    return none(Response)
-  if ext in entry.ignoreExtensions:
+  if not isExtensionAllowed(entry, ext):
     return none(Response)
 
   let session = HttpSessionRef.new()

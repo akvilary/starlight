@@ -183,8 +183,7 @@ proc dispatch*(
     if router.notFoundHandler != nil:
       return await router.notFoundHandler(ctx)
     else:
-      return Response(code: Http404, body: "Not Found",
-                      headers: HttpTable.init([("Content-Type", "text/plain")]))
+      return errorResponse(Http404, "Not Found")
 
 proc prepareForward(
   ctx: Context,

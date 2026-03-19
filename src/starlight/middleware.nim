@@ -1,6 +1,6 @@
 ## Middleware chain builder and built-in middleware helpers.
 
-import types
+import types, context
 
 proc buildChain*(
   handler: HandlerProc,
@@ -25,5 +25,4 @@ proc withTimeout*(ms: int): MiddlewareProc =
     try:
       return await next(ctx).wait(milliseconds(ms))
     except AsyncTimeoutError:
-      return Response(code: Http408, body: "Request Timeout",
-                      headers: HttpTable.init([("Content-Type", "text/plain")]))
+      return errorResponse(Http408, "Request Timeout")

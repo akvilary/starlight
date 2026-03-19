@@ -96,6 +96,18 @@ proc processNode(
   lazyParams: HashSet[string],
 )
 
+proc processBodyBlock(
+  node: NimNode,
+  buf: NimNode,
+  lit: var string,
+  lazyParams: HashSet[string],
+): NimNode =
+  ## Process a control flow body into a new StmtList, flushing literals.
+  var body = newStmtList()
+  processNode(node, body, buf, lit, lazyParams)
+  flushLit(body, buf, lit)
+  body
+
 proc processContent(
   node: NimNode,
   stmts: NimNode,
@@ -139,14 +151,7 @@ proc processTag(
         lit.add "\""
       else:
         flushLit(stmts, buf, lit)
-        if attrVal.kind in {nnkCall, nnkCommand}:
-          let tmp = genSym(nskLet, "attr")
-          stmts.add newLetStmt(tmp, attrVal)
-          stmts.add newCall(newDotExpr(buf, ident"add"),
-                            newCall(ident"$", tmp))
-        else:
-          stmts.add newCall(newDotExpr(buf, ident"add"),
-                            newCall(ident"$", attrVal))
+        addDynamic(stmts, buf, attrVal)
         lit = "\""
 
   if isVoid(tagName):
@@ -260,23 +265,17 @@ proc processNode(
     for branch in node:
       case branch.kind
       of nnkElifBranch, nnkElifExpr:
-        var body = newStmtList()
-        processNode(branch[1], body, buf, lit, lazyParams)
-        flushLit(body, buf, lit)
+        let body = processBodyBlock(branch[1], buf, lit, lazyParams)
         ifNode.add newNimNode(nnkElifBranch).add(branch[0], body)
       of nnkElse, nnkElseExpr:
-        var body = newStmtList()
-        processNode(branch[0], body, buf, lit, lazyParams)
-        flushLit(body, buf, lit)
+        let body = processBodyBlock(branch[0], buf, lit, lazyParams)
         ifNode.add newNimNode(nnkElse).add(body)
       else: discard
     stmts.add ifNode
 
   of nnkForStmt:
     flushLit(stmts, buf, lit)
-    var body = newStmtList()
-    processNode(node[^1], body, buf, lit, lazyParams)
-    flushLit(body, buf, lit)
+    let body = processBodyBlock(node[^1], buf, lit, lazyParams)
     var forNode = newNimNode(nnkForStmt)
     for i in 0..<node.len - 1:
       forNode.add node[i]
@@ -285,9 +284,7 @@ proc processNode(
 
   of nnkWhileStmt:
     flushLit(stmts, buf, lit)
-    var body = newStmtList()
-    processNode(node[1], body, buf, lit, lazyParams)
-    flushLit(body, buf, lit)
+    let body = processBodyBlock(node[1], buf, lit, lazyParams)
     stmts.add newNimNode(nnkWhileStmt).add(node[0], body)
 
   of nnkCaseStmt:
@@ -298,18 +295,14 @@ proc processNode(
       let branch = node[i]
       case branch.kind
       of nnkOfBranch:
-        var body = newStmtList()
-        processNode(branch[^1], body, buf, lit, lazyParams)
-        flushLit(body, buf, lit)
+        let body = processBodyBlock(branch[^1], buf, lit, lazyParams)
         var ofNode = newNimNode(nnkOfBranch)
         for j in 0..<branch.len - 1:
           ofNode.add branch[j]
         ofNode.add body
         caseNode.add ofNode
       of nnkElse:
-        var body = newStmtList()
-        processNode(branch[0], body, buf, lit, lazyParams)
-        flushLit(body, buf, lit)
+        let body = processBodyBlock(branch[0], buf, lit, lazyParams)
         caseNode.add newNimNode(nnkElse).add(body)
       else: discard
     stmts.add caseNode
@@ -317,26 +310,19 @@ proc processNode(
   of nnkTryStmt:
     flushLit(stmts, buf, lit)
     var tryNode = newNimNode(nnkTryStmt)
-    var tryBody = newStmtList()
-    processNode(node[0], tryBody, buf, lit, lazyParams)
-    flushLit(tryBody, buf, lit)
-    tryNode.add tryBody
+    tryNode.add processBodyBlock(node[0], buf, lit, lazyParams)
     for i in 1..<node.len:
       let branch = node[i]
       case branch.kind
       of nnkExceptBranch:
-        var body = newStmtList()
-        processNode(branch[^1], body, buf, lit, lazyParams)
-        flushLit(body, buf, lit)
+        let body = processBodyBlock(branch[^1], buf, lit, lazyParams)
         var exceptNode = newNimNode(nnkExceptBranch)
         for j in 0..<branch.len - 1:
           exceptNode.add branch[j]
         exceptNode.add body
         tryNode.add exceptNode
       of nnkFinally:
-        var body = newStmtList()
-        processNode(branch[0], body, buf, lit, lazyParams)
-        flushLit(body, buf, lit)
+        let body = processBodyBlock(branch[0], buf, lit, lazyParams)
         tryNode.add newNimNode(nnkFinally).add(body)
       else: discard
     stmts.add tryNode
@@ -357,38 +343,31 @@ proc processNode(
   else:
     processContent(node, stmts, buf, lit, lazyParams)
 
-proc countStaticLen*(stmts: NimNode): int =
-  ## Count total static string length for pre-allocation estimate.
-  for stmt in stmts:
-    if stmt.kind == nnkCall and stmt.len > 1 and stmt[^1].kind == nnkStrLit:
-      if stmt[0].kind == nnkDotExpr and stmt[0][1].eqIdent("add"):
-        result += stmt[^1].strVal.len
-    for child in stmt:
-      if child.kind == nnkStmtList:
-        result += countStaticLen(child)
-      elif child.kind in {nnkElifBranch, nnkOfBranch}:
-        if child[^1].kind == nnkStmtList:
-          result += countStaticLen(child[^1])
-      elif child.kind in {nnkElse}:
-        if child[0].kind == nnkStmtList:
-          result += countStaticLen(child[0])
-
-proc countDynamicExprs*(stmts: NimNode): int =
-  ## Count dynamic (non-static) buf.add calls for buffer estimation.
+proc countBufAdds*(
+  stmts: NimNode,
+): tuple[staticLen: int, dynamicExprs: int] =
+  ## Count static string length and dynamic expression count in a single pass.
   for stmt in stmts:
     if stmt.kind == nnkCall and stmt.len > 1:
       if stmt[0].kind == nnkDotExpr and stmt[0][1].eqIdent("add"):
-        if stmt[^1].kind != nnkStrLit:
-          inc result
+        if stmt[^1].kind == nnkStrLit:
+          result.staticLen += stmt[^1].strVal.len
+        else:
+          inc result.dynamicExprs
     for child in stmt:
+      var nested: NimNode
       if child.kind == nnkStmtList:
-        result += countDynamicExprs(child)
-      elif child.kind in {nnkElifBranch, nnkOfBranch}:
-        if child[^1].kind == nnkStmtList:
-          result += countDynamicExprs(child[^1])
-      elif child.kind in {nnkElse}:
-        if child[0].kind == nnkStmtList:
-          result += countDynamicExprs(child[0])
+        nested = child
+      elif child.kind in {nnkElifBranch, nnkOfBranch} and
+           child[^1].kind == nnkStmtList:
+        nested = child[^1]
+      elif child.kind == nnkElse and child[0].kind == nnkStmtList:
+        nested = child[0]
+      else:
+        continue
+      let sub = countBufAdds(nested)
+      result.staticLen += sub.staticLen
+      result.dynamicExprs += sub.dynamicExprs
 
 proc generateHtmlBlock*(body: NimNode): NimNode =
   ## Generate HTML rendering code from DSL body. Called by the layout macro.
@@ -399,8 +378,7 @@ proc generateHtmlBlock*(body: NimNode): NimNode =
   processNode(body, stmts, buf, lit, initHashSet[string]())
   flushLit(stmts, buf, lit)
 
-  let staticLen = countStaticLen(stmts)
-  let cap = staticLen + 256
+  let cap = countBufAdds(stmts).staticLen + 256
 
   var resultStmts = newStmtList()
   resultStmts.add newVarStmt(buf, newCall(ident"newStringOfCap", newIntLitNode(cap)))

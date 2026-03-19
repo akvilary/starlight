@@ -69,8 +69,7 @@ proc extractParams(
 
 proc buildCapExpr(stmts: NimNode, hintKb: int): NimNode =
   ## Build compile-time expression for buffer capacity.
-  let staticLen = countStaticLen(stmts)
-  let dynamicCount = countDynamicExprs(stmts)
+  let (staticLen, dynamicCount) = countBufAdds(stmts)
 
   var capExpr: NimNode = newIntLitNode(staticLen + dynamicCount * 64 + 256)
 
