@@ -1,19 +1,9 @@
 ## HTTP server adapter using chronos.
 
-import std/[tables, options, strutils, uri]
+import std/[tables, options, strutils]
 import chronos
 import chronos/apps/http/httpserver
-import types, router, context
-
-proc parseQueryString(qs: string): Table[string, string] =
-  result = initTable[string, string]()
-  if qs.len == 0: return
-  for pair in qs.split('&'):
-    let eqIdx = pair.find('=')
-    if eqIdx >= 0:
-      result[decodeUrl(pair[0..<eqIdx])] = decodeUrl(pair[eqIdx + 1..^1])
-    else:
-      result[decodeUrl(pair)] = ""
+import types, router, context, form
 
 proc newContextFromRequest(req: HttpRequestRef): Context =
   let ctx = newContext()

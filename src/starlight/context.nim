@@ -2,7 +2,7 @@
 
 import std/[tables, json]
 import chronos/apps/http/httpserver
-import types
+import types, form
 
 proc newRequestData*(): RequestData =
   RequestData(
@@ -34,6 +34,10 @@ proc getQuery*(ctx: Context, key: string, default: string = ""): string =
 proc jsonBody*[T](ctx: Context, t: typedesc[T]): T =
   let node = parseJson(ctx.request.body)
   result = to(node, T)
+
+proc formData*(ctx: Context): FormData =
+  ## Parses the request body as form data (URL-encoded or multipart).
+  parseFormData(ctx.request.body, ctx.request.headers)
 
 # --- Response builders ---
 

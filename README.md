@@ -46,6 +46,10 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
   - [Resolution Order](#resolution-order)
   - [Security](#security)
 - [Custom Error Pages](#custom-error-pages)
+- [Form Parsing](#form-parsing)
+  - [URL-Encoded Forms](#url-encoded-forms)
+  - [File Uploads (Multipart)](#file-uploads-multipart)
+  - [FormData Accessors](#formdata-accessors)
 - [Compile-Time Optimization](#compile-time-optimization)
 - [Shared Buffer Mode](#shared-buffer-mode)
   - [How It Works](#how-it-works)
@@ -687,6 +691,60 @@ Error handlers are regular `HandlerProc` — they receive the full `Context` (pa
 
 **Safety:** if a custom error handler itself throws an exception, Starlight falls back to a plain-text response. Error handlers never cause cascading failures.
 
+## Form Parsing
+
+`ctx.formData()` parses the request body based on the `Content-Type` header. Supports `application/x-www-form-urlencoded` and `multipart/form-data`.
+
+### URL-Encoded Forms
+
+```nim
+# POST /login
+# Content-Type: application/x-www-form-urlencoded
+# Body: username=alice&password=secret
+
+handler login(ctx: Context) {.json.}:
+  let form = ctx.formData()
+  let username = form["username"]       # "alice"
+  let password = form["password"]       # "secret"
+  return %*{"user": username}
+```
+
+### File Uploads (Multipart)
+
+```nim
+# POST /upload
+# Content-Type: multipart/form-data; boundary=...
+
+handler upload(ctx: Context) {.json.}:
+  let form = ctx.formData()
+  let title = form["title"]             # text field
+  let file = form.file("avatar")        # uploaded file
+  echo file.filename                    # "photo.jpg"
+  echo file.contentType                 # "image/jpeg"
+  echo file.data.len                    # size in bytes
+  return %*{"uploaded": file.filename, "size": file.data.len}
+```
+
+`UploadFile` fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `filename` | `string` | Original filename from the client |
+| `contentType` | `string` | Content-Type from the part header |
+| `data` | `seq[byte]` | File content as raw bytes |
+
+### FormData Accessors
+
+| Accessor | Returns | On missing key |
+|----------|---------|----------------|
+| `form["key"]` | `string` | Raises `KeyError` |
+| `form.getField("key", "default")` | `string` | Returns default |
+| `form.file("key")` | `UploadFile` | Raises `KeyError` |
+| `form.hasField("key")` | `bool` | `false` |
+| `form.hasFile("key")` | `bool` | `false` |
+
+If the `Content-Type` header is missing or unsupported (e.g., `application/json`), `formData()` returns an empty `FormData` with no fields or files.
+
 ## Compile-Time Optimization
 
 Starlight's key advantage: the HTML engine analyzes templates at compile time and separates static from dynamic parts.
@@ -1032,6 +1090,12 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `router.serve(host, port)` | proc | Starts the HTTP server |
 | `ctx.forward(method, path)` | proc | Internal dispatch through the router (supports relative paths) |
 | `ctx.forward(method, path, query)` | proc | Internal dispatch with custom query parameters |
+| `ctx.formData()` | proc | Parses request body as FormData (URL-encoded or multipart) |
+| `form["key"]` | proc | Returns text field value (raises `KeyError` if missing) |
+| `form.getField(key, default)` | proc | Returns text field value or default |
+| `form.file(key)` | proc | Returns `UploadFile` (raises `KeyError` if missing) |
+| `form.hasField(key)` | proc | Checks if text field exists |
+| `form.hasFile(key)` | proc | Checks if uploaded file exists |
 | `answer(body, code)` | proc | Builds an HTML Response |
 | `answerJson(body, code)` | proc | Builds a JSON Response (accepts string or JsonNode) |
 | `redirect(url, code)` | proc | Builds a redirect Response (302, client-side) |
