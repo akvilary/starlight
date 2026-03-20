@@ -78,3 +78,10 @@ type
     proxy*: string
     extensions*: HashSet[string]
     ignoreExtensions*: HashSet[string]
+
+  RefKind* = enum
+    AbsRef    ## Absolute URL: "/users/alice"
+    RelRef    ## Relative URL: "./users/alice"
+
+  RouteRef*[P: static string] = object
+    entry*: RouteEntry

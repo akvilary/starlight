@@ -1,27 +1,50 @@
-## Type-safe URL builder with compile-time parameter validation.
+## Type-safe URL builders with compile-time parameter validation.
 ##
-## Parameters in {braces} are substituted from keyword arguments.
-## Type annotations ({id:int}) cause automatic ``$`` conversion.
-## Extra keyword arguments become URL-encoded query parameters.
-## Missing parameters are caught at compile time.
+## ``urlAs`` — build a URL from a pattern string:
+##   urlAs("/users/{name}", name = "alice")               # "/users/alice"
+##   urlAs("/posts/{id:int}", id = 42)                    # "/posts/42"
+##   urlAs("/search", q = "hello world")                  # "/search?q=hello+world"
+##   urlAs("/users/{name}", RelRef, name = "alice")       # "./users/alice"
 ##
-##   mkUrl("/users/{name}", name = "alice")                        # "/users/alice"
-##   mkUrl("/posts/{id:int}", id = 42)                             # "/posts/42"
-##   mkUrl("/search", q = "hello world")                           # "/search?q=hello+world"
-##   mkUrl("https://api.example.com/users/{id:int}", id = 1)       # external URL
-##   mkUrl("/users/{name}", name = n, tab = "posts")               # "/users/" & n & "?tab=posts"
+## ``urlFor`` — build a URL from a Route entity:
+##   urlFor(userShow, name = "alice")                     # "/users/alice"
+##   urlFor(userShow, RelRef, name = "alice")             # "./users/alice"
 
 import std/[macros, strutils, uri]
 
-macro mkUrl*(pattern: static string, args: varargs[untyped]): untyped =
-  ## Builds a URL from a pattern and keyword arguments.
-  ##
-  ## Parameters ({name}, {id:int}, {active:bool}) are substituted
-  ## from matching keyword args. Non-string params are converted via $.
-  ## Extra keyword args become query string parameters (URL-encoded).
-  ## Missing parameters cause a compile-time error.
-  ##
-  ## Works with both internal paths and external URLs.
+# --- Shared helpers (compile-time) ---
+
+proc collectKwargs*(
+  args: NimNode,
+  startIdx: int,
+  macroName: string,
+): seq[(string, NimNode)] =
+  ## Collects keyword arguments from macro args starting at startIdx.
+  for i in startIdx ..< args.len:
+    let arg = args[i]
+    if arg.kind != nnkExprEqExpr:
+      error(macroName & ": arguments must be keyword pairs (name = value)", arg)
+    result.add (arg[0].strVal, arg[1])
+
+proc detectRefKind*(args: NimNode): (bool, int) =
+  ## Checks if the first arg is RelRef or AbsRef.
+  ## Returns (isRelative, startIdx for kwargs).
+  if args.len > 0 and args[0].kind == nnkIdent:
+    let name = args[0].strVal
+    if name == "RelRef":
+      return (true, 1)
+    elif name == "AbsRef":
+      return (false, 1)
+  return (false, 0)
+
+proc buildUrlExpr*(
+  pattern: string,
+  kwargs: seq[(string, NimNode)],
+  macroName: string,
+  relative: bool,
+): NimNode =
+  ## Builds a URL string expression from a pattern and keyword arguments.
+  ## Shared by urlAs and urlFor.
 
   # --- Parse parameters from pattern ---
   var pathParams: seq[(string, string)]  # (name, type)
@@ -34,13 +57,6 @@ macro mkUrl*(pattern: static string, args: varargs[untyped]): untyped =
       else:
         pathParams.add (inner, "string")
 
-  # --- Collect keyword arguments ---
-  var kwargs: seq[(string, NimNode)]
-  for arg in args:
-    if arg.kind != nnkExprEqExpr:
-      error("mkUrl: arguments must be keyword pairs (name = value)", arg)
-    kwargs.add (arg[0].strVal, arg[1])
-
   # --- Validate: every pattern param has a matching kwarg ---
   var pathParamNames: seq[string]
   for (name, _) in pathParams:
@@ -48,7 +64,7 @@ macro mkUrl*(pattern: static string, args: varargs[untyped]): untyped =
     block found:
       for (kw, _) in kwargs:
         if kw == name: break found
-      error("mkUrl: missing parameter '" & name &
+      error(macroName & ": missing parameter '" & name &
             "' required by \"" & pattern & "\"")
 
   # --- Separate query params (kwargs not consumed by pattern) ---
@@ -56,6 +72,14 @@ macro mkUrl*(pattern: static string, args: varargs[untyped]): untyped =
   for (name, value) in kwargs:
     if name notin pathParamNames:
       queryParams.add (name, value)
+
+  # --- Apply relative mode ---
+  let effectivePattern = if relative and pattern.startsWith("/"):
+    "./" & pattern[1 .. ^1]
+  elif relative:
+    "./" & pattern
+  else:
+    pattern
 
   # --- Build string expression as & chain ---
   let encUrl = bindSym"encodeUrl"
@@ -67,15 +91,15 @@ macro mkUrl*(pattern: static string, args: varargs[untyped]): untyped =
 
   var pos = 0
   var buf = ""
-  while pos < pattern.len:
-    if pattern[pos] == '{':
+  while pos < effectivePattern.len:
+    if effectivePattern[pos] == '{':
       if buf.len > 0:
         add newStrLitNode(buf)
         buf = ""
       inc pos
       let start = pos
-      while pos < pattern.len and pattern[pos] != '}': inc pos
-      let inner = pattern[start ..< pos]
+      while pos < effectivePattern.len and effectivePattern[pos] != '}': inc pos
+      let inner = effectivePattern[start ..< pos]
       inc pos  # skip '}'
       let colonIdx = inner.find(':')
       let pName = if colonIdx >= 0: inner[0 ..< colonIdx] else: inner
@@ -85,7 +109,7 @@ macro mkUrl*(pattern: static string, args: varargs[untyped]): untyped =
           add(if pType == "string": val else: newCall(ident"$", val))
           break
     else:
-      buf.add pattern[pos]
+      buf.add effectivePattern[pos]
       inc pos
 
   if buf.len > 0:
@@ -102,3 +126,36 @@ macro mkUrl*(pattern: static string, args: varargs[untyped]): untyped =
   if expr.isNil:
     expr = newStrLitNode("")
   result = expr
+
+# --- Public macros ---
+
+macro urlAs*(pattern: static string, args: varargs[untyped]): untyped =
+  ## Builds a URL from a pattern string and keyword arguments.
+  ##
+  ## Parameters ({name}, {id:int}) are substituted from keyword args.
+  ## Extra keyword args become query string parameters (URL-encoded).
+  ## Missing parameters cause a compile-time error.
+  ## Optional first arg: RelRef for relative URLs, AbsRef for absolute (default).
+  ##
+  ## Works with both internal paths and external URLs.
+  let (relative, startIdx) = detectRefKind(args)
+  let kwargs = collectKwargs(args, startIdx, "urlAs")
+  result = buildUrlExpr(pattern, kwargs, "urlAs", relative)
+
+macro urlFor*(route: typed, args: varargs[untyped]): untyped =
+  ## Builds a URL from a Route entity and keyword arguments.
+  ##
+  ## Extracts the pattern from Route[P]'s type parameter at compile time.
+  ## Parameters and query args work the same as urlAs.
+  ## Optional first arg: RelRef for relative URLs, AbsRef for absolute (default).
+  let typeInst = route.getTypeInst()
+  if typeInst.kind != nnkBracketExpr or typeInst.len < 2:
+    error("urlFor: argument must be a Route[pattern]", route)
+  let patternNode = typeInst[1]
+  if patternNode.kind != nnkStrLit:
+    error("urlFor: could not extract pattern from Route type", route)
+  let pattern = patternNode.strVal
+
+  let (relative, startIdx) = detectRefKind(args)
+  let kwargs = collectKwargs(args, startIdx, "urlFor")
+  result = buildUrlExpr(pattern, kwargs, "urlFor", relative)

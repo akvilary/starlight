@@ -124,6 +124,37 @@ macro handler*(nameAndParams: untyped, body: untyped): untyped =
 
   buildHandler(actualParams, body, wrapProc)
 
+macro middleware*(nameAndParams: untyped, body: untyped): untyped =
+  ## Generates a typed async middleware proc.
+  ##
+  ## Usage:
+  ##   middleware logger(ctx: Context, next: HandlerProc):
+  ##     echo ctx.path
+  ##     return await next(ctx)
+  let name = nameAndParams[0]
+
+  var procBody = newStmtList()
+  for child in body:
+    procBody.add child
+
+  let retType = newNimNode(nnkBracketExpr).add(ident"Future", ident"Response")
+  var formalParams: seq[NimNode] = @[retType]
+
+  for i in 1 ..< nameAndParams.len:
+    let param = nameAndParams[i]
+    let (paramName, paramType) = case param.kind
+      of nnkExprColonExpr: (param[0], param[1])
+      else: (param, ident"Context")
+    formalParams.add newIdentDefs(paramName, paramType)
+
+  result = newProc(
+    name = postfix(name, "*"),
+    params = formalParams,
+    body = procBody,
+  )
+  result.addPragma(makeAsyncPragma())
+  result.addPragma(ident"gcsafe")
+
 proc parsePatternParams*(pattern: string): seq[(string, string)] =
   ## Extract (name, type) pairs from a route pattern at compile time.
   ## "{name}" → ("name", "string"), "{id:int}" → ("id", "int")

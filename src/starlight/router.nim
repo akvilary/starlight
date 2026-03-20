@@ -71,6 +71,14 @@ proc addRoute*(
     middlewares: middlewares,
   )
 
+proc addRoute*(router: Router, entry: RouteEntry) =
+  ## Registers a RouteEntry on the router.
+  router.addRoute(entry.httpMethod, entry.pattern, entry.handler, entry.middlewares)
+
+proc addRoute*[P: static string](router: Router, route: RouteRef[P]) =
+  ## Registers a RouteRef entity on the router.
+  router.addRoute(route.entry)
+
 proc mount*(
   router: Router,
   prefix: string,

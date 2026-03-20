@@ -31,7 +31,18 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
   - [Route Groups](#route-groups)
   - [Per-Route Middleware](#per-route-middleware)
   - [Path Parameters](#path-parameters-1)
+- [Route Entities](#route-entities)
+  - [Creating a Route Entity](#creating-a-route-entity)
+  - [Registering Route Entities](#registering-route-entities)
+  - [Route Entities with Middleware](#route-entities-with-middleware)
+- [URL Builder](#url-builder)
+  - [urlAs — URL from Pattern](#urlas--url-from-pattern)
+  - [urlFor — URL from Route Entity](#urlfor--url-from-route-entity)
+  - [Relative URLs](#relative-urls)
+  - [Query Parameters](#query-parameters)
+  - [External URLs](#external-urls)
 - [Middleware](#middleware)
+  - [Middleware Macro](#middleware-macro)
   - [Built-in Middleware](#built-in-middleware)
   - [Writing Custom Middleware](#writing-custom-middleware)
 - [Internal Dispatch](#internal-dispatch)
@@ -67,6 +78,8 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 - **Compile-time HTML optimization** — static parts of templates are pre-computed and baked into the binary. Only dynamic expressions are evaluated at runtime.
 - **Native Nim syntax in HTML DSL** — no special syntax like `{var}` or `x->inc()`. Just write normal Nim code inside `layout` blocks.
 - **PrefixTree router** — typed path parameters (`{id:int}`, `{slug}`, `{price:float}`) with compile-time validation.
+- **Route entities** — bundle handler + pattern + middleware into a reusable `RouteRef`. Register once, generate type-safe URLs with `urlFor`.
+- **Compile-time URL builder** — `urlAs` and `urlFor` macros validate parameters at compile time. Supports relative URLs (`RelRef`) for mounted route groups.
 - **Middleware chain** — explicit `next` callback pattern for predictable handler processing.
 - **Zero-overhead layouts** — `layout` generates inline procs for HTML rendering.
 - **Single allocation rendering** — the HTML engine pre-calculates buffer size and builds the entire page in one string.
@@ -429,11 +442,9 @@ Routes are combined: `get("/{name}", getUser)` inside `UsersApi` mounted at `/us
 Attach middleware to individual routes:
 
 ```nim
-# In route groups:
 route AdminApi:
-  get("", adminPanel, middleware = [authMiddleware])
-  get("/stats", adminStats, middleware = [authMiddleware, adminOnly])
-
+  get("", adminPanel, middleware = @[authMiddleware])
+  get("/stats", adminStats, middleware = @[authMiddleware, adminOnly])
 ```
 
 Middleware can also be applied to an entire group at mount time:
@@ -456,22 +467,178 @@ Path parameters are defined with `{name:type}` syntax:
 
 Supported HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
 
-## Middleware
+## Route Entities
 
-Middleware functions wrap handlers with a `next` callback:
+A route entity (`RouteRef`) bundles a handler with its HTTP method, pattern, and optional middleware into a single reusable object. Define it once, register it anywhere, and generate type-safe URLs from it.
+
+### Creating a Route Entity
 
 ```nim
-proc loggingMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]).} =
+handler getUser(ctx: Context, name: string) {.html.}:
+  return UserProfile(name=name)
+
+handler getPost(ctx: Context, id: int) {.json.}:
+  return %*{"id": id}
+
+# Create route entities
+let userShow = newRoute(MethodGet, "/users/{name}", getUser)
+let postShow = newRoute(MethodGet, "/posts/{id:int}", getPost)
+```
+
+`newRoute` wraps the handler automatically — it extracts path parameters from `ctx.pathParams` and calls the typed handler with named arguments. You don't write any boilerplate.
+
+### Registering Route Entities
+
+Use `add()` inside a `route` group or `router.addRoute()` directly:
+
+```nim
+# In a route group:
+route Api:
+  add(userShow)
+  add(postShow)
+  get("/health"):              # regular syntax works alongside add()
+    return answer("OK")
+
+router.mount("/api", Api)
+
+# Or directly on the router:
+router.addRoute(userShow)
+```
+
+### Route Entities with Middleware
+
+Pass middleware when creating the route entity:
+
+```nim
+let protectedUser = newRoute(
+  MethodGet,
+  "/admin/users/{name}",
+  getUser,
+  middleware = @[authMiddleware],
+)
+
+route Admin:
+  add(protectedUser)
+```
+
+## URL Builder
+
+Starlight provides two compile-time macros for building URLs with parameter validation. Missing parameters are caught at compile time.
+
+### urlAs — URL from Pattern
+
+Build a URL from a string pattern. Path parameters in `{braces}` are substituted from keyword arguments:
+
+```nim
+urlAs("/users/{name}", name = "alice")
+# → "/users/alice"
+
+urlAs("/posts/{id:int}", id = 42)
+# → "/posts/42"
+```
+
+### urlFor — URL from Route Entity
+
+Build a URL from a `RouteRef`. The pattern is extracted from the type at compile time:
+
+```nim
+let userShow = newRoute(MethodGet, "/users/{name}", getUser)
+
+urlFor(userShow, name = "alice")       # → "/users/alice"
+urlFor(postShow, id = 42)             # → "/posts/42"
+```
+
+Both `urlAs` and `urlFor` validate parameters at compile time. A missing parameter is a compile error:
+
+```nim
+urlFor(userShow)
+# Error: urlFor: missing parameter 'name' required by "/users/{name}"
+```
+
+### Relative URLs
+
+Use `RelRef` to generate relative URLs. This is useful when routes are mounted with a prefix — the browser resolves relative URLs from the current page path:
+
+```nim
+urlFor(userShow, RelRef, name = "alice")     # → "./users/alice"
+urlAs("/search", RelRef, q = "nim")          # → "./search?q=nim"
+
+# AbsRef is the default (can be explicit):
+urlFor(userShow, AbsRef, name = "alice")     # → "/users/alice"
+```
+
+**Example with mount prefix:**
+
+```nim
+route Api:
+  add(userShow)   # pattern: "/users/{name}"
+
+router.mount("/api", Api)  # full path: /api/users/{name}
+```
+
+In a layout rendered at `/api/dashboard`:
+
+```nim
+A(href = urlFor(userShow, RelRef, name = "alice")):
+  "Profile"
+# href="./users/alice" → browser resolves to /api/users/alice
+```
+
+### Query Parameters
+
+Keyword arguments that don't match any `{param}` in the pattern become URL-encoded query parameters:
+
+```nim
+urlAs("/search", q = "hello world", page = 1)
+# → "/search?q=hello+world&page=1"
+
+urlFor(userShow, name = "alice", tab = "posts")
+# → "/users/alice?tab=posts"
+```
+
+### External URLs
+
+Both `urlAs` and `urlFor` work with full external URLs:
+
+```nim
+urlAs("https://api.github.com/repos/{owner}/{repo}/issues",
+  owner = "user", repo = "project", state = "open")
+# → "https://api.github.com/repos/user/project/issues?state=open"
+```
+
+## Middleware
+
+Middleware functions wrap handlers with a `next` callback.
+
+### Middleware Macro
+
+The `middleware` macro generates a typed async proc with the correct signature — no need to write `{.async: (raises: [CatchableError]).}` manually:
+
+```nim
+middleware logger(ctx: Context, next: HandlerProc):
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
-proc authMiddleware(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]).} =
+middleware auth(ctx: Context, next: HandlerProc):
   if ctx.request.headers.hasKey("Authorization"):
     result = await next(ctx)
   else:
     result = answerJson(%*{"error": "Unauthorized"}, Http401)
+```
+
+The macro generates a standard async proc with the correct signature:
+
+```nim
+# What you write:
+middleware logger(ctx: Context, next: HandlerProc):
+  echo ctx.httpMethod, " ", ctx.path
+  result = await next(ctx)
+
+# What the macro generates:
+proc logger*(ctx: Context, next: HandlerProc): Future[Response] {.
+    async: (raises: [CatchableError]), gcsafe.} =
+  echo ctx.httpMethod, " ", ctx.path
+  result = await next(ctx)
 ```
 
 Register middleware globally:
@@ -498,7 +665,7 @@ router.use(withTimeout(5000))
 
 # Per-route — only this group has a timeout:
 route ApiRoutes:
-  get("/slow", slowHandler, middleware = [withTimeout(3000)])
+  get("/slow", slowHandler, middleware = @[withTimeout(3000)])
 ```
 
 Internally, `withTimeout` calls Chronos `wait()` on the handler future and catches `AsyncTimeoutError`:
@@ -980,12 +1147,12 @@ layout UsersContent(users: seq[string]) {.buf.}:
   Ul:
     for user in users:
       Li:
-        A(href="/users/" & user): user
+        A(href=urlAs("/users/{name}", name=user)): user
 
 layout UserProfileContent(name: string) {.buf.}:
   H1: name
   P: "Profile page"
-  A(href="/users"): "Back"
+  A(href=urlAs("/users")): "Back"
 
 # Pages pass content to Shell via lazy
 layout HomePage(pageTitle: string) {.buf.}:
@@ -1041,8 +1208,7 @@ route MainRoute:
 
 # --- Middleware ---
 
-proc logger(ctx: Context, next: HandlerProc): Future[Response] {.
-    async: (raises: [CatchableError]).} =
+middleware logger(ctx: Context, next: HandlerProc):
   echo ctx.httpMethod, " ", ctx.path
   result = await next(ctx)
 
@@ -1076,9 +1242,16 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `handler Name(params) {.html.}:` | macro | Generates typed async proc, wraps return in `answer()` (text/html) |
 | `handler Name(params) {.json.}:` | macro | Generates typed async proc, wraps return in `answerJson()` (application/json) |
 | `handler Name(params):` | macro | Generates typed async proc, return must be a `Response` |
+| `middleware Name(ctx, next):` | macro | Generates typed async middleware proc |
+| `newRoute(method, pattern, handler)` | macro | Creates a `RouteRef` entity with pattern baked into the type |
+| `newRoute(method, pattern, handler, middleware)` | macro | Creates a `RouteRef` entity with middleware |
+| `urlAs(pattern, ...)` | macro | Compile-time URL builder from a pattern string |
+| `urlFor(route, ...)` | macro | Compile-time URL builder from a `RouteRef` entity |
+| `RelRef` / `AbsRef` | enum | Relative (`"./..."`) or absolute (`"/..."`) URL mode |
 | `withTimeout(ms)` | proc | Middleware: aborts handler after `ms` milliseconds (Http408) |
 | `route Name:` | macro | Defines a route group |
 | `newRouter()` | proc | Creates a new router |
+| `router.addRoute(route)` | proc | Registers a `RouteRef` on the router |
 | `router.mount(prefix, group)` | proc | Mounts a route group at prefix |
 | `router.mount(prefix, group, middlewares)` | proc | Mounts a route group with group-level middleware |
 | `router.use(middleware)` | proc | Adds global middleware |
