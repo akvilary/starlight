@@ -17,7 +17,8 @@ import starlight/handler
 import starlight/route
 import starlight/cdn
 import starlight/form
+import starlight/urls
 import starlight/server
 
-export types, context, router, middleware, escape, layout, handler, route, cdn, form, server
+export types, context, router, middleware, escape, layout, handler, route, cdn, form, urls, server
 export stdStrutils.parseInt, stdStrutils.parseFloat, stdStrutils.parseBool
