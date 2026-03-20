@@ -20,15 +20,15 @@ handler forwardWithQuery(ctx: Context) {.json.}:
 var router = newRouter()
 
 route Users:
-  get("/{name}", greetUser)
+  get("./{name}", greetUser)
 
 route Api:
-  get("/search", searchHandler)
-  get("/forward-search", forwardWithQuery)
+  get("./search", searchHandler)
+  get("./forward-search", forwardWithQuery)
 
 route Main:
-  get("/fallback", fallback)
-  get("/users/alice", relative)
+  get("./fallback", fallback)
+  get("./users/alice", relative)
 
 router.mount("/users", Users)
 router.mount("/api", Api)

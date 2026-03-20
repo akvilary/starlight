@@ -3,6 +3,15 @@
 import std/[tables, options, strutils]
 import types, middleware, context, cdn
 
+proc stripRelativePrefix*(pattern: string): string =
+  ## Converts a relative pattern "./" to absolute for the prefix tree.
+  ## "./" → "", "./{name}" → "/{name}", absolute patterns pass through.
+  if pattern == "./" or pattern == ".":
+    return ""
+  if pattern.startsWith("./"):
+    return "/" & pattern[2 .. ^1]
+  return pattern
+
 proc newRouter*(): Router =
   Router(
     root: PrefixTreeNode(kind: skStatic, segment: ""),
@@ -72,8 +81,9 @@ proc addRoute*(
   )
 
 proc addRoute*(router: Router, entry: RouteEntry) =
-  ## Registers a RouteEntry on the router.
-  router.addRoute(entry.httpMethod, entry.pattern, entry.handler, entry.middlewares)
+  ## Registers a RouteEntry on the router. Normalizes "./" patterns.
+  let pattern = stripRelativePrefix(entry.pattern)
+  router.addRoute(entry.httpMethod, pattern, entry.handler, entry.middlewares)
 
 proc addRoute*[P: static string](router: Router, route: RouteRef[P]) =
   ## Registers a RouteRef entity on the router.
@@ -88,9 +98,10 @@ proc mount*(
   ## Mounts a route group at the given prefix.
   ## Optional middlewares are prepended to each route's middleware chain.
   for entry in group.entries:
-    let fullPattern = if prefix == "/": entry.pattern
-                      elif entry.pattern == "": prefix
-                      else: prefix & entry.pattern
+    let suffix = stripRelativePrefix(entry.pattern)
+    let fullPattern = if prefix == "/": suffix
+                      elif suffix == "": prefix
+                      else: prefix & suffix
     router.addRoute(entry.httpMethod, fullPattern,
                     entry.handler, middlewares & entry.middlewares)
 

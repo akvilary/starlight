@@ -113,7 +113,7 @@ handler home(ctx: Context) {.html.}:
   return HomePage()
 
 route Main:
-  get("", home)
+  get("./", home)
 
 var router = newRouter()
 router.mount("/", Main)
@@ -415,14 +415,14 @@ Define route groups with the `route` macro:
 
 ```nim
 route UsersApi:
-  get("", listUsers)
-  get("/{name}", getUser)
-  post("", createUser)
+  get("./", listUsers)
+  get("./{name}", getUser)
+  post("./", createUser)
 
 route ApiRoutes:
-  get("/status", getStatus)
-  post("/echo", echoBody)
-  get("/health"):
+  get("./status", getStatus)
+  post("./echo", echoBody)
+  get("./health"):
     return answer("OK")
 ```
 
@@ -435,7 +435,23 @@ router.mount("/api", ApiRoutes)
 router.serve("127.0.0.1", 5000)
 ```
 
-Routes are combined: `get("/{name}", getUser)` inside `UsersApi` mounted at `/users` becomes `GET /users/{name}`.
+Routes are combined: `get("./{name}", getUser)` inside `UsersApi` mounted at `/users` becomes `GET /users/{name}`.
+
+**All patterns in route groups must start with `"./"`.** This makes it explicit that patterns are relative to their mount prefix. A non-relative pattern will cause a compile-time error:
+
+```nim
+route Bad:
+  get("/users", handler)    # ✗ compile error: must start with "./"
+  get("./users", handler)   # ✓ correct
+```
+
+Use `"./"` for the root of a group (matches the mount prefix itself):
+
+```nim
+route UsersApi:
+  get("./", listUsers)      # mounted at /users → matches /users
+  get("./{name}", getUser)  # mounted at /users → matches /users/alice
+```
 
 ### Per-Route Middleware
 
@@ -443,8 +459,8 @@ Attach middleware to individual routes:
 
 ```nim
 route AdminApi:
-  get("", adminPanel, middleware = @[authMiddleware])
-  get("/stats", adminStats, middleware = @[authMiddleware, adminOnly])
+  get("./", adminPanel, middleware = @[authMiddleware])
+  get("./stats", adminStats, middleware = @[authMiddleware, adminOnly])
 ```
 
 Middleware can also be applied to an entire group at mount time:
@@ -480,12 +496,14 @@ handler getUser(ctx: Context, name: string) {.html.}:
 handler getPost(ctx: Context, id: int) {.json.}:
   return %*{"id": id}
 
-# Create route entities
-let userShow = newRoute(MethodGet, "/users/{name}", getUser)
-let postShow = newRoute(MethodGet, "/posts/{id:int}", getPost)
+# Create route entities with relative patterns (for use in route groups)
+let userShow = newRoute(MethodGet, "./{name}", getUser)
+let postShow = newRoute(MethodGet, "./{id:int}", getPost)
 ```
 
 `newRoute` wraps the handler automatically — it extracts path parameters from `ctx.pathParams` and calls the typed handler with named arguments. You don't write any boilerplate.
+
+When the pattern starts with `"./"`, `urlFor` returns relative URLs by default — no need to pass `RelRef`.
 
 ### Registering Route Entities
 
@@ -496,13 +514,11 @@ Use `add()` inside a `route` group or `router.addRoute()` directly:
 route Api:
   add(userShow)
   add(postShow)
-  get("/health"):              # regular syntax works alongside add()
+  get("./health"):             # regular syntax works alongside add()
     return answer("OK")
 
-router.mount("/api", Api)
-
-# Or directly on the router:
-router.addRoute(userShow)
+router.mount("/users", Api)    # "./{name}" → /users/{name}
+router.mount("/posts", Api)    # "./{id:int}" → /posts/{id:int}
 ```
 
 ### Route Entities with Middleware
@@ -512,7 +528,7 @@ Pass middleware when creating the route entity:
 ```nim
 let protectedUser = newRoute(
   MethodGet,
-  "/admin/users/{name}",
+  "./{name}",
   getUser,
   middleware = @[authMiddleware],
 )
@@ -539,49 +555,48 @@ urlAs("/posts/{id:int}", id = 42)
 
 ### urlFor — URL from Route Entity
 
-Build a URL from a `RouteRef`. The pattern is extracted from the type at compile time:
+Build a URL from a `RouteRef`. The pattern is extracted from the type at compile time. When the pattern starts with `"./"`, the URL is relative by default:
 
 ```nim
-let userShow = newRoute(MethodGet, "/users/{name}", getUser)
+let userShow = newRoute(MethodGet, "./users/{name}", getUser)
 
-urlFor(userShow, name = "alice")       # → "/users/alice"
-urlFor(postShow, id = 42)             # → "/posts/42"
+urlFor(userShow, name = "alice")       # → "./users/alice"
 ```
 
 Both `urlAs` and `urlFor` validate parameters at compile time. A missing parameter is a compile error:
 
 ```nim
 urlFor(userShow)
-# Error: urlFor: missing parameter 'name' required by "/users/{name}"
+# Error: urlFor: missing parameter 'name' required by "./users/{name}"
 ```
 
 ### Relative URLs
 
-Use `RelRef` to generate relative URLs. This is useful when routes are mounted with a prefix — the browser resolves relative URLs from the current page path:
+When a `RouteRef` pattern starts with `"./"`, `urlFor` returns a relative URL automatically — no need to pass `RelRef`.
+
+Use `RelRef` to convert an absolute pattern to relative:
 
 ```nim
-urlFor(userShow, RelRef, name = "alice")     # → "./users/alice"
-urlAs("/search", RelRef, q = "nim")          # → "./search?q=nim"
-
-# AbsRef is the default (can be explicit):
-urlFor(userShow, AbsRef, name = "alice")     # → "/users/alice"
+urlAs("/search", RelRef, q = "nim")           # → "./search?q=nim"
 ```
 
 **Example with mount prefix:**
 
 ```nim
-route Api:
-  add(userShow)   # pattern: "/users/{name}"
+let userShow = newRoute(MethodGet, "./{name}", getUser)
 
-router.mount("/api", Api)  # full path: /api/users/{name}
+route Api:
+  add(userShow)   # pattern: "./{name}"
+
+router.mount("/api/users", Api)  # full path: /api/users/{name}
 ```
 
 In a layout rendered at `/api/dashboard`:
 
 ```nim
-A(href = urlFor(userShow, RelRef, name = "alice")):
+A(href = urlFor(userShow, name = "alice")):
   "Profile"
-# href="./users/alice" → browser resolves to /api/users/alice
+# href="./alice" → browser resolves to /api/users/alice
 ```
 
 ### Query Parameters
@@ -593,7 +608,7 @@ urlAs("/search", q = "hello world", page = 1)
 # → "/search?q=hello+world&page=1"
 
 urlFor(userShow, name = "alice", tab = "posts")
-# → "/users/alice?tab=posts"
+# → "./alice?tab=posts"
 ```
 
 ### External URLs
@@ -665,7 +680,7 @@ router.use(withTimeout(5000))
 
 # Per-route — only this group has a timeout:
 route ApiRoutes:
-  get("/slow", slowHandler, middleware = @[withTimeout(3000)])
+  get("./slow", slowHandler, middleware = @[withTimeout(3000)])
 ```
 
 Internally, `withTimeout` calls Chronos `wait()` on the handler future and catches `AsyncTimeoutError`:
@@ -1197,14 +1212,14 @@ handler notFound(ctx: Context) {.html.}:
 # --- Routes ---
 
 route UsersApi:
-  get("", listUsers)
-  get("/{name}", getUser)
+  get("./", listUsers)
+  get("./{name}", getUser)
 
 route ApiRoutes:
-  get("/status", getStatus)
+  get("./status", getStatus)
 
 route MainRoute:
-  get("", home)
+  get("./", home)
 
 # --- Middleware ---
 

@@ -160,7 +160,11 @@ proc parsePatternParams*(pattern: string): seq[(string, string)] =
   ## "{name}" → ("name", "string"), "{id:int}" → ("id", "int")
   if pattern.len == 0:
     return @[]
-  let stripped = pattern.strip(chars = {'/'})
+  # Strip relative prefix "./" so "./{name}" is parsed the same as "/{name}"
+  var p = pattern
+  if p.startsWith("./"):
+    p = p[2 .. ^1]
+  let stripped = p.strip(chars = {'/'})
   if stripped.len == 0:
     return @[]
   for part in stripped.split('/'):

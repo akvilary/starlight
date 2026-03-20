@@ -74,8 +74,12 @@ proc buildUrlExpr*(
       queryParams.add (name, value)
 
   # --- Apply relative mode ---
-  let effectivePattern = if relative and pattern.startsWith("/"):
-    "./" & pattern[1 .. ^1]
+  # "./" prefix → already relative, keep as-is
+  # "/" prefix + RelRef → convert to "./"
+  let effectivePattern = if pattern.startsWith("./"):
+    pattern                    # already relative, no double "./"
+  elif relative and pattern.startsWith("/"):
+    "./" & pattern[1 .. ^1]    # RelRef on absolute: "/{name}" → "./{name}"
   elif relative:
     "./" & pattern
   else:
@@ -143,19 +147,21 @@ macro urlAs*(pattern: static string, args: varargs[untyped]): untyped =
   result = buildUrlExpr(pattern, kwargs, "urlAs", relative)
 
 macro urlFor*(route: typed, args: varargs[untyped]): untyped =
-  ## Builds a URL from a Route entity and keyword arguments.
+  ## Builds a URL from a RouteRef entity and keyword arguments.
   ##
-  ## Extracts the pattern from Route[P]'s type parameter at compile time.
-  ## Parameters and query args work the same as urlAs.
-  ## Optional first arg: RelRef for relative URLs, AbsRef for absolute (default).
+  ## Extracts the pattern from RouteRef[P]'s type parameter at compile time.
+  ## If the pattern starts with "./" the URL is relative by default.
+  ## RelRef on absolute patterns converts "/" to "./".
   let typeInst = route.getTypeInst()
   if typeInst.kind != nnkBracketExpr or typeInst.len < 2:
-    error("urlFor: argument must be a Route[pattern]", route)
+    error("urlFor: argument must be a RouteRef[pattern]", route)
   let patternNode = typeInst[1]
   if patternNode.kind != nnkStrLit:
-    error("urlFor: could not extract pattern from Route type", route)
+    error("urlFor: could not extract pattern from RouteRef type", route)
   let pattern = patternNode.strVal
 
-  let (relative, startIdx) = detectRefKind(args)
+  let (explicitRelative, startIdx) = detectRefKind(args)
   let kwargs = collectKwargs(args, startIdx, "urlFor")
+  # "./" patterns are always relative; absolute patterns need explicit RelRef
+  let relative = pattern.startsWith("./") or explicitRelative
   result = buildUrlExpr(pattern, kwargs, "urlFor", relative)

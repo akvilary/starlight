@@ -15,7 +15,7 @@
 ##   let userShow = newRoute(MethodGet, "/users/{name}", getUser)
 ##   let protectedUser = newRoute(MethodGet, "/admin/{name}", getUser, middleware = @[auth])
 
-import std/macros
+import std/[macros, strutils]
 import handler
 
 proc makeHandlerProc(name, body: NimNode): NimNode =
@@ -119,6 +119,15 @@ macro route*(name: untyped, body: untyped): untyped =
       elif methodName in httpMethods:
         var handlerIdent: NimNode
         let pattern = stmt[1]
+
+        # Route group patterns must be relative (start with "./")
+        if pattern.kind == nnkStrLit and not pattern.strVal.startsWith("./"):
+          error(
+            "Route group patterns must be relative (start with \"./\"). " &
+            "Got: \"" & pattern.strVal & "\". " &
+            "Use: \"./" & pattern.strVal.strip(chars = {'/'}) & "\"",
+            stmt,
+          )
 
         var middlewaresNode = newNimNode(nnkPrefix).add(ident"@",
           newNimNode(nnkBracket))
