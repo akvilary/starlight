@@ -23,6 +23,7 @@ import starlight/redis
 import starlight/session
 import starlight/memory_store
 import starlight/redis_store
+import starlight/cors
 
 export types, context, router, middleware, escape, layout, handler, route, cdn, form, urls, server
-export redis, session, memory_store, redis_store
+export redis, session, memory_store, redis_store, cors

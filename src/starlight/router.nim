@@ -166,6 +166,33 @@ proc match*(router: Router, httpMethod: HttpMethod, path: string): Option[MatchR
       discard
   return none(MatchResult)
 
+proc matchPath*(router: Router, path: string): bool =
+  ## Checks if any handler exists for the given path, regardless of HTTP method.
+  let stripped = path.strip(chars = {'/'})
+  let segments = if stripped == "": @[] else: stripped.split('/')
+
+  proc matchRec(node: PrefixTreeNode, idx: int): bool =
+    if idx >= segments.len:
+      return node.handlers.len > 0
+
+    let seg = segments[idx]
+
+    for child in node.children:
+      if child.kind == skStatic and child.segment == seg:
+        if matchRec(child, idx + 1): return true
+
+    for child in node.children:
+      if child.kind == skParam and validateParam(seg, child.paramKind):
+        if matchRec(child, idx + 1): return true
+
+    for child in node.children:
+      if child.kind == skWildcard:
+        if matchRec(child, idx + 1): return true
+
+    return false
+
+  matchRec(router.root, 0)
+
 proc resolvePath*(currentPath, target: string): string =
   ## Resolves a target path relative to the current path.
   ## Absolute paths (starting with /) are returned as-is.
@@ -216,6 +243,14 @@ proc dispatch*(
         res.headers.add("Set-Cookie", cookie)
     return res
   else:
+    # OPTIONS preflight: run global middleware if any handler exists on this path
+    if ctx.httpMethod == MethodOptions and router.matchPath(ctx.path):
+      let optHandler: HandlerProc = proc(ctx: Context): Future[Response] {.
+          async: (raises: [CatchableError]), gcsafe.} =
+        return answer(Http204)
+      let chain = buildChain(optHandler, router.globalMiddlewares)
+      return await chain(ctx)
+
     # Try CDN static/proxy serving for GET requests
     if ctx.httpMethod == MethodGet:
       let cdnResp = await router.tryServeCDN(ctx.path)

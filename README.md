@@ -72,6 +72,12 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
   - [Reading and Writing](#reading-and-writing)
   - [Typed Values](#typed-values)
   - [Deleting and Clearing](#deleting-and-clearing)
+- [CORS](#cors)
+  - [Basic Usage](#basic-usage)
+  - [Specific Origins](#specific-origins)
+  - [Credentials](#credentials)
+  - [Custom Methods and Headers](#custom-methods-and-headers)
+  - [All Options](#all-options)
 - [Compile-Time Optimization](#compile-time-optimization)
 - [Shared Buffer Mode](#shared-buffer-mode)
   - [How It Works](#how-it-works)
@@ -1132,6 +1138,74 @@ handler removeKey(ctx: Context) {.html.}:
 ```
 
 The session middleware accepts the same cookie options as `ctx.cookies.set` (see [Cookie Options](#cookie-options)) plus `cookieName` (default: `"sid"`). Defaults: `secure=true`, `httpOnly=true`, `sameSite=Lax`.
+
+## CORS
+
+Cross-Origin Resource Sharing middleware. Handles preflight `OPTIONS` requests automatically and adds CORS headers to responses.
+
+### Basic Usage
+
+Allow all origins (development mode):
+
+```nim
+router.use(withCors())
+```
+
+This adds `Access-Control-Allow-Origin: *` to every response and responds to `OPTIONS` preflight with `204 No Content`.
+
+### Specific Origins
+
+Restrict access to known origins:
+
+```nim
+router.use(withCors(origins = @["https://myapp.com", "https://admin.myapp.com"]))
+```
+
+The middleware echoes the matching origin back (not `*`) and adds `Vary: Origin` for correct caching. Requests from unlisted origins get no CORS headers — the browser blocks them.
+
+### Credentials
+
+To allow cookies and `Authorization` headers in cross-origin requests:
+
+```nim
+router.use(withCors(
+  origins = @["https://myapp.com"],
+  credentials = true,
+))
+```
+
+This adds `Access-Control-Allow-Credentials: true`. Note: when `credentials = true`, the middleware always echoes the specific origin, never `*` (browsers reject `*` with credentials).
+
+### Custom Methods and Headers
+
+```nim
+router.use(withCors(
+  methods = @[MethodGet, MethodPost],
+  headers = @["Content-Type", "Authorization"],
+  exposeHeaders = @["X-Request-Id"],
+  maxAge = 86400,
+))
+```
+
+- `methods` — allowed HTTP methods (default: GET, HEAD, POST, OPTIONS, PUT, PATCH, DELETE)
+- `headers` — allowed request headers (default: `*`)
+- `exposeHeaders` — response headers accessible to JavaScript (default: none)
+- `maxAge` — preflight cache duration in seconds (default: 0, no caching)
+
+### All Options
+
+```nim
+proc withCors*(
+  origins: seq[string] = default(seq[string]),         # @[] = allow all
+  methods: seq[HttpMethod] = default(seq[HttpMethod]), # @[] = all standard
+  headers: seq[string] = default(seq[string]),         # @[] = wildcard
+  exposeHeaders: seq[string] = default(seq[string]),   # @[] = none
+  credentials: bool = false,
+  maxAge: int = 0,                                     # seconds
+): MiddlewareProc
+```
+
+Preflight `OPTIONS` requests are handled automatically — no need to register OPTIONS handlers. The middleware intercepts them before the handler and returns `204` with the appropriate CORS headers.
 
 ## Compile-Time Optimization
 
