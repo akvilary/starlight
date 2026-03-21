@@ -21,4 +21,3 @@ import starlight/urls
 import starlight/server
 
 export types, context, router, middleware, escape, layout, handler, route, cdn, form, urls, server
-export stdStrutils.parseInt, stdStrutils.parseFloat, stdStrutils.parseBool

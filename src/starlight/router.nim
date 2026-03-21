@@ -210,7 +210,11 @@ proc dispatch*(
     ctx.pathParams = m.params
     let allMw = router.globalMiddlewares & m.middlewares
     let chain = buildChain(m.handler, allMw)
-    return await chain(ctx)
+    var res = await chain(ctx)
+    if ctx.outCookies.len > 0:
+      for cookie in ctx.outCookies:
+        res.headers.add("Set-Cookie", cookie)
+    return res
   else:
     # Try CDN static/proxy serving for GET requests
     if ctx.httpMethod == MethodGet:

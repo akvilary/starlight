@@ -18,10 +18,15 @@ type
     kind*: SegmentKind
     paramKind*: ParamKind
 
+  SameSite* = enum
+    Default, None, Lax, Strict
+
   RequestData* = ref object
     headers*: HttpTable
     body*: string
     query*: Table[string, string]
+    cookies*: Table[string, string]
+    cookiesParsed*: bool
     ip*: string
 
   Context* = ref object
@@ -30,6 +35,7 @@ type
     pathParams*: Table[string, string]
     request*: RequestData
     router*: Router
+    outCookies*: seq[string]
 
   Response* = object
     code*: HttpCode = Http200

@@ -62,6 +62,11 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
   - [URL-Encoded Forms](#url-encoded-forms)
   - [File Uploads (Multipart)](#file-uploads-multipart)
   - [FormData Accessors](#formdata-accessors)
+- [Cookies](#cookies)
+  - [Reading Cookies](#reading-cookies)
+  - [Setting Cookies](#setting-cookies)
+  - [Deleting Cookies](#deleting-cookies)
+  - [Cookie Options](#cookie-options)
 - [Compile-Time Optimization](#compile-time-optimization)
 - [Shared Buffer Mode](#shared-buffer-mode)
   - [How It Works](#how-it-works)
@@ -974,6 +979,82 @@ handler upload(ctx: Context) {.json.}:
 | `form.hasFile("key")` | `bool` | `false` |
 
 If the `Content-Type` header is missing or unsupported (e.g., `application/json`), `formData()` returns an empty `FormData` with no fields or files.
+
+## Cookies
+
+### Reading Cookies
+
+Use `ctx.getCookie` to read cookies from the request. Parsing is lazy — the Cookie header is only parsed on the first call, then all subsequent lookups are O(1) table access:
+
+```nim
+handler dashboard(ctx: Context) {.html.}:
+  let theme = ctx.getCookie("theme", "light")
+  let lang = ctx.getCookie("lang", "en")
+  return Dashboard(theme=theme, lang=lang)
+```
+
+### Setting Cookies
+
+**In handlers** — use `ctx.setCookie` to queue a `Set-Cookie` header for the outgoing response. The cookies are not sent immediately — they are collected and automatically added to the response by the router after the handler returns:
+
+```nim
+handler login(ctx: Context) {.html.}:
+  ctx.setCookie("session", token, httpOnly=true, secure=true, sameSite=Lax)
+  ctx.setCookie("theme", "dark")
+  return "Welcome"
+```
+
+**In middleware or raw handlers** — use `response.withCookie` for a functional style (returns a new Response):
+
+```nim
+handler login(ctx: Context):
+  return answer("Welcome")
+    .withCookie("session", token, httpOnly=true, secure=true, sameSite=Lax)
+    .withCookie("theme", "dark")
+```
+
+The value parameter is generic — any type with `$` works:
+
+```nim
+ctx.setCookie("count", 42)
+ctx.setCookie("active", true)
+```
+
+### Deleting Cookies
+
+Delete a cookie by sending a `Set-Cookie` header with `Max-Age=0` in the response. Like `setCookie`, this affects the outgoing response, not the incoming request:
+
+```nim
+# In a handler:
+handler logout(ctx: Context) {.html.}:
+  ctx.deleteCookie("session", path="/")
+  return "Bye"
+
+# Or on a response:
+handler logout(ctx: Context):
+  return answer("Bye").deleteCookie("session", path="/")
+```
+
+### Cookie Options
+
+| Option | Type | Default | Purpose |
+|--------|------|---------|---------|
+| `path` | `string` | `""` (not set) | Cookie scope path |
+| `domain` | `string` | `""` (not set) | Cookie scope domain |
+| `maxAge` | `Option[int]` | `none(int)` (not set) | Lifetime in seconds |
+| `expires` | `string` | `""` (not set) | Expiration date |
+| `httpOnly` | `bool` | `false` | Invisible to JavaScript (XSS protection) |
+| `secure` | `bool` | `false` | HTTPS only (MITM protection) |
+| `sameSite` | `SameSite` | `Default` (not set) | CSRF protection: `Lax`, `Strict`, `None` |
+
+Minimal call — only key and value are required, everything else is optional:
+
+```nim
+ctx.setCookie("theme", "dark")
+# Set-Cookie: theme=dark
+```
+
+For session cookies, always use `httpOnly=true, secure=true, sameSite=Lax`.
 
 ## Compile-Time Optimization
 
