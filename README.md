@@ -26,6 +26,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
   - [Default Response](#default-response)
   - [JSON from Pre-Serialized String](#json-from-pre-serialized-string)
   - [Path Parameters](#path-parameters)
+  - [Query Parameters](#query-parameters-1)
   - [Accessing Request Context](#accessing-request-context)
 - [Routing](#routing)
   - [Route Groups](#route-groups)
@@ -77,7 +78,7 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 - **Built on [Chronos](https://github.com/status-im/nim-chronos)** — async engine and HTTP server from the Status team, battle-tested in production.
 - **Compile-time HTML optimization** — static parts of templates are pre-computed and baked into the binary. Only dynamic expressions are evaluated at runtime.
 - **Native Nim syntax in HTML DSL** — no special syntax like `{var}` or `x->inc()`. Just write normal Nim code inside `layout` blocks.
-- **PrefixTree router** — typed path parameters (`{id:int}`, `{slug}`, `{price:float}`) with compile-time validation.
+- **PrefixTree router** — typed path parameters (`{id:int}`, `{slug}`, `{price:float}`) and typed query parameters (`page = 1`, `q: string`) with compile-time validation.
 - **Route entities** — bundle handler + pattern + middleware into a reusable `RouteRef`. Register once, generate type-safe URLs with `urlFor`.
 - **Compile-time URL builder** — `urlAs` and `urlFor` macros validate parameters at compile time. Supports relative URLs (`RelRef`) for mounted route groups.
 - **Middleware chain** — explicit `next` callback pattern for predictable handler processing.
@@ -393,16 +394,63 @@ When the route is registered (via the `route` macro), the pattern determines typ
 
 Type validation happens during route matching — if `{id:int}` receives a non-numeric value, the route won't match (404).
 
-### Accessing Request Context
+### Query Parameters
 
-The `ctx` object is available in every handler:
+Handler parameters that don't match any path parameter in the route pattern are automatically parsed from the query string. Use `= defaultValue` to make a parameter optional — its type is inferred from the literal:
 
 ```nim
-handler search(ctx: Context) {.json.}:
-  let query = ctx.getQuery("q")
+handler search(ctx: Context, q: string, page = 1, sort = "date") {.json.}:
+  return %*{"q": q, "page": page, "sort": sort}
+
+route Api:
+  get("./search", search)
+
+router.mount("/api", Api)
+# GET /api/search?q=nim&page=2 → {"q":"nim","page":2,"sort":"date"}
+```
+
+**How it works:**
+
+The `route` macro inspects the handler's parameters at compile time. Parameters matching `{placeholders}` in the route pattern become path params; the rest become query params. A wrapper proc is generated that extracts values from `ctx.request.query`, converts types, and calls the handler — zero runtime reflection.
+
+**Required vs optional:**
+
+| Declaration     | Behavior |
+|-----------------|----------|
+| `q: string`     | Required — returns `400` if missing |
+| `id: int`       | Required — returns `400` if missing or not a valid int |
+| `page = 1`      | Optional — defaults to `1` if missing, `400` if present but not a valid int |
+| `sort = "date"` | Optional — defaults to `"date"` if missing |
+| `active = false`| Optional — defaults to `false` if missing |
+| `amount = 0.0`  | Optional — defaults to `0.0` if missing |
+
+Supported types: `string`, `int`, `float`, `bool`.
+
+**Mixing path and query parameters:**
+
+```nim
+handler userPosts(ctx: Context, name: string, page = 1) {.json.}:
+  return %*{"user": name, "page": page}
+
+route Users:
+  get("./{name}/posts", userPosts)
+
+router.mount("/users", Users)
+# GET /users/alice/posts?page=3 → {"user":"alice","page":3}
+```
+
+Here `name` matches `{name}` in the pattern → path param. `page` has no matching placeholder → query param.
+
+### Accessing Request Context
+
+The `ctx` object gives direct access to headers, body, and other request data. For query parameters, prefer [typed query parameters](#query-parameters-1) — use `ctx.getQuery` only when you need dynamic key access:
+
+```nim
+handler info(ctx: Context) {.json.}:
   let token = ctx.request.headers["Authorization"]
   let data = parseJson(ctx.request.body)
-  return %*{"query": query, "ip": ctx.request.ip}
+  let custom = ctx.getQuery("key", "fallback") # dynamic key access
+  return %*{"ip": ctx.request.ip, "custom": custom}
 ```
 
 ## Routing

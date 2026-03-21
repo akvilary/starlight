@@ -7,12 +7,20 @@
 ##   handler getUser(ctx: Context, name: string) {.html.}:
 ##     return Page(title=name, content=UserProfile(name=name))
 ##
+##   # Query parameters — params not matching path placeholders are auto-parsed:
+##   handler search(ctx: Context, q: string, page = 1) {.json.}:
+##     return %*{"q": q, "page": page}
+##   # Use `= defaultValue` to make optional (type inferred from literal).
+##   # Required params (no default) return Http400 if missing.
+##
 ## Generates a proc with the exact parameters you specify:
 ##   proc getUser*(ctx: Context, name: string): Future[Response] {.async, gcsafe.}
 ##
 ## Direct call: await getUser(ctx, "Alice")
 
-import std/[macros, strutils]
+import std/[macros, strutils, sets]
+
+const supportedQueryTypes* = toHashSet(["string", "int", "float", "bool"])
 
 proc makeAsyncPragma*(): NimNode =
   ## Builds the {.async: (raises: [CatchableError]).} pragma node.
@@ -58,6 +66,17 @@ proc transformReturns(node: NimNode, wrapProc: string): NimNode =
   for child in node:
     result.add transformReturns(child, wrapProc)
 
+proc inferType(node: NimNode): NimNode =
+  ## Infer type from a default value literal.
+  case node.kind
+  of nnkIntLit..nnkInt64Lit: ident"int"
+  of nnkFloatLit..nnkFloat64Lit: ident"float"
+  of nnkStrLit, nnkRStrLit, nnkTripleStrLit: ident"string"
+  of nnkIdent:
+    if node.strVal in ["true", "false"]: ident"bool"
+    else: ident"string"
+  else: ident"string"
+
 proc buildHandler(
   nameAndParams: NimNode,
   body: NimNode,
@@ -77,20 +96,21 @@ proc buildHandler(
 
   for i in 1..<nameAndParams.len:
     let param = nameAndParams[i]
-    var paramName, paramType: NimNode
 
     case param.kind
     of nnkExprColonExpr:
-      paramName = param[0]
-      paramType = param[1]
+      # name: Type
+      formalParams.add newIdentDefs(param[0], param[1])
     of nnkIdent:
-      paramName = param
-      paramType = ident"string"
+      # name (defaults to string)
+      formalParams.add newIdentDefs(param, ident"string")
+    of nnkExprEqExpr:
+      # name = default (type inferred from literal)
+      let defaultVal = param[1]
+      let paramName = param[0]
+      formalParams.add newIdentDefs(paramName, inferType(defaultVal), defaultVal)
     else:
-      paramName = param[0]
-      paramType = ident"string"
-
-    formalParams.add newIdentDefs(paramName, paramType)
+      error("Unsupported parameter syntax", param)
 
   result = newProc(
     name = postfix(name, "*"),
@@ -176,43 +196,172 @@ proc parsePatternParams*(pattern: string): seq[(string, string)] =
       else:
         result.add((inner, "string"))
 
-proc generateHandlerWrapper*(handler: NimNode, pattern: string): NimNode =
-  ## Generate a HandlerProc wrapper that extracts path params from ctx.pathParams
-  ## and calls the typed handler proc with named arguments.
-  ##
-  ## Used by route groups and router.add at compile time.
-  let params = parsePatternParams(pattern)
+proc queryAccessor(): NimNode =
+  ## Builds AST for: ctx.request.query
+  newDotExpr(newDotExpr(ident"ctx", ident"request"), ident"query")
 
-  if params.len == 0:
+proc genConvertCall(typ: string, value: NimNode): NimNode =
+  ## Builds AST for type conversion: parseInt(v), parseFloat(v), etc.
+  case typ
+  of "int": newCall(ident"parseInt", value)
+  of "float": newCall(ident"parseFloat", value)
+  of "bool": newCall(ident"parseBool", value)
+  else: value
+
+proc genQueryExtraction(
+  name: string,
+  typ: string,
+  defaultNode: NimNode,
+  stmts: NimNode,
+): NimNode =
+  ## Generates query parameter extraction code. Returns the variable ident.
+  ## Appends extraction statements to `stmts`.
+  let varIdent = ident(name)
+  let query = queryAccessor()
+  let keyLit = newStrLitNode(name)
+  let hasRequired = defaultNode.kind == nnkEmpty
+
+  if typ == "string":
+    if hasRequired:
+      # if not ctx.request.query.hasKey("name"):
+      #   return errorResponse(Http400, "Missing required query parameter: name")
+      # let name = ctx.request.query["name"]
+      stmts.add newIfStmt((
+        newCall(ident"not", newCall(ident"hasKey", query, keyLit)),
+        newStmtList(newNimNode(nnkReturnStmt).add(
+          newCall(ident"errorResponse", ident"Http400",
+            newStrLitNode("Missing required query parameter: " & name))
+        ))
+      ))
+      stmts.add newLetStmt(varIdent,
+        newNimNode(nnkBracketExpr).add(query, keyLit))
+    else:
+      # let name = ctx.request.query.getOrDefault("name", default)
+      stmts.add newLetStmt(varIdent,
+        newCall(ident"getOrDefault", query, keyLit, defaultNode))
+  else:
+    # Non-string types need conversion with error handling
+    let typeIdent = ident(typ)
+    let rawAccessor = newNimNode(nnkBracketExpr).add(query, keyLit)
+    let convertCall = genConvertCall(typ, rawAccessor)
+    let errMsg = "Invalid value for query parameter: " & name
+
+    if hasRequired:
+      # if not ctx.request.query.hasKey("name"):
+      #   return errorResponse(Http400, "Missing ...")
+      # var name: int
+      # try: name = parseInt(ctx.request.query["name"])
+      # except CatchableError:
+      #   return errorResponse(Http400, "Invalid ...")
+      stmts.add newIfStmt((
+        newCall(ident"not", newCall(ident"hasKey", query, keyLit)),
+        newStmtList(newNimNode(nnkReturnStmt).add(
+          newCall(ident"errorResponse", ident"Http400",
+            newStrLitNode("Missing required query parameter: " & name))
+        ))
+      ))
+      stmts.add newNimNode(nnkVarSection).add(
+        newIdentDefs(varIdent, typeIdent))
+      stmts.add newNimNode(nnkTryStmt).add(
+        newStmtList(newAssignment(varIdent, convertCall)),
+        newNimNode(nnkExceptBranch).add(
+          ident"CatchableError",
+          newStmtList(newNimNode(nnkReturnStmt).add(
+            newCall(ident"errorResponse", ident"Http400",
+              newStrLitNode(errMsg))
+          ))
+        )
+      )
+    else:
+      # var name: int
+      # if ctx.request.query.hasKey("name"):
+      #   try: name = parseInt(ctx.request.query["name"])
+      #   except CatchableError:
+      #     return errorResponse(Http400, "Invalid ...")
+      # else:
+      #   name = defaultValue
+      stmts.add newNimNode(nnkVarSection).add(
+        newIdentDefs(varIdent, typeIdent))
+      stmts.add newNimNode(nnkIfStmt).add(
+        newNimNode(nnkElifBranch).add(
+          newCall(ident"hasKey", query, keyLit),
+          newStmtList(
+            newNimNode(nnkTryStmt).add(
+              newStmtList(newAssignment(varIdent, convertCall)),
+              newNimNode(nnkExceptBranch).add(
+                ident"CatchableError",
+                newStmtList(newNimNode(nnkReturnStmt).add(
+                  newCall(ident"errorResponse", ident"Http400",
+                    newStrLitNode(errMsg))
+                ))
+              )
+            )
+          )
+        ),
+        newNimNode(nnkElse).add(
+          newStmtList(newAssignment(varIdent, defaultNode))
+        )
+      )
+
+  varIdent
+
+macro generateHandlerWrapper*(handler: typed, pattern: static string): untyped =
+  ## Generate a HandlerProc wrapper that extracts path params from ctx.pathParams
+  ## and query params from ctx.request.query, with type conversion and error handling.
+  ##
+  ## Any handler param not matching a path param in the pattern is a query param.
+  ## Required query params (no default) return Http400 if missing.
+  ## Type conversion failures return Http400.
+  let pathParams = parsePatternParams(pattern)
+  let impl = handler.getImpl()
+  let formalParams = impl[3] # nnkFormalParams
+
+  # Collect path param names for lookup
+  var pathParamNames: seq[string]
+  for (name, _) in pathParams:
+    pathParamNames.add name
+
+  # Check if handler has extra params beyond ctx
+  if formalParams.len <= 2 and pathParams.len == 0:
     return handler
 
-  # Build call: await handler(ctx, name=ctx.pathParams["name"], ...)
+  var stmts = newStmtList()
   var handlerCall = newCall(handler, ident"ctx")
 
-  for (name, typ) in params:
-    let accessor = newNimNode(nnkBracketExpr).add(
-      newDotExpr(ident"ctx", ident"pathParams"),
-      newStrLitNode(name)
-    )
+  # Process each handler param (skip [0]=return type, [1]=ctx)
+  for i in 2 ..< formalParams.len:
+    let identDefs = formalParams[i]
+    let pType = identDefs[identDefs.len - 2]
+    let pDefault = identDefs[identDefs.len - 1]
 
-    let converted = case typ
-      of "int": newCall(ident"parseInt", accessor)
-      of "float": newCall(ident"parseFloat", accessor)
-      of "bool": newCall(ident"parseBool", accessor)
-      else: accessor
+    for j in 0 ..< identDefs.len - 2:
+      let pName = identDefs[j].strVal
+      let typStr = pType.strVal
 
-    handlerCall.add newNimNode(nnkExprEqExpr).add(ident(name), converted)
+      if pName in pathParamNames:
+        # Path param — extract from ctx.pathParams
+        let accessor = newNimNode(nnkBracketExpr).add(
+          newDotExpr(ident"ctx", ident"pathParams"),
+          newStrLitNode(pName)
+        )
+        let converted = genConvertCall(typStr, accessor)
+        handlerCall.add newNimNode(nnkExprEqExpr).add(ident(pName), converted)
+      else:
+        # Query param — extract from ctx.request.query
+        if typStr notin supportedQueryTypes:
+          error("Unsupported query parameter type for '" & pName &
+            "': " & typStr & ". Supported: string, int, float, bool", handler)
+        let varIdent = genQueryExtraction(pName, typStr, pDefault, stmts)
+        handlerCall.add newNimNode(nnkExprEqExpr).add(ident(pName), varIdent)
 
-  let body = newStmtList(
-    newNimNode(nnkReturnStmt).add(newCall(ident"await", handlerCall))
-  )
+  stmts.add newNimNode(nnkReturnStmt).add(newCall(ident"await", handlerCall))
 
   let ctxParam = newIdentDefs(ident"ctx", ident"Context")
   let retType = newNimNode(nnkBracketExpr).add(ident"Future", ident"Response")
 
   result = newProc(
     params = [retType, ctxParam],
-    body = body,
+    body = stmts,
   )
   result.addPragma(makeAsyncPragma())
   result.addPragma(ident"gcsafe")

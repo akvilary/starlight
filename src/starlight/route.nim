@@ -55,9 +55,9 @@ macro newRoute*(
 ): untyped =
   ## Creates a RouteRef wrapping a RouteEntry, with the pattern baked into the type.
   ##
-  ## The handler is wrapped to extract path parameters from ctx.pathParams.
+  ## The handler is wrapped to extract path and query parameters automatically.
   ## The resulting type RouteRef[pattern] enables compile-time URL generation via urlFor.
-  let wrapped = generateHandlerWrapper(handler, pattern)
+  let wrapped = newCall(ident"generateHandlerWrapper", handler, newStrLitNode(pattern))
   let refType = newNimNode(nnkBracketExpr).add(
     ident"RouteRef", newStrLitNode(pattern))
   let entryExpr = newNimNode(nnkObjConstr).add(
@@ -76,7 +76,7 @@ macro newRoute*(
   middleware: untyped,
 ): untyped =
   ## Creates a RouteRef with middleware.
-  let wrapped = generateHandlerWrapper(handler, pattern)
+  let wrapped = newCall(ident"generateHandlerWrapper", handler, newStrLitNode(pattern))
   let refType = newNimNode(nnkBracketExpr).add(
     ident"RouteRef", newStrLitNode(pattern))
   let entryExpr = newNimNode(nnkObjConstr).add(
@@ -163,7 +163,7 @@ macro route*(name: untyped, body: untyped): untyped =
         let handlerValue = if isInline:
           handlerIdent
         else:
-          generateHandlerWrapper(handlerIdent, pattern.strVal)
+          newCall(ident"generateHandlerWrapper", handlerIdent, newStrLitNode(pattern.strVal))
 
         let entry = newNimNode(nnkObjConstr).add(
           ident"RouteEntry",
