@@ -11,22 +11,24 @@ proc newRequestData*(): RequestData =
   )
 
 proc newContext*(): Context =
-  Context(
+  result = Context(
     pathParams: initTable[string, string](),
     request: newRequestData(),
   )
+  result.cookies = Cookies(request: result.request)
 
 proc clone*(ctx: Context): Context =
   ## Creates a lightweight copy for internal dispatch.
   ## RequestData is shared (not copied) — headers, body, query, ip
   ## are the same ref. Only path, method and pathParams are new.
-  Context(
+  result = Context(
     path: ctx.path,
     httpMethod: ctx.httpMethod,
     pathParams: initTable[string, string](),
     request: ctx.request,
     router: ctx.router,
   )
+  result.cookies = Cookies(request: result.request)
 
 proc getQuery*(ctx: Context, key: string, default: string = ""): string =
   ctx.request.query.getOrDefault(key, default)
@@ -83,14 +85,13 @@ proc parseCookieHeader(header: string): Table[string, string] =
     if eq > 0:
       result[pair[0..<eq]] = pair[eq+1..^1]
 
-proc getCookie*(ctx: Context, name: string, default: string = ""): string =
-  ## Reads a cookie value from the request Cookie header.
-  ## Lazy: parses on first access, then O(1) table lookups.
-  if not ctx.request.cookiesParsed:
-    ctx.request.cookies = parseCookieHeader(
-      ctx.request.headers.getString("cookie"))
-    ctx.request.cookiesParsed = true
-  ctx.request.cookies.getOrDefault(name, default)
+proc get*(cookies: Cookies, name: string, default: string = ""): string =
+  ## Reads a cookie from the request. Lazy: parses on first access.
+  if not cookies.isParsed:
+    cookies.parsed = parseCookieHeader(
+      cookies.request.headers.getString("cookie"))
+    cookies.isParsed = true
+  cookies.parsed.getOrDefault(name, default)
 
 proc formatCookie*[T](
   key: string,
@@ -116,6 +117,26 @@ proc formatCookie*[T](
   of Strict: result &= "; SameSite=Strict"
   of None: result &= "; SameSite=None"
   of Default: discard
+
+proc set*[T](
+  cookies: Cookies,
+  key: string,
+  value: T,
+  domain = "",
+  path = "",
+  expires = "",
+  maxAge = none(int),
+  secure = false,
+  httpOnly = false,
+  sameSite = SameSite.Default,
+) =
+  ## Queues a Set-Cookie header for the outgoing response.
+  cookies.pending.add(formatCookie(key, value, domain, path, expires,
+    maxAge, secure, httpOnly, sameSite))
+
+proc delete*(cookies: Cookies, key: string, domain = "", path = "") =
+  ## Queues a cookie deletion header for the outgoing response (Max-Age=0).
+  cookies.set(key, "", domain=domain, path=path, maxAge=some(0))
 
 proc withCookie*[T](
   res: Response,
@@ -143,24 +164,3 @@ proc deleteCookie*(
 ): Response =
   ## Returns a new Response with a cookie deletion header (Max-Age=0).
   res.withCookie(key, "", domain=domain, path=path, maxAge=some(0))
-
-proc setCookie*[T](
-  ctx: Context,
-  key: string,
-  value: T,
-  domain = "",
-  path = "",
-  expires = "",
-  maxAge = none(int),
-  secure = false,
-  httpOnly = false,
-  sameSite = SameSite.Default,
-) =
-  ## Queues a Set-Cookie header to be sent with the response.
-  ## Cookies are applied to the response by the router dispatch.
-  ctx.outCookies.add(formatCookie(key, value, domain, path, expires,
-    maxAge, secure, httpOnly, sameSite))
-
-proc deleteCookie*(ctx: Context, key: string, domain = "", path = "") =
-  ## Queues a cookie deletion header (Max-Age=0).
-  ctx.setCookie(key, "", domain=domain, path=path, maxAge=some(0))

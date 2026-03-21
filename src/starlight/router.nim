@@ -211,8 +211,8 @@ proc dispatch*(
     let allMw = router.globalMiddlewares & m.middlewares
     let chain = buildChain(m.handler, allMw)
     var res = await chain(ctx)
-    if ctx.outCookies.len > 0:
-      for cookie in ctx.outCookies:
+    if ctx.cookies.pending.len > 0:
+      for cookie in ctx.cookies.pending:
         res.headers.add("Set-Cookie", cookie)
     return res
   else:

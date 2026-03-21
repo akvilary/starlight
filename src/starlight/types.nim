@@ -21,12 +21,16 @@ type
   SameSite* = enum
     Default, None, Lax, Strict
 
+  Cookies* = ref object
+    request*: RequestData ## Ref to request for lazy Cookie header parsing in `get`.
+    parsed*: Table[string, string]
+    isParsed*: bool
+    pending*: seq[string]
+
   RequestData* = ref object
     headers*: HttpTable
     body*: string
     query*: Table[string, string]
-    cookies*: Table[string, string]
-    cookiesParsed*: bool
     ip*: string
 
   Context* = ref object
@@ -35,7 +39,7 @@ type
     pathParams*: Table[string, string]
     request*: RequestData
     router*: Router
-    outCookies*: seq[string]
+    cookies*: Cookies
 
   Response* = object
     code*: HttpCode = Http200

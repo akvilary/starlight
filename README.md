@@ -984,23 +984,23 @@ If the `Content-Type` header is missing or unsupported (e.g., `application/json`
 
 ### Reading Cookies
 
-Use `ctx.getCookie` to read cookies from the request. Parsing is lazy — the Cookie header is only parsed on the first call, then all subsequent lookups are O(1) table access:
+Use `ctx.cookies.get` to read cookies from the request. Parsing is lazy — the Cookie header is only parsed on the first call, then all subsequent lookups are O(1) table access:
 
 ```nim
 handler dashboard(ctx: Context) {.html.}:
-  let theme = ctx.getCookie("theme", "light")
-  let lang = ctx.getCookie("lang", "en")
+  let theme = ctx.cookies.get("theme", "light")
+  let lang = ctx.cookies.get("lang", "en")
   return Dashboard(theme=theme, lang=lang)
 ```
 
 ### Setting Cookies
 
-**In handlers** — use `ctx.setCookie` to queue a `Set-Cookie` header for the outgoing response. The cookies are not sent immediately — they are collected and automatically added to the response by the router after the handler returns:
+**In handlers** — use `ctx.cookies.set` to queue a `Set-Cookie` header for the outgoing response. The cookies are not sent immediately — they are collected and automatically added to the response by the router after the handler returns:
 
 ```nim
 handler login(ctx: Context) {.html.}:
-  ctx.setCookie("session", token, httpOnly=true, secure=true, sameSite=Lax)
-  ctx.setCookie("theme", "dark")
+  ctx.cookies.set("session", token, httpOnly=true, secure=true, sameSite=Lax)
+  ctx.cookies.set("theme", "dark")
   return "Welcome"
 ```
 
@@ -1016,18 +1016,18 @@ handler login(ctx: Context):
 The value parameter is generic — any type with `$` works:
 
 ```nim
-ctx.setCookie("count", 42)
-ctx.setCookie("active", true)
+ctx.cookies.set("count", 42)
+ctx.cookies.set("active", true)
 ```
 
 ### Deleting Cookies
 
-Delete a cookie by sending a `Set-Cookie` header with `Max-Age=0` in the response. Like `setCookie`, this affects the outgoing response, not the incoming request:
+`ctx.cookies.delete` sends a `Set-Cookie` header with `Max-Age=0` in the outgoing response, instructing the browser to remove the cookie:
 
 ```nim
 # In a handler:
 handler logout(ctx: Context) {.html.}:
-  ctx.deleteCookie("session", path="/")
+  ctx.cookies.delete("session", path="/")
   return "Bye"
 
 # Or on a response:
