@@ -67,6 +67,11 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
   - [Setting Cookies](#setting-cookies)
   - [Deleting Cookies](#deleting-cookies)
   - [Cookie Options](#cookie-options)
+- [Sessions](#sessions)
+  - [Setup](#setup)
+  - [Reading and Writing](#reading-and-writing)
+  - [Typed Values](#typed-values)
+  - [Deleting and Clearing](#deleting-and-clearing)
 - [Compile-Time Optimization](#compile-time-optimization)
 - [Shared Buffer Mode](#shared-buffer-mode)
   - [How It Works](#how-it-works)
@@ -1055,6 +1060,78 @@ ctx.setCookie("theme", "dark")
 ```
 
 For session cookies, always use `httpOnly=true, secure=true, sameSite=Lax`.
+
+## Sessions
+
+Server-side sessions with in-memory store. Session data is stored as native types (no string parsing on read).
+
+### Setup
+
+Create a store and register `withSessions` — a built-in middleware (like `withTimeout`):
+
+```nim
+# In-memory store
+var store = newMemoryStore()
+router.use(withSessions(store))
+
+# Or Redis store (connects lazily on first request)
+var store = newRedisStore("127.0.0.1", 6379)
+router.use(withSessions(store))
+```
+
+Both inherit from `SessionStore` — `withSessions` works with any store. Custom stores inherit the same base type and override `load`, `save`, `destroy` methods.
+
+### Reading and Writing
+
+```nim
+handler login(ctx: Context) {.html.}:
+  ctx.session.set("userId", 42)
+  ctx.session.set("role", "admin")
+  return "Logged in"
+
+handler dashboard(ctx: Context) {.html.}:
+  let role = ctx.session.get("role", "guest")
+  return "Hello, " & role
+```
+
+### Typed Values
+
+Session values are stored as native types (int, float, bool, string) — no parsing overhead on read:
+
+```nim
+ctx.session.set("count", 42)         # stored as int
+ctx.session.set("score", 9.5)        # stored as float
+ctx.session.set("active", true)      # stored as bool
+ctx.session.set("name", "Alice")     # stored as string
+
+ctx.session.get("count", int)        # → 42 (direct field access)
+ctx.session.get("score", float)      # → 9.5
+ctx.session.get("active", bool)      # → true
+ctx.session.get("name")              # → "Alice"
+ctx.session.get("missing", int, 10)  # → 10 (default)
+```
+
+Type mismatch returns the default value:
+
+```nim
+ctx.session.set("name", "Alice")
+ctx.session.get("name", int)     # → 0 (default for int)
+ctx.session.get("name", int, 99) # → 99 (explicit default)
+```
+
+### Deleting and Clearing
+
+```nim
+handler logout(ctx: Context) {.html.}:
+  ctx.session.clear()   # remove all session data
+  return "Bye"
+
+handler removeKey(ctx: Context) {.html.}:
+  ctx.session.delete("role")   # remove a single key
+  return "OK"
+```
+
+The session middleware accepts the same cookie options as `ctx.cookies.set` (see [Cookie Options](#cookie-options)) plus `cookieName` (default: `"sid"`). Defaults: `secure=true`, `httpOnly=true`, `sameSite=Lax`.
 
 ## Compile-Time Optimization
 

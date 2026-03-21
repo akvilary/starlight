@@ -9,7 +9,7 @@ What needs to happen for Starlight to become the go-to SSR framework — not jus
 Everything a developer needs to build a real app without reaching for another framework.
 
 - [x] **Cookies** — read/write, HttpOnly, Secure, SameSite, Max-Age, expiration
-- [ ] **Sessions** — in-memory store, pluggable backend (Redis, file), session middleware
+- [x] **Sessions** — in-memory store, pluggable backend (Redis, file), session middleware
 - [ ] **CORS middleware** — configurable origins, methods, headers, credentials
 - [x] **Typed query parameters** — `handler search(ctx, q: string, page: int = 1)` auto-parsed from `?q=nim&page=2`
 - [ ] **Content negotiation** — `withFormats(@["html", "json"])` middleware, auto 406 on unsupported Accept

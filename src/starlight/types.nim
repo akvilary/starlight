@@ -33,6 +33,24 @@ type
     query*: Table[string, string]
     ip*: string
 
+  SessionValueKind* = enum
+    svkString, svkInt, svkFloat, svkBool
+
+  SessionValue* = object
+    case kind*: SessionValueKind
+    of svkString: strVal*: string
+    of svkInt: intVal*: int
+    of svkFloat: floatVal*: float
+    of svkBool: boolVal*: bool
+
+  Session* = ref object
+    id*: string
+    data*: Table[string, SessionValue]
+    isModified*: bool
+    isNew*: bool
+
+  SessionStore* = ref object of RootObj
+
   Context* = ref object
     path*: string
     httpMethod*: HttpMethod
@@ -40,6 +58,7 @@ type
     request*: RequestData
     router*: Router
     cookies*: Cookies
+    session*: Session
 
   Response* = object
     code*: HttpCode = Http200

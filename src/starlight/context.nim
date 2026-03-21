@@ -29,6 +29,7 @@ proc clone*(ctx: Context): Context =
     router: ctx.router,
   )
   result.cookies = Cookies(request: result.request)
+  result.session = ctx.session
 
 proc getQuery*(ctx: Context, key: string, default: string = ""): string =
   ctx.request.query.getOrDefault(key, default)
