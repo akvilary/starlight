@@ -10,7 +10,7 @@ proc sideEffect(): string =
 layout Inner(value: string) {.buf.}:
   Span: value
 
-layout Outer(content: lazyLayout) {.buf.}:
+layout Outer(content: lazyLayout[Inner]) {.buf.}:
   Div:
     content
 

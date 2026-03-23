@@ -1,7 +1,7 @@
 import std/unittest
 import ../src/starlight
 
-layout TwoLazy(headerContent: lazyLayout, bodyContent: lazyLayout) {.buf.}:
+layout TwoLazy(headerContent: lazyLayout[HeaderBlock], bodyContent: lazyLayout[FooterBlock]) {.buf.}:
   Div(class="page"):
     headerContent
     Hr

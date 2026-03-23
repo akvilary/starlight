@@ -15,7 +15,7 @@
 ##     Header:
 ##       H1: "My Site"
 ##
-##   layout Shell(title: string, content: lazyLayout) {.buf.}:
+##   layout Shell(title: string, content: lazyLayout[SiteHeader]) {.buf.}:
 ##     Html:
 ##       Body:
 ##         content
@@ -23,28 +23,61 @@
 ##   layout Page(title: string) {.buf.}:
 ##     Shell(title=title, lazy content=SiteHeader())
 
-import std/[macros, sets]
+import std/[macros, macrocache, tables]
 import html
 import private/naming
 
 export naming
 
-proc collectLazyParams(signature: NimNode): seq[string] =
-  ## Collect parameter names declared as `name: lazyLayout`.
+proc isLazyLayoutType(typeNode: NimNode): bool =
+  ## Check if type node is `lazyLayout[X]`.
+  typeNode.kind == nnkBracketExpr and
+  typeNode[0].kind == nnkIdent and typeNode[0].strVal == "lazyLayout" and
+  typeNode.len > 1
+
+proc collectLazyParams(signature: NimNode): seq[LazyParam] =
+  ## Collect parameters declared as `name: lazyLayout`,
+  ## `name: lazyLayout[X]`, or `name: openarray[lazyLayout[X]]`.
   for i in 1..<signature.len:
     let param = signature[i]
-    if param.kind == nnkExprColonExpr and
-       param[1].kind == nnkIdent and param[1].strVal == "lazyLayout":
-      result.add param[0].strVal
+    if param.kind != nnkExprColonExpr:
+      continue
+    let typeNode = param[1]
+    if isLazyLayoutType(typeNode):
+      # lazyLayout[X] — typed
+      result.add LazyParam(
+        name: param[0].strVal,
+        kind: lkSingle,
+        typeName: typeNode[1].strVal,
+      )
+    elif typeNode.kind == nnkIdent and typeNode.strVal == "lazyLayout":
+      # lazyLayout — untyped (no compile-time type check)
+      result.add LazyParam(
+        name: param[0].strVal,
+        kind: lkSingle,
+        typeName: "",
+      )
+    elif typeNode.kind == nnkBracketExpr and
+         typeNode[0].kind == nnkIdent and typeNode[0].strVal.eqIdent("openarray") and
+         typeNode.len > 1 and isLazyLayoutType(typeNode[1]):
+      result.add LazyParam(
+        name: param[0].strVal,
+        kind: lkSeq,
+        typeName: typeNode[1][1].strVal,
+      )
 
 proc extractParams(
   signature: NimNode,
-  lazyNames: seq[string] = default(seq[string]),
+  lazyParams: seq[LazyParam] = default(seq[LazyParam]),
 ): tuple[procParams, tmplParams, callArgs: seq[NimNode]] =
   ## Extract parameter lists from layout signature.
   ## Parameters with `lazyLayout` type are excluded — handled separately.
   ## procParams and tmplParams are structurally identical but must be
   ## separate NimNode instances (Nim AST requires distinct nodes per proc).
+  var lazyNames: seq[string]
+  for lp in lazyParams:
+    lazyNames.add lp.name
+
   var procParams: seq[NimNode] = @[]
   var tmplParams: seq[NimNode] = @[]
   var callArgs: seq[NimNode] = @[]
@@ -84,15 +117,20 @@ proc generateBuffered(
   name: NimNode,
   body: NimNode,
   procParams, tmplParams, callArgs: seq[NimNode],
-  lazyNames: seq[string],
+  lazyParams: seq[LazyParam],
   hintKb: int,
 ): NimNode =
   ## Generate buffered layout code (with {.buf.} pragma).
   let implName = layoutImplName(name.strVal)
   let staticCapName = ident(name.strVal & "_staticCap")
   let bufIdent = ident"buf"
-  let lazySet = lazyNames.toHashSet
-  let htmlStmts = generateHtmlBlockBuffered(body, bufIdent, lazySet)
+
+  var lazyTable = initTable[string, LazyInfo]()
+  for lp in lazyParams:
+    lazyTable[lp.name] = (lp.kind, lp.typeName)
+    if lp.typeName.len > 0:
+      lazyTypeRegistry[name.strVal & "." & lp.name] = newLit(lp.typeName)
+  let htmlStmts = generateHtmlBlockBuffered(body, bufIdent, lazyTable)
   let capExpr = buildCapExpr(htmlStmts, hintKb)
 
   result = newStmtList()
@@ -122,15 +160,28 @@ proc generateBuffered(
     )
   )
 
+  # openArray[ProcType] for seq lazy params (zero heap allocation)
+  let lazyOpenArrayType = newNimNode(nnkBracketExpr).add(
+    ident"openArray", lazyProcType.copyNimTree)
+
   # proc __layout__Name*(buf: var string, params...,
-  #                      __lazy__content: proc(...), ...) {.inline.} =
+  #                      __lazy__content: proc(...) | openArray[proc(...)],
+  #                      ...) {.inline.} =
   var implParams: seq[NimNode] = @[]
   implParams.add newEmptyNode()  # void return
   implParams.add newIdentDefs(bufIdent, newNimNode(nnkVarTy).add(ident"string"))
   for p in procParams:
     implParams.add p
-  for lazyName in lazyNames:
-    implParams.add newIdentDefs(lazyParamName(lazyName), lazyProcType)
+  for lp in lazyParams:
+    case lp.kind
+    of lkSingle:
+      implParams.add newIdentDefs(
+        lazyParamName(lp.name), lazyProcType.copyNimTree)
+    of lkSeq:
+      implParams.add newIdentDefs(
+        lazyParamName(lp.name), lazyOpenArrayType.copyNimTree)
+    of lkRaw:
+      discard
 
   let implProc = newProc(
     name = postfix(implName, "*"),
@@ -141,7 +192,7 @@ proc generateBuffered(
   implProc.addPragma(ident"inline")
   result.add implProc
 
-  # No-op closure for lazy params: proc(buf: var string) = discard
+  # No-op closure for single lazy params: proc(buf: var string) = discard
   let noopLazy = newNimNode(nnkLambda).add(
     newEmptyNode(), newEmptyNode(), newEmptyNode(),
     newNimNode(nnkFormalParams).add(
@@ -158,13 +209,20 @@ proc generateBuffered(
   for p in tmplParams:
     wrapperParams.add p
 
-  # Build _impl call: __layout__Name(buf, args..., lazy closures...)
+  # Build _impl call: __layout__Name(buf, args..., lazy defaults...)
   proc makeFwdCall(): NimNode =
     result = newCall(implName, bufIdent)
     for arg in callArgs:
       result.add arg
-    for lazyName in lazyNames:
-      result.add noopLazy
+    for lp in lazyParams:
+      case lp.kind
+      of lkSingle:
+        result.add noopLazy.copyNimTree
+      of lkSeq:
+        # Empty bracket [] — empty openArray, zero allocation
+        result.add newNimNode(nnkBracket)
+      of lkRaw:
+        discard
 
   # when declared(buf): __layout__Name(ctx, buf, ...); ""
   let bufBranch = newStmtList(makeFwdCall(), newStrLitNode(""))
@@ -215,12 +273,11 @@ macro layout*(signature: untyped, body: untyped): untyped =
           hintKb = pragma[1].intVal.int
 
   let name = actualSignature[0]
-  let implName = layoutImplName(name.strVal)
 
   if isBuffered:
-    let lazyNames = collectLazyParams(actualSignature)
-    let (procParams, tmplParams, callArgs) = extractParams(actualSignature, lazyNames)
-    return generateBuffered(name, body, procParams, tmplParams, callArgs, lazyNames, hintKb)
+    let lazyParams = collectLazyParams(actualSignature)
+    let (procParams, tmplParams, callArgs) = extractParams(actualSignature, lazyParams)
+    return generateBuffered(name, body, procParams, tmplParams, callArgs, lazyParams, hintKb)
 
   # --- Regular layout ---
 

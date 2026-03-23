@@ -5,7 +5,7 @@ layout SiteHeader() {.buf.}:
   Header:
     H1: "My Site"
 
-layout Wrapper(title: string, content: lazyLayout) {.buf.}:
+layout Wrapper(title: string, content: lazyLayout[SiteHeader]) {.buf.}:
   Html:
     Head:
       Title: title

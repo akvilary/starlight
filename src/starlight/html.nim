@@ -8,7 +8,7 @@
 ##       if loggedIn:
 ##         A(href="/logout"): "Logout"
 
-import std/[macros, sets]
+import std/[macros, macrocache, sets, tables]
 import private/tags
 import private/escape
 import private/naming
@@ -91,21 +91,21 @@ proc processContent(
   stmts: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 )
 proc processNode(
   node: NimNode,
   stmts: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 )
 
 proc processBodyBlock(
   node: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 ): NimNode =
   ## Process a control flow body into a new StmtList, flushing literals.
   var body = newStmtList()
@@ -118,7 +118,7 @@ proc rebuildBranch(
   branch: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 ): NimNode =
   ## Rebuild an AST branch node: copy leading children, replace last with
   ## processBodyBlock. Used for OfBranch, ExceptBranch, ForStmt.
@@ -133,7 +133,7 @@ proc processContent(
   stmts: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 ) =
   ## Process a content expression (not a tag).
   case node.kind
@@ -153,7 +153,7 @@ proc processTag(
   stmts: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 ) =
   ## Process an HTML tag node.
   let htmlTag = tagToHtml(tagName)
@@ -189,18 +189,38 @@ proc processTag(
         processContent(child, stmts, buf, lit, lazyParams)
     lit.add "</" & htmlTag & ">"
 
+proc extractCallTarget(expr: NimNode): string =
+  ## Extract layout name from a call expression (e.g., SiteHeader() → "SiteHeader").
+  if expr.kind in {nnkCall, nnkCommand} and expr.len > 0:
+    if expr[0].kind == nnkIdent:
+      return expr[0].strVal
+    elif expr[0].kind == nnkAccQuoted and expr[0].len > 0:
+      return expr[0][0].strVal
+
+proc checkLazyType(
+  targetLayout, paramName, got: string,
+  errorNode: NimNode,
+) =
+  ## Check that `got` matches the expected type for this lazy param.
+  let key = targetLayout & "." & paramName
+  if lazyTypeRegistry.hasKey(key):
+    let expected = lazyTypeRegistry[key].strVal
+    if got != expected:
+      error("lazy '" & paramName & "' of " & targetLayout &
+            " expects " & expected & ", got " & got, errorNode)
+
 proc transformLazyCall(
   node: NimNode,
   stmts: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 ) =
   ## Transform a call with lazy args: call __layout__Name(buf, ...) directly,
   ## wrapping lazy exprs in closures.
   flushLit(stmts, buf, lit)
-  # Call _impl directly: __layout__Name(buf, regular args..., lazy args...)
-  let implName = layoutImplName(node[0].strVal)
+  let targetLayout = node[0].strVal
+  let implName = layoutImplName(targetLayout)
   var newCallNode = newCall(implName, buf)
   for i in 1..<node.len:
     let arg = node[i]
@@ -208,13 +228,30 @@ proc transformLazyCall(
        arg[0].len >= 2 and arg[0][0].kind == nnkIdent and arg[0][0].strVal == "lazy":
       let paramName = arg[0][1].strVal  # actual param name
       let expr = arg[1]                 # expression to defer
-      # Check if expr is a lazy param being forwarded
       if expr.kind == nnkIdent and expr.strVal in lazyParams:
-        # Forward: pass the mangled closure directly
+        # Forward lazy param — check source type vs target type
+        let sourceType = lazyParams[expr.strVal].typeName
+        if sourceType.len > 0:
+          checkLazyType(targetLayout, paramName, sourceType, expr)
+        let fwdName = if lazyParams[expr.strVal].kind == lkRaw:
+          ident(expr.strVal) else: lazyParamName(expr.strVal)
         newCallNode.add newNimNode(nnkExprEqExpr).add(
-          lazyParamName(paramName), lazyParamName(expr.strVal))
+          lazyParamName(paramName), fwdName)
+      elif expr.kind == nnkBracket:
+        # Array of lazy exprs → stack array of closures (zero heap alloc)
+        var arrExpr = newNimNode(nnkBracket)
+        for item in expr:
+          let got = extractCallTarget(item)
+          if got.len > 0:
+            checkLazyType(targetLayout, paramName, got, item)
+          arrExpr.add makeLazyLambda(item)
+        newCallNode.add newNimNode(nnkExprEqExpr).add(
+          lazyParamName(paramName), arrExpr)
       else:
-        # Wrap expression in a closure
+        # Single lazy expr — type check + wrap in closure
+        let got = extractCallTarget(expr)
+        if got.len > 0:
+          checkLazyType(targetLayout, paramName, got, expr)
         newCallNode.add newNimNode(nnkExprEqExpr).add(
           lazyParamName(paramName), makeLazyLambda(expr))
     else:
@@ -226,7 +263,7 @@ proc processNode(
   stmts: NimNode,
   buf: NimNode,
   lit: var string,
-  lazyParams: HashSet[string],
+  lazyParams: Table[string, LazyInfo],
 ) =
   case node.kind
   of nnkStmtList:
@@ -258,9 +295,17 @@ proc processNode(
   of nnkIdent:
     let name = node.strVal
     if name in lazyParams:
-      # Lazy param — call the closure at this buffer position
       flushLit(stmts, buf, lit)
-      stmts.add newCall(lazyParamName(name), buf)
+      case lazyParams[name].kind
+      of lkSingle:
+        stmts.add newCall(lazyParamName(name), buf)
+      of lkSeq:
+        let itemSym = genSym(nskForVar, "lazyItem")
+        stmts.add newNimNode(nnkForStmt).add(
+          itemSym, lazyParamName(name),
+          newStmtList(newCall(itemSym, buf)))
+      of lkRaw:
+        stmts.add newCall(ident(name), buf)
     elif isTag(name) and isVoid(name):
       # Only void tags can be bare identifiers (e.g., Br, Hr)
       lit.add "<" & tagToHtml(name) & "/>"
@@ -290,7 +335,17 @@ proc processNode(
 
   of nnkForStmt:
     flushLit(stmts, buf, lit)
-    stmts.add rebuildBranch(nnkForStmt, node, buf, lit, lazyParams)
+    let iterExpr = node[^2]
+    if iterExpr.kind == nnkIdent and iterExpr.strVal in lazyParams and
+       lazyParams[iterExpr.strVal].kind == lkSeq:
+      let loopVar = node[0]
+      var innerParams = lazyParams
+      innerParams[loopVar.strVal] = (lkRaw, lazyParams[iterExpr.strVal].typeName)
+      let body = processBodyBlock(node[^1], buf, lit, innerParams)
+      stmts.add newNimNode(nnkForStmt).add(
+        loopVar, lazyParamName(iterExpr.strVal), body)
+    else:
+      stmts.add rebuildBranch(nnkForStmt, node, buf, lit, lazyParams)
 
   of nnkWhileStmt:
     flushLit(stmts, buf, lit)
@@ -375,7 +430,7 @@ proc generateHtmlBlock*(body: NimNode): NimNode =
   var stmts = newStmtList()
   var lit = ""
 
-  processNode(body, stmts, buf, lit, initHashSet[string]())
+  processNode(body, stmts, buf, lit, default(Table[string, LazyInfo]))
   flushLit(stmts, buf, lit)
 
   let cap = countBufAdds(stmts).staticLen + 256
@@ -391,7 +446,7 @@ proc generateHtmlBlock*(body: NimNode): NimNode =
 proc generateHtmlBlockBuffered*(
   body: NimNode,
   buf: NimNode,
-  lazyParams: HashSet[string] = default(HashSet[string]),
+  lazyParams: Table[string, LazyInfo] = default(Table[string, LazyInfo]),
 ): NimNode =
   ## Generate HTML rendering code that writes to an existing buffer.
   ## Unlike generateHtmlBlock, does not create or return the buffer.

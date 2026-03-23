@@ -1,8 +1,12 @@
 # Starlight
 
-Super fast server-side rendering framework for Nim.
+Super fast, type-safe server-side rendering framework for Nim.
 
-Starlight combines the stability of Prologue with the ergonomics of HappyX, while adding compile-time HTML optimization that makes it the fastest SSR framework in the Nim ecosystem.
+Starlight combines the stability of Prologue with the ergonomics of HappyX, while adding compile-time HTML optimization and type-checked layouts that make it the fastest and safest SSR framework in the Nim ecosystem.
+
+**Performance**: zero-copy rendering pipeline — compile-time buffer sizing, single allocation, ORC move semantics from layout to HTTP response. Lazy layout parameters use stack-allocated `openArray` of `nimcall` function pointers — zero heap allocation.
+
+**Type safety**: `lazyLayout[X]` parameters are validated at compile time via a macro-level type registry. Passing a wrong layout type is a compilation error, not a runtime surprise.
 
 ## Table of Contents
 
@@ -82,6 +86,8 @@ Starlight combines the stability of Prologue with the ergonomics of HappyX, whil
 - [Shared Buffer Mode](#shared-buffer-mode)
   - [How It Works](#how-it-works)
   - [Lazy Parameters](#lazy-parameters)
+  - [Typed Lazy Parameters](#typed-lazy-parameters)
+  - [Array of Lazy Parameters](#array-of-lazy-parameters)
   - [Buffer Capacity](#buffer-capacity)
   - [Zero-Copy Response Chain](#zero-copy-response-chain)
   - [Summary](#summary)
@@ -1297,10 +1303,14 @@ The nested layout writes to the parent's buffer and returns an empty string (whi
 
 **The problem.** A `{.buf.}` layout that takes a `content: string` parameter and embeds it via `raw content` has a broken buffer order: the parameter is evaluated **before** the layout body runs. If `content` is another `{.buf.}` layout call, it writes to the buffer too early — before the parent's `<html><body>` tags.
 
-**The solution.** Declare the parameter as `lazyLayout` — the expression is wrapped in a `nimcall` proc and called at the exact position in the layout body where the parameter name appears:
+**The solution.** Declare the parameter as `lazyLayout[X]` where `X` is the expected layout type. The expression is wrapped in a `nimcall` proc and called at the exact position in the layout body where the parameter name appears:
 
 ```nim
-layout Shell(title: string, content: lazyLayout) {.buf.}:
+layout SiteHeader() {.buf.}:
+  Header:
+    H1: "My Site"
+
+layout Shell(title: string, content: lazyLayout[SiteHeader]) {.buf.}:
   Html:
     Head:
       Title: title
@@ -1316,10 +1326,26 @@ layout HomePage(title: string) {.buf.}:
 
 `lazy content=expr` defers evaluation of `expr` until the layout body reaches the `content` position. The `{.buf.}` layout `SiteHeader()` writes directly to the shared buffer at the correct position.
 
-Multiple lazy parameters are supported:
+### Typed Lazy Parameters
+
+The type parameter in `lazyLayout[X]` is validated at compile time. Passing a wrong layout type is a compilation error:
 
 ```nim
-layout TwoColumn(sidebar: lazyLayout, main: lazyLayout) {.buf.}:
+layout Footer() {.buf.}:
+  Footer: "End"
+
+layout Page() {.buf.}:
+  Shell(title="Home", lazy content=Footer())
+  # Error: lazy 'content' of Shell expects SiteHeader, got Footer
+```
+
+Multiple lazy parameters are supported — each with its own type constraint:
+
+```nim
+layout TwoColumn(
+  sidebar: lazyLayout[SidebarNav],
+  main: lazyLayout[DashboardContent],
+) {.buf.}:
   Div(class="page"):
     Div(class="sidebar"):
       sidebar
@@ -1338,14 +1364,53 @@ layout DashboardPage() {.buf.}:
   TwoColumn(lazy sidebar=SidebarNav(), lazy main=DashboardContent())
 ```
 
+### Array of Lazy Parameters
+
+Use `openarray[lazyLayout[X]]` to accept multiple lazy layouts of the same type. At the call site, pass a bracket array — it is stack-allocated (zero heap allocation):
+
+```nim
+layout ItemBlock(title: string) {.buf.}:
+  Li: title
+
+layout ItemList(items: openarray[lazyLayout[ItemBlock]]) {.buf.}:
+  Ul:
+    items   # auto-iterates: each closure is called in order
+
+layout Page() {.buf.}:
+  ItemList(lazy items=[ItemBlock(title="A"), ItemBlock(title="B")])
+  # Result: <ul><li>A</li><li>B</li></ul>
+```
+
+Use a `for` loop to wrap each item with extra markup:
+
+```nim
+layout WrappedList(items: openarray[lazyLayout[ItemBlock]]) {.buf.}:
+  Ul:
+    for item in items:
+      Div(class="wrapper"):
+        item
+
+layout Page() {.buf.}:
+  WrappedList(lazy items=[ItemBlock(title="X"), ItemBlock(title="Y")])
+  # Result: <ul><div class="wrapper"><li>X</li></div><div class="wrapper"><li>Y</li></div></ul>
+```
+
+Type checking applies to each element — mixing types is a compile error:
+
+```nim
+layout Page() {.buf.}:
+  ItemList(lazy items=[ItemBlock(title="OK"), Footer()])
+  # Error: lazy 'items' of ItemList expects ItemBlock, got Footer
+```
+
 **Forwarding.** A lazy parameter can be passed down to a nested layout:
 
 ```nim
-layout Inner(content: lazyLayout) {.buf.}:
+layout Inner(content: lazyLayout[ContentBlock]) {.buf.}:
   Div(class="inner"):
     content
 
-layout Outer(content: lazyLayout) {.buf.}:
+layout Outer(content: lazyLayout[ContentBlock]) {.buf.}:
   Div(class="outer"):
     Inner(lazy content=content)    # forwards the proc, no re-wrapping
 ```
@@ -1353,7 +1418,7 @@ layout Outer(content: lazyLayout) {.buf.}:
 **Using and forwarding.** A lazy parameter can be both called (written to buffer) and forwarded in the same layout:
 
 ```nim
-layout Outer(content: lazyLayout) {.buf.}:
+layout Outer(content: lazyLayout[ContentBlock]) {.buf.}:
   content                           # writes content to buffer here
   Inner(lazy content=content)       # AND forwards to Inner (writes again)
 ```
@@ -1400,7 +1465,7 @@ Result: **1 allocation, 0 copies** for the entire render-to-response pipeline.
 |---------|------------------|-----------------------|
 | Buffer | Own buffer per layout | Shared with parent |
 | Nesting | `raw Inner()` (copy) | `Inner()` (direct write) |
-| Lazy params | Not supported | `content: lazyLayout` + `lazy content=expr` |
+| Lazy params | Not supported | `content: lazyLayout[X]` + `lazy content=expr` |
 | Buffer sizing | `staticLen + 256` | `staticLen + dynamic*64 + nested + 256` |
 | Hint override | No | `{.buf:N.}` (KB) |
 
@@ -1420,7 +1485,7 @@ layout SiteNav() {.buf.}:
     raw " | "
     A(href="/users"): "Users"
 
-# Page shell with a lazy parameter for page content
+# Page shell — untyped lazyLayout for generic content slot
 layout Shell(pageTitle: string, content: lazyLayout) {.buf.}:
   Html:
     Head:
@@ -1576,8 +1641,11 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `ctx.request.ip` | field | Client IP |
 | `raw expr` | keyword | Insert content without escaping (inside layout) |
 | `escapeHtml(s)` | proc | HTML-escape a string (`&` → `&amp;`, `<` → `&lt;`, etc.) |
-| `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer |
+| `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer (untyped) |
+| `content: lazyLayout[X]` | param type | Typed deferred parameter — compile-time validated against layout `X` |
+| `items: openarray[lazyLayout[X]]` | param type | Array of typed deferred parameters (stack-allocated, zero heap alloc) |
 | `lazy content=expr` | keyword | Pass `expr` as a lazy parameter (wrapped in nimcall proc) |
+| `lazy items=[expr, ...]` | keyword | Pass array of lazy parameters (stack-allocated bracket array) |
 
 ## License
 

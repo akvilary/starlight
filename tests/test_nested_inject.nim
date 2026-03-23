@@ -1,11 +1,11 @@
 import std/unittest
 import ../src/starlight
 
-layout Inner(content: lazyLayout) {.buf.}:
+layout Inner(content: lazyLayout[ContentBlock]) {.buf.}:
   Div(class="inner"):
     content
 
-layout Outer(content: lazyLayout) {.buf.}:
+layout Outer(content: lazyLayout[ContentBlock]) {.buf.}:
   Div(class="outer"):
     Inner(lazy content=content)
 
