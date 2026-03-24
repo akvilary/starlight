@@ -15,7 +15,7 @@
 ##     Header:
 ##       H1: "My Site"
 ##
-##   layout Shell(title: string, content: lazyLayout[SiteHeader]) {.buf.}:
+##   layout Shell[T](title: string, content: lazyLayout[T]) {.buf.}:
 ##     Html:
 ##       Body:
 ##         content
@@ -35,35 +35,33 @@ proc isLazyLayoutType(typeNode: NimNode): bool =
   typeNode[0].kind == nnkIdent and typeNode[0].strVal == "lazyLayout" and
   typeNode.len > 1
 
-proc collectLazyParams(signature: NimNode): seq[LazyParam] =
-  ## Collect parameters declared as `name: lazyLayout`,
-  ## `name: lazyLayout[X]`, or `name: openarray[lazyLayout[X]]`.
+proc collectLazyParams(
+  signature: NimNode,
+  genericParams: seq[string] = default(seq[string]),
+): seq[LazyParam] =
+  ## Collect parameters declared as `name: lazyLayout[X]`
+  ## or `name: openarray[lazyLayout[X]]`.
+  ## If X is a generic param of the layout, no compile-time type check.
   for i in 1..<signature.len:
     let param = signature[i]
     if param.kind != nnkExprColonExpr:
       continue
     let typeNode = param[1]
     if isLazyLayoutType(typeNode):
-      # lazyLayout[X] — typed
+      let typeName = typeNode[1].strVal
       result.add LazyParam(
         name: param[0].strVal,
         kind: lkSingle,
-        typeName: typeNode[1].strVal,
-      )
-    elif typeNode.kind == nnkIdent and typeNode.strVal == "lazyLayout":
-      # lazyLayout — untyped (no compile-time type check)
-      result.add LazyParam(
-        name: param[0].strVal,
-        kind: lkSingle,
-        typeName: "",
+        typeName: if typeName in genericParams: "" else: typeName,
       )
     elif typeNode.kind == nnkBracketExpr and
          typeNode[0].kind == nnkIdent and typeNode[0].strVal.eqIdent("openarray") and
          typeNode.len > 1 and isLazyLayoutType(typeNode[1]):
+      let typeName = typeNode[1][1].strVal
       result.add LazyParam(
         name: param[0].strVal,
         kind: lkSeq,
-        typeName: typeNode[1][1].strVal,
+        typeName: if typeName in genericParams: "" else: typeName,
       )
 
 proc extractParams(
@@ -272,10 +270,19 @@ macro layout*(signature: untyped, body: untyped): untyped =
         if pragma[1].kind in {nnkIntLit..nnkUInt64Lit}:
           hintKb = pragma[1].intVal.int
 
-  let name = actualSignature[0]
+  let nameNode = actualSignature[0]
+  var name: NimNode
+  var genericParams: seq[string]
+
+  if nameNode.kind == nnkBracketExpr:
+    name = nameNode[0]
+    for i in 1..<nameNode.len:
+      genericParams.add nameNode[i].strVal
+  else:
+    name = nameNode
 
   if isBuffered:
-    let lazyParams = collectLazyParams(actualSignature)
+    let lazyParams = collectLazyParams(actualSignature, genericParams)
     let (procParams, tmplParams, callArgs) = extractParams(actualSignature, lazyParams)
     return generateBuffered(name, body, procParams, tmplParams, callArgs, lazyParams, hintKb)
 

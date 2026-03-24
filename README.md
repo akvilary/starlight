@@ -1485,8 +1485,8 @@ layout SiteNav() {.buf.}:
     raw " | "
     A(href="/users"): "Users"
 
-# Page shell — untyped lazyLayout for generic content slot
-layout Shell(pageTitle: string, content: lazyLayout) {.buf.}:
+# Page shell — generic lazyLayout[T] for flexible content slot
+layout Shell[T](pageTitle: string, content: lazyLayout[T]) {.buf.}:
   Html:
     Head:
       Meta(charset="utf-8")
@@ -1641,8 +1641,8 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 | `ctx.request.ip` | field | Client IP |
 | `raw expr` | keyword | Insert content without escaping (inside layout) |
 | `escapeHtml(s)` | proc | HTML-escape a string (`&` → `&amp;`, `<` → `&lt;`, etc.) |
-| `content: lazyLayout` | param type | Deferred parameter — evaluated at usage position in buffer (untyped) |
 | `content: lazyLayout[X]` | param type | Typed deferred parameter — compile-time validated against layout `X` |
+| `content: lazyLayout[T]` | param type | Generic deferred parameter — `T` declared on layout: `layout Shell[T](..., content: lazyLayout[T])` |
 | `items: openarray[lazyLayout[X]]` | param type | Array of typed deferred parameters (stack-allocated, zero heap alloc) |
 | `lazy content=expr` | keyword | Pass `expr` as a lazy parameter (wrapped in nimcall proc) |
 | `lazy items=[expr, ...]` | keyword | Pass array of lazy parameters (stack-allocated bracket array) |
