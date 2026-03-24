@@ -156,6 +156,20 @@ The project ships with `nim.cfg` that sets `--mm:orc` explicitly. ORC provides m
 
 `layout` creates reusable HTML templates. HTML tags are only available inside `layout` bodies. Layouts are pure rendering functions — pass any needed data explicitly via parameters.
 
+Add `*` after the name to export the layout for use from other modules (standard Nim convention):
+
+```nim
+layout PublicPage*(title: string) {.buf.}:   # exported — can be imported
+  Html:
+    Head:
+      Title: title
+
+layout PrivateHelper(text: string) {.buf.}:  # module-private
+  Span: text
+```
+
+The same `*` export marker works for `handler` and `middleware`.
+
 ### Basic Layout
 
 ```nim
@@ -1596,13 +1610,16 @@ In this example, every HTML page shares the same `Shell` layout via `lazy conten
 
 | Symbol | Kind | Description |
 |--------|------|-------------|
-| `layout Name(params):` | macro | Defines a reusable HTML layout |
+| `layout Name(params):` | macro | Defines a reusable HTML layout (module-private) |
+| `layout Name*(params):` | macro | Exported layout — importable from other modules |
 | `layout Name(params) {.buf.}:` | macro | Layout that writes to a shared buffer |
 | `layout Name(params) {.buf:N.}:` | macro | Shared buffer layout with N KB capacity hint |
 | `handler Name(params) {.html.}:` | macro | Generates typed async proc, wraps return in `answer()` (text/html) |
+| `handler Name*(params) {.html.}:` | macro | Exported handler — importable from other modules |
 | `handler Name(params) {.json.}:` | macro | Generates typed async proc, wraps return in `answerJson()` (application/json) |
 | `handler Name(params):` | macro | Generates typed async proc, return must be a `Response` |
 | `middleware Name(ctx, next):` | macro | Generates typed async middleware proc |
+| `middleware Name*(ctx, next):` | macro | Exported middleware — importable from other modules |
 | `newRoute(method, pattern, handler)` | macro | Creates a `RouteRef` entity with pattern baked into the type |
 | `newRoute(method, pattern, handler, middleware)` | macro | Creates a `RouteRef` entity with middleware |
 | `urlAs(pattern, ...)` | macro | Compile-time URL builder from a pattern string |
