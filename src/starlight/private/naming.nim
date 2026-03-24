@@ -22,3 +22,29 @@ proc layoutImplName*(name: string): NimNode =
 
 proc lazyParamName*(name: string): NimNode =
   ident("__lazy__" & name)
+
+proc maybeExport*(name: NimNode, isExported: bool): NimNode =
+  if isExported: postfix(name, "*") else: name
+
+proc insertName(name, node: NimNode): NimNode =
+  ## Reattach name into the params node produced by Nim's parser for `Name*(...)`.
+  case node.kind
+  of nnkPragmaExpr:
+    result = newNimNode(nnkPragmaExpr).add(insertName(name, node[0]), node[1])
+  of nnkTupleConstr:
+    result = newNimNode(nnkObjConstr).add(name)
+    for c in node: result.add c
+  of nnkObjConstr:
+    # [T](params) → Name[T](params)
+    var be = newNimNode(nnkBracketExpr).add(name)
+    for c in node[0]: be.add c
+    result = newNimNode(nnkObjConstr).add(be)
+    for i in 1..<node.len: result.add node[i]
+  else:
+    result = newCall(name)
+
+proc normalizeExportMarker*(sig: NimNode): tuple[sig: NimNode, isExported: bool] =
+  ## Strip `*` from `Name*(args)` and return normalized signature + export flag.
+  if sig.kind != nnkInfix or sig[0].strVal != "*":
+    return (sig, false)
+  (insertName(sig[1], sig[2]), true)

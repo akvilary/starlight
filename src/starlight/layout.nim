@@ -117,6 +117,7 @@ proc generateBuffered(
   procParams, tmplParams, callArgs: seq[NimNode],
   lazyParams: seq[LazyParam],
   hintKb: int,
+  isExported: bool,
 ): NimNode =
   ## Generate buffered layout code (with {.buf.} pragma).
   let implName = layoutImplName(name.strVal)
@@ -136,7 +137,7 @@ proc generateBuffered(
   # const Name_staticCap* = <capExpr>
   result.add newNimNode(nnkConstSection).add(
     newNimNode(nnkConstDef).add(
-      postfix(staticCapName, "*"),
+      maybeExport(staticCapName, isExported),
       newEmptyNode(),
       capExpr
     )
@@ -182,7 +183,7 @@ proc generateBuffered(
       discard
 
   let implProc = newProc(
-    name = postfix(implName, "*"),
+    name = maybeExport(implName, isExported),
     params = implParams,
     body = htmlStmts,
     procType = nnkProcDef,
@@ -241,7 +242,7 @@ proc generateBuffered(
   )
 
   let wrapper = newProc(
-    name = postfix(name, "*"),
+    name = maybeExport(name, isExported),
     params = wrapperParams,
     body = newStmtList(whenStmt),
     procType = nnkTemplateDef,
@@ -254,14 +255,16 @@ macro layout*(signature: untyped, body: untyped): untyped =
   ## With {.buf.} pragma, generates a buffered layout that writes
   ## directly to a shared buffer instead of returning a string.
 
+  let (normalizedSig, isExported) = normalizeExportMarker(signature)
+
   # Check for {.buf.} pragma
-  var actualSignature = signature
+  var actualSignature = normalizedSig
   var isBuffered = false
   var hintKb = 0
 
-  if signature.kind == nnkPragmaExpr:
-    actualSignature = signature[0]
-    for pragma in signature[1]:
+  if normalizedSig.kind == nnkPragmaExpr:
+    actualSignature = normalizedSig[0]
+    for pragma in normalizedSig[1]:
       if pragma.kind == nnkIdent and pragma.strVal == "buf":
         isBuffered = true
       elif pragma.kind == nnkExprColonExpr and
@@ -284,7 +287,9 @@ macro layout*(signature: untyped, body: untyped): untyped =
   if isBuffered:
     let lazyParams = collectLazyParams(actualSignature, genericParams)
     let (procParams, tmplParams, callArgs) = extractParams(actualSignature, lazyParams)
-    return generateBuffered(name, body, procParams, tmplParams, callArgs, lazyParams, hintKb)
+    return generateBuffered(
+      name, body, procParams, tmplParams, callArgs, lazyParams, hintKb, isExported,
+    )
 
   # --- Regular layout ---
 
@@ -296,9 +301,8 @@ macro layout*(signature: untyped, body: untyped): untyped =
   for p in procParams:
     fullParams.add p
 
-  # proc Name*(params...): string {.inline.} = generateHtmlBlock(body)
   let resultProc = newProc(
-    name = postfix(name, "*"),
+    name = maybeExport(name, isExported),
     params = fullParams,
     body = newStmtList(generateHtmlBlock(body)),
     procType = nnkProcDef,

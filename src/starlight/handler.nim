@@ -19,6 +19,7 @@
 ## Direct call: await getUser(ctx, "Alice")
 
 import std/[macros, strutils, sets]
+import private/naming
 
 const supportedQueryTypes* = toHashSet(["string", "int", "float", "bool"])
 
@@ -81,6 +82,7 @@ proc buildHandler(
   nameAndParams: NimNode,
   body: NimNode,
   wrapProc: string,
+  isExported: bool,
 ): NimNode =
   ## Generates the typed async handler proc.
   let name = nameAndParams[0]
@@ -113,7 +115,7 @@ proc buildHandler(
       error("Unsupported parameter syntax", param)
 
   result = newProc(
-    name = postfix(name, "*"),
+    name = maybeExport(name, isExported),
     params = formalParams,
     body = procBody,
   )
@@ -127,12 +129,13 @@ macro handler*(nameAndParams: untyped, body: untyped): untyped =
   ##   {.html.} — wraps return in answer() (Content-Type: text/html)
   ##   {.json.} — wraps return in answerJson() (Content-Type: application/json)
   ##   (none)   — no wrapping, return must be a Response
-  var actualParams = nameAndParams
+  let (normalizedSig, isExported) = normalizeExportMarker(nameAndParams)
+  var actualParams = normalizedSig
   var wrapProc = ""
 
-  if nameAndParams.kind == nnkPragmaExpr:
-    actualParams = nameAndParams[0]
-    for pragma in nameAndParams[1]:
+  if normalizedSig.kind == nnkPragmaExpr:
+    actualParams = normalizedSig[0]
+    for pragma in normalizedSig[1]:
       if pragma.kind == nnkIdent:
         case pragma.strVal
         of "html":
@@ -142,7 +145,7 @@ macro handler*(nameAndParams: untyped, body: untyped): untyped =
         else:
           discard
 
-  buildHandler(actualParams, body, wrapProc)
+  buildHandler(actualParams, body, wrapProc, isExported)
 
 macro middleware*(nameAndParams: untyped, body: untyped): untyped =
   ## Generates a typed async middleware proc.
@@ -151,7 +154,8 @@ macro middleware*(nameAndParams: untyped, body: untyped): untyped =
   ##   middleware logger(ctx: Context, next: HandlerProc):
   ##     echo ctx.path
   ##     return await next(ctx)
-  let name = nameAndParams[0]
+  let (normalizedSig, isExported) = normalizeExportMarker(nameAndParams)
+  let name = normalizedSig[0]
 
   var procBody = newStmtList()
   for child in body:
@@ -160,15 +164,15 @@ macro middleware*(nameAndParams: untyped, body: untyped): untyped =
   let retType = newNimNode(nnkBracketExpr).add(ident"Future", ident"Response")
   var formalParams: seq[NimNode] = @[retType]
 
-  for i in 1 ..< nameAndParams.len:
-    let param = nameAndParams[i]
+  for i in 1 ..< normalizedSig.len:
+    let param = normalizedSig[i]
     let (paramName, paramType) = case param.kind
       of nnkExprColonExpr: (param[0], param[1])
       else: (param, ident"Context")
     formalParams.add newIdentDefs(paramName, paramType)
 
   result = newProc(
-    name = postfix(name, "*"),
+    name = maybeExport(name, isExported),
     params = formalParams,
     body = procBody,
   )
