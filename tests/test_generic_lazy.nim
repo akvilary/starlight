@@ -31,6 +31,17 @@ layout NestedGeneric[T](content: lazyLayout[T]) {.buf.}:
 layout DeepPage() {.buf.}:
   NestedGeneric(lazy content=BlockA())
 
+layout Shell[T, Y](header: lazyLayout[T], content: lazyLayout[Y]) {.buf.}:
+  Html:
+    Body:
+      Header:
+        header
+      Main:
+        content
+
+layout ShellPage() {.buf.}:
+  Shell(lazy header=BlockA(), lazy content=BlockB())
+
 suite "generic lazyLayout[T]":
 
   test "generic layout accepts different concrete types":
@@ -42,6 +53,13 @@ suite "generic lazyLayout[T]":
     check htmlB == "<html><head><title>Page B</title></head><body>" &
                    "<div class=\"b\">Content B</div>" &
                    "</body></html>"
+
+  test "multiple generic params [T, Y]":
+    let html = ShellPage()
+    check html == "<html><body>" &
+                    "<header><div class=\"a\">Content A</div></header>" &
+                    "<main><div class=\"b\">Content B</div></main>" &
+                  "</body></html>"
 
   test "generic lazy param forwarded through nested layouts":
     let html = DeepPage()
