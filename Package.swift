@@ -17,7 +17,14 @@ let package = Package(
         .watchOS(.v11),
     ],
     products: [
+        // The umbrella product — pulls in everything.
         .library(name: "Starlight", targets: ["Starlight"]),
+        // Granular products for users who only want a slice of the stack.
+        .library(name: "StarlightCore", targets: ["StarlightCore"]),
+        .library(name: "StarlightHTTP", targets: ["StarlightHTTP"]),
+        .library(name: "StarlightRouting", targets: ["StarlightRouting"]),
+        .library(name: "StarlightMiddleware", targets: ["StarlightMiddleware"]),
+        .library(name: "StarlightServer", targets: ["StarlightServer"]),
         .executable(name: "starlight-benchmark", targets: ["StarlightBenchmark"]),
     ],
     dependencies: [
