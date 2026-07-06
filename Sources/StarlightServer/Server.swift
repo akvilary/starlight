@@ -88,23 +88,29 @@ public final class StarlightServer: @unchecked Sendable {
     /// so the kernel load-balances accepts. Returns when every listener is
     /// bound and accepting.
     ///
-    /// This is a *synchronous* bootstrap call — it is invoked once at process
-    /// startup, not in any request hot path. The synchronous form is
-    /// intentional: it lets `main` block on `channel.closeFuture.wait()`,
-    /// which is what keeps the process alive while event loops run.
+    /// This method is async so that `main` can stay async (canonical Swift
+    /// Concurrency entry point). It is *not* in any request hot path — it
+    /// runs once at process bootstrap. The synchronous `.wait()` form is
+    /// used internally on the listener bind because there is nothing useful
+    /// to overlap it with at startup.
     ///
     /// Everything *after* this point — connection handling, request parsing,
-    /// response writing — runs on the event loops under Swift Concurrency
-    /// via `EventLoopExecutor` and `withTaskExecutorPreference`. The sync
-    /// surface area here is bounded to startup and shutdown.
+    /// response writing — runs concurrently on the event loops under Swift
+    /// Concurrency via `EventLoopExecutor` and `withTaskExecutorPreference`.
     ///
     /// - Parameters:
     ///   - host: bind host (use `"0.0.0.0"` or `"::"` for all interfaces).
     ///   - port: bind port. Pass `0` to let the kernel assign a port; all
     ///     subsequent binds will reuse the same port via `SO_REUSEPORT`.
-    public func start(host: String, port: Int) throws {
+    public func start(host: String, port: Int) async throws {
         precondition(self.listenerChannels.isEmpty, "StarlightServer already started")
+        try self.bindListeners(host: host, port: port)
+    }
 
+    /// Synchronous bind-and-listen helper. Factored out so that future
+    /// variants (e.g. `NIOPosix.singleThreadedEventLoopGroup`) can swap in
+    /// their own bind path without touching the public async surface.
+    private func bindListeners(host: String, port: Int) throws {
         // ── A/B TEST: single-listener (multi-threaded group) vs per-loop ──
         // Toggle `usePerLoopListeners` to switch. Phase 0 ships per-loop
         // (H2O pattern); the single-listener branch is kept as a known-good
@@ -137,6 +143,11 @@ public final class StarlightServer: @unchecked Sendable {
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .serverChannelOption(ChannelOptions.socketOption(SO_REUSEPORT), value: 1)
                 .childChannelInitializer { channel in
+                    // Phase 0: sync ChannelHandler pipeline (echo).
+                    // Phase 2 will replace this with the SIMD HTTP/1 codec,
+                    // and Phase 1 will introduce `RequestContext: ~Copyable`
+                    // which the handler will populate. The pipeline stays
+                    // sync; only user handler invocation will be async.
                     let handler = EchoHandler(stats: stats)
                     return channel.pipeline.addHandler(handler)
                 }
@@ -146,23 +157,34 @@ public final class StarlightServer: @unchecked Sendable {
         }
     }
 
-    /// Block the calling thread until every listener has closed. Used by
-    /// `StarlightApp.run()` to keep the process alive while event loops
-    /// process connections concurrently.
-    public func wait() throws {
-        for channel in self.listenerChannels {
-            try channel.closeFuture.wait()
+    /// Block the calling task until every listener has closed. Use this from
+    /// an async `main` to keep the process alive while event loops process
+    /// connections concurrently.
+    public func wait() async throws {
+        // We deliberately do NOT use `for channel in listenerChannels { try await channel.closeFuture.get() }`
+        // — that serializes the waits. Instead, race them all concurrently
+        // and return as soon as the first one closes (which is typically
+        // triggered by SIGINT-driven shutdown in StarlightApp).
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for channel in self.listenerChannels {
+                group.addTask {
+                    try await channel.closeFuture.get()
+                }
+            }
+            // Wait for the first listener to close, then return. The other
+            // tasks will be cancelled when the task group goes out of scope.
+            try await group.next()
         }
     }
 
     /// Shut down every listener and the event-loop group. Blocks until the
     /// loops have drained.
-    public func shutdown() throws {
+    public func shutdown() async throws {
         for channel in self.listenerChannels {
-            try channel.close().wait()
+            try await channel.close().get()
         }
         self.listenerChannels.removeAll()
-        try self.eventLoopGroup.syncShutdownGracefully()
+        try await self.eventLoopGroup.shutdownGracefully()
     }
 }
 

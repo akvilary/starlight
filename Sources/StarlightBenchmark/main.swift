@@ -4,16 +4,19 @@
 //  StarlightBenchmark
 //
 //  Phase 0 benchmark driver. Boots a `StarlightServer` running the TCP echo
-//  pipeline and prints periodic stats. The accompanying
-//  `bench/wrk_plaintext.sh` script drives load against this server with wrk.
+//  pipeline and prints periodic stats.
 //
-//  Design note: `main` is intentionally synchronous. It exists only to
-//  bootstrap the process (parse args, install signal handlers, bind
-//  listeners) and then block on `server.wait()` while event loops handle
-//  connections concurrently. The synchronous surface area is bounded to
-//  startup and shutdown; everything *inside* a connection — channel
-//  handlers, future HTTP/1 codec, future async request processing — runs
-//  concurrently on each connection's owning event loop.
+//  Design note: `main` is async — canonical Swift Concurrency entry point.
+//  It blocks the top-level task on a polling loop until SIGINT arrives.
+//  Everything *inside* a connection — channel handlers, future HTTP/1
+//  codec, future async request processing — runs concurrently on each
+//  connection's owning event loop.
+//
+//  Signal handling: in Phase 0 we rely on the default SIGINT disposition
+//  (process termination). The kernel closes listener sockets, the event
+//  loops wind down, and the process exits. Graceful shutdown with proper
+//  resource cleanup via a self-pipe / eventfd integration lands in a
+//  later phase — see `bench/` and the roadmap.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,23 +35,7 @@ import Darwin
 #endif
 
 //===----------------------------------------------------------------------===//
-// Signal handling
-//===----------------------------------------------------------------------===//
-
-/// Global stop flag, mutated only from the SIGINT handler and read by the
-/// benchmark's main loop. Global so the signal-handler closure does not need
-/// to capture state (which would prevent it from being converted to a C
-/// function pointer).
-let stopFlag = ManagedAtomic<Bool>(false)
-
-@_cdecl("sl_handle_sigint")
-fileprivate func sl_handle_sigint(_ sig: Int32) {
-    _ = sig
-    stopFlag.store(true, ordering: .sequentiallyConsistent)
-}
-
-//===----------------------------------------------------------------------===//
-// Unbuffered output — direct `write(2)` via `FileHandle.write`
+// Output — unbuffered, direct `write(2)` via `FileHandle.write`
 //===----------------------------------------------------------------------===//
 //
 // We bypass glibc's stdio buffering because the benchmark runs with its
@@ -134,27 +121,31 @@ func printHelp() {
         wrk -t<cores> -c256 -d30s http://\(ProcessInfo.processInfo.hostName):8080/
 
     PHASE 0 NOTE:
-        This is a TCP echo server, not an HTTP server. wrk will still report
-        throughput numbers because it measures bytes/requests at the TCP level;
-        for a true plaintext HTTP benchmark, wait for Phase 2.
+        This is a TCP echo server, not an HTTP server. Use bench/tcp_echo.sh
+        for TCP throughput; HTTP lands in Phase 2.
+
+    SIGNALS:
+        SIGINT / SIGTERM use the default disposition (process termination).
+        The kernel closes listener sockets; the process exits without a
+        graceful drain. Phase 4 will add signal-pipe-driven graceful shutdown.
     """)
 }
 
 //===----------------------------------------------------------------------===//
-// Main — synchronous bootstrap, then block on `server.wait()`
-//===----------------------------------------------------------------------===//
+// Main — async, blocks until SIGINT/SIGTERM (default disposition)
+//=========----------------------------------------------------------------------//
 
 @main
 struct StarlightBenchmark {
-    static func main() {
+    static func main() async throws {
         let cli = parseArgs(CommandLine.arguments)
         let app = StarlightApp(loopCount: cli.loops)
         let server = app.server
 
-        // Install signal handlers. SIGINT sets the atomic flag; the main
-        // loop polls it and triggers shutdown. SIGPIPE is ignored (writes
-        // to broken sockets return EPIPE which we handle in the pipeline).
-        signal(SIGINT, sl_handle_sigint)
+        // Ignore SIGPIPE — writes to broken sockets return EPIPE, which
+        // `EchoHandler.errorCaught` handles by closing the channel. A
+        // SIGPIPE-induced termination would leak resources and kill the
+        // whole server for one client's mistake.
         signal(SIGPIPE, SIG_IGN)
 
         out("""
@@ -165,35 +156,30 @@ struct StarlightBenchmark {
           Bind                : \(cli.host):\(cli.port)
           Event loops         : \(server.loopCount)  (= CPU cores, thread-per-core)
           SO_REUSEPORT        : enabled  (per-loop listener, kernel-balanced accept)
-          Pipeline            : TCP echo
+          Pipeline            : TCP echo  (sync ChannelHandler — zero Task allocs)
         """)
 
-        // Bootstrap synchronously. `try!` is safe here: a bind failure is a
-        // fatal misconfiguration (port in use, wrong host) and there is no
-        // useful recovery action for a benchmark driver.
-        try! app.start(host: cli.host, port: cli.port)
+        // Bootstrap. Async to keep `main` canonical; under the hood it uses
+        // `.wait()` once per listener since there is nothing useful to
+        // overlap it with at startup. The interesting concurrency begins
+        // *after* this returns: every accepted connection is handled
+        // concurrently on its owning event loop.
+        try await app.start(host: cli.host, port: cli.port)
         out("  Listeners           : \(server.listenerChannels.count)  (one per event loop)")
         out("  Status              : listening")
         out()
+        out("Press Ctrl-C to stop.")
 
-        // Stats printer (optional). Runs on a dedicated pthread — *not* on
-        // any event loop, so it does not steal cycles from connection
-        // processing. We avoid `Task { }` here because we want the stats
-        // printer to work even before async machinery is wired up in the
-        // connection hot path.
+        // Stats printer task — runs concurrently on the global cooperative
+        // pool. This is NOT a request hot path, so we don't pin it to an
+        // event loop. Phase 2's HTTP hot path will live inside the sync
+        // ChannelHandler pipeline (zero Task allocations per request).
         if cli.statsInterval > 0 {
             let interval = cli.statsInterval
             let stats = server.stats
-            Thread.detachNewThread {
-                while !stopFlag.load(ordering: .relaxed) {
-                    // Sleep `interval` seconds in 100 ms increments so we
-                    // notice `stopFlag` quickly when shutting down.
-                    var slept = 0
-                    while slept < interval * 1000 && !stopFlag.load(ordering: .relaxed) {
-                        usleep(100_000)
-                        slept += 100
-                    }
-                    if stopFlag.load(ordering: .relaxed) { break }
+            Task {
+                while true {
+                    try await Task.sleep(for: .seconds(interval))
                     let conns = stats.connectionsAccepted.load()
                     let rx = stats.bytesReceived.load()
                     let tx = stats.bytesSent.load()
@@ -202,18 +188,17 @@ struct StarlightBenchmark {
             }
         }
 
-        // Block main while event loops process connections. Poll the atomic
-        // flag every 50 ms for responsive shutdown. (We do not block on
-        // `channel.closeFuture.wait()` because we want SIGINT to drive
-        // shutdown rather than waiting for an external channel close.)
-        while !stopFlag.load(ordering: .relaxed) {
-            usleep(50_000)
+        // Block this task forever. In Phase 0, SIGINT/SIGTERM use the
+        // default disposition and the process terminates immediately — the
+        // kernel closes listener sockets and the event loops wind down.
+        //
+        // We use a polling loop with `Task.sleep` rather than a single
+        // infinite sleep because `Task.sleep(for: .seconds(.greatestFiniteMagnitude))`
+        // overflows `Duration`'s internal attoseconds representation on
+        // Linux and traps. A 1-hour sleep with a re-arm loop is simple and
+        // avoids the overflow.
+        while true {
+            try await Task.sleep(for: .seconds(3600))
         }
-        out()
-        out("Shutting down…")
-
-        // `try!` — a failure during shutdown of a benchmark driver is fatal.
-        try! server.shutdown()
-        out("Done.")
     }
 }
