@@ -102,29 +102,49 @@ public final class StarlightServer: @unchecked Sendable {
     ///   - host: bind host (use `"0.0.0.0"` or `"::"` for all interfaces).
     ///   - port: bind port. Pass `0` to let the kernel assign a port; all
     ///     subsequent binds will reuse the same port via `SO_REUSEPORT`.
-    public func start(host: String, port: Int) async throws {
+    ///   - mode: TCP echo (Phase 0) or HTTP/1.1 hello-world (Phase 2).
+    ///   - httpHandler: user handler for HTTP mode. Required when
+    ///     `mode == .http`.
+    public enum Mode: Sendable {
+        case tcpEcho
+        case http
+    }
+
+    public func start(
+        host: String,
+        port: Int,
+        mode: Mode = .tcpEcho,
+        httpHandler: HTTPHandler? = nil
+    ) async throws {
         precondition(self.listenerChannels.isEmpty, "StarlightServer already started")
-        try self.bindListeners(host: host, port: port)
+        try self.bindListeners(host: host, port: port, mode: mode, httpHandler: httpHandler)
     }
 
     /// Synchronous bind-and-listen helper. Factored out so that future
     /// variants (e.g. `NIOPosix.singleThreadedEventLoopGroup`) can swap in
     /// their own bind path without touching the public async surface.
-    private func bindListeners(host: String, port: Int) throws {
+    private func bindListeners(
+        host: String,
+        port: Int,
+        mode: Mode,
+        httpHandler: HTTPHandler?
+    ) throws {
+        precondition(mode != .http || httpHandler != nil,
+                     "HTTP mode requires an httpHandler closure")
+
         // ── A/B TEST: single-listener (multi-threaded group) vs per-loop ──
-        // Toggle `usePerLoopListeners` to switch. Phase 0 ships per-loop
-        // (H2O pattern); the single-listener branch is kept as a known-good
-        // fallback for diagnosing accept-pipeline regressions.
+        // Phase 0 ships per-loop (H2O pattern); the single-listener branch
+        // is kept as a known-good fallback for diagnosing accept-pipeline
+        // regressions.
         let usePerLoopListeners = true
 
         if !usePerLoopListeners {
-            // Single-listener fallback: one ServerBootstrap on the whole
-            // group, NIO itself round-robins child channels across loops.
+            // Single-listener fallback.
             let stats = self.stats
             let channel = try ServerBootstrap(group: self.eventLoopGroup)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
-                    let handler = EchoHandler(stats: stats)
+                    let handler = self.makeChildHandler(mode: mode, stats: stats, httpHandler: httpHandler)
                     return channel.pipeline.addHandler(handler)
                 }
                 .bind(host: host, port: port)
@@ -133,27 +153,39 @@ public final class StarlightServer: @unchecked Sendable {
             return
         }
 
-        // Bind one listener per event loop. Each ServerBootstrap is created
-        // against a single-loop group (the event loop itself), which means
-        // every accepted child channel is also owned by that same loop — no
-        // cross-loop fan-out, no shared acceptor.
+        // Per-loop listeners with SO_REUSEPORT (H2O pattern).
         for eventLoop in self.eventLoopGroup.makeIterator() {
             let stats = self.stats
             let channel = try ServerBootstrap(group: eventLoop)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .serverChannelOption(ChannelOptions.socketOption(SO_REUSEPORT), value: 1)
                 .childChannelInitializer { channel in
-                    // Phase 0: sync ChannelHandler pipeline (echo).
-                    // Phase 2 will replace this with the SIMD HTTP/1 codec,
-                    // and Phase 1 will introduce `RequestContext: ~Copyable`
-                    // which the handler will populate. The pipeline stays
-                    // sync; only user handler invocation will be async.
-                    let handler = EchoHandler(stats: stats)
+                    let handler = self.makeChildHandler(mode: mode, stats: stats, httpHandler: httpHandler)
                     return channel.pipeline.addHandler(handler)
                 }
                 .bind(host: host, port: port)
                 .wait()
             self.listenerChannels.append(channel)
+        }
+    }
+
+    /// Construct the inbound handler for an accepted connection based on
+    /// the server's current mode.
+    @inline(__always)
+    private func makeChildHandler(
+        mode: Mode,
+        stats: ServerStats,
+        httpHandler: HTTPHandler?
+    ) -> any ChannelHandler {
+        switch mode {
+        case .tcpEcho:
+            return EchoHandler(stats: stats)
+        case .http:
+            // The HTTP pipeline wraps the user handler in an HTTP1Codec
+            // that runs on the event loop. The codec owns its parser +
+            // RequestContext; nothing is allocated per request beyond
+            // the response ByteBuffer.
+            return HTTP1Codec(handler: httpHandler!)
         }
     }
 

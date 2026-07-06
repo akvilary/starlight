@@ -67,6 +67,7 @@ struct CLI {
     var port: Int = 8080
     var loops: Int = System.coreCount
     var statsInterval: Int = 5   // seconds; 0 disables
+    var mode: String = "echo"    // "echo" or "http"
 }
 
 func parseArgs(_ args: [String]) -> CLI {
@@ -87,6 +88,8 @@ func parseArgs(_ args: [String]) -> CLI {
             if let v = next(), let n = Int(v) { cli.loops = n }
         case "--stats-interval", "-s":
             if let v = next(), let n = Int(v) { cli.statsInterval = n }
+        case "--mode", "-m":
+            if let v = next() { cli.mode = v }
         case "--help":
             printHelp()
             exit(0)
@@ -101,7 +104,7 @@ func parseArgs(_ args: [String]) -> CLI {
 
 func printHelp() {
     out("""
-    starlight-benchmark — Phase 0 TCP echo benchmark driver
+    starlight-benchmark — Phase 2 benchmark driver
 
     USAGE:
         starlight-benchmark [OPTIONS]
@@ -111,29 +114,51 @@ func printHelp() {
         -p, --port <port>            Bind port (default: 8080)
         -l, --loops <count>          Number of event loops (default: core count)
         -s, --stats-interval <sec>   Seconds between stats prints (0 = off, default: 5)
+        -m, --mode <echo|http>       Pipeline: TCP echo or HTTP/1.1 hello (default: echo)
             --help                   Print this help and exit
 
     EXAMPLES:
-        # Default: one loop per core on :8080
+        # TCP echo (raw socket throughput):
         starlight-benchmark
+        bench/tcp_echo.sh 127.0.0.1 8080 5 64 128
 
-        # Drive load from a separate host
-        wrk -t<cores> -c256 -d30s http://\(ProcessInfo.processInfo.hostName):8080/
-
-    PHASE 0 NOTE:
-        This is a TCP echo server, not an HTTP server. Use bench/tcp_echo.sh
-        for TCP throughput; HTTP lands in Phase 2.
-
-    SIGNALS:
-        SIGINT / SIGTERM use the default disposition (process termination).
-        The kernel closes listener sockets; the process exits without a
-        graceful drain. Phase 4 will add signal-pipe-driven graceful shutdown.
+        # HTTP hello world (wrk-driven):
+        starlight-benchmark --mode http
+        wrk -t<cores> -c256 -d10s http://127.0.0.1:8080/
     """)
 }
 
 //===----------------------------------------------------------------------===//
 // Main — async, blocks until SIGINT/SIGTERM (default disposition)
 //=========----------------------------------------------------------------------//
+
+/// Pre-serialized HTTP response for the "Hello, World!" handler. Built
+/// once at process startup so the per-request path does not allocate
+/// any ByteBuffer — it just hands the cached buffer to NIO's write.
+@Sendable
+fileprivate func helloWorldHandler(_ ctx: borrowing RequestContext) -> HTTPResponse {
+    _ = ctx
+    return HTTPResponse(buffer: StarlightBenchmark.helloResponse)
+}
+
+extension StarlightBenchmark {
+    /// Cached "Hello, World!" response. We build it once at startup and
+    /// hand the same buffer to every request. NIO's `ByteBuffer` is a
+    /// COW value type, so the per-request "copy" through `context.write`
+    /// just bumps the storage's reference count without copying bytes.
+    /// This eliminates the largest single allocation in the HTTP hot
+    /// path.
+    static let helloResponse: ByteBuffer = {
+        var buf = ByteBufferAllocator().buffer(capacity: 256)
+        buf.writeString("HTTP/1.1 200 OK\r\n")
+        buf.writeString("Content-Type: text/plain; charset=utf-8\r\n")
+        buf.writeString("Content-Length: 14\r\n")
+        buf.writeString("Connection: keep-alive\r\n")
+        buf.writeString("\r\n")
+        buf.writeString("Hello, World!\n")
+        return buf
+    }()
+}
 
 @main
 struct StarlightBenchmark {
@@ -150,13 +175,13 @@ struct StarlightBenchmark {
 
         out("""
         ╔══════════════════════════════════════════════════════════════════╗
-        ║                  Starlight Phase 0 — TCP echo                   ║
+        ║              Starlight Phase 2 — \(cli.mode.uppercased()) pipeline            ║
         ╚══════════════════════════════════════════════════════════════════╝
         Configuration:
           Bind                : \(cli.host):\(cli.port)
           Event loops         : \(server.loopCount)  (= CPU cores, thread-per-core)
           SO_REUSEPORT        : enabled  (per-loop listener, kernel-balanced accept)
-          Pipeline            : TCP echo  (sync ChannelHandler — zero Task allocs)
+          Pipeline            : \(cli.mode == "http" ? "HTTP/1.1 hello world" : "TCP echo")
         """)
 
         // Bootstrap. Async to keep `main` canonical; under the hood it uses
@@ -164,7 +189,14 @@ struct StarlightBenchmark {
         // overlap it with at startup. The interesting concurrency begins
         // *after* this returns: every accepted connection is handled
         // concurrently on its owning event loop.
-        try await app.start(host: cli.host, port: cli.port)
+        let mode: StarlightServer.Mode = (cli.mode == "http") ? .http : .tcpEcho
+        let httpHandler: HTTPHandler? = (mode == .http) ? helloWorldHandler : nil
+        try await server.start(
+            host: cli.host,
+            port: cli.port,
+            mode: mode,
+            httpHandler: httpHandler
+        )
         out("  Listeners           : \(server.listenerChannels.count)  (one per event loop)")
         out("  Status              : listening")
         out()
