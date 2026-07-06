@@ -25,6 +25,8 @@ import Atomics
 import NIOCore
 import NIOPosix
 import StarlightCore
+import StarlightHTTP
+import StarlightRouting
 import StarlightServer
 import Starlight
 
@@ -67,7 +69,7 @@ struct CLI {
     var port: Int = 8080
     var loops: Int = System.coreCount
     var statsInterval: Int = 5   // seconds; 0 disables
-    var mode: String = "echo"    // "echo" or "http"
+    var mode: String = "echo"    // "echo", "http", or "router"
 }
 
 func parseArgs(_ args: [String]) -> CLI {
@@ -114,7 +116,7 @@ func printHelp() {
         -p, --port <port>            Bind port (default: 8080)
         -l, --loops <count>          Number of event loops (default: core count)
         -s, --stats-interval <sec>   Seconds between stats prints (0 = off, default: 5)
-        -m, --mode <echo|http>       Pipeline: TCP echo or HTTP/1.1 hello (default: echo)
+        -m, --mode <echo|http|router>  Pipeline (default: echo)
             --help                   Print this help and exit
 
     EXAMPLES:
@@ -122,9 +124,13 @@ func printHelp() {
         starlight-benchmark
         bench/tcp_echo.sh 127.0.0.1 8080 5 64 128
 
-        # HTTP hello world (wrk-driven):
+        # HTTP hello world (single handler, no routing):
         starlight-benchmark --mode http
         wrk -t<cores> -c256 -d10s http://127.0.0.1:8080/
+
+        # HTTP with router (registers `/`, `/users/:id`, `/health`):
+        starlight-benchmark --mode router
+        wrk -t<cores> -c256 -d10s http://127.0.0.1:8080/users/42
     """)
 }
 
@@ -160,6 +166,24 @@ extension StarlightBenchmark {
     }()
 }
 
+/// Build a router with three routes for the `--mode router` benchmark.
+/// This exercises the routing + path-param capture path on every request
+/// rather than the single-handler short-circuit.
+func makeBenchmarkRouter() -> Router {
+    let router = Router()
+    router.get("/") { _ in
+        HTTPResponse(buffer: StarlightBenchmark.helloResponse)
+    }
+    router.get("/health") { _ in
+        HTTPResponse.plaintext("ok\n")
+    }
+    router.get("/users/:id") { ctx in
+        let id = ctx.params["id"] ?? "?"
+        return HTTPResponse.plaintext("user \(id)\n")
+    }
+    return router
+}
+
 @main
 struct StarlightBenchmark {
     static func main() async throws {
@@ -189,13 +213,23 @@ struct StarlightBenchmark {
         // overlap it with at startup. The interesting concurrency begins
         // *after* this returns: every accepted connection is handled
         // concurrently on its owning event loop.
-        let mode: StarlightServer.Mode = (cli.mode == "http") ? .http : .tcpEcho
-        let httpHandler: HTTPHandler? = (mode == .http) ? helloWorldHandler : nil
+        let mode: StarlightServer.Mode = (cli.mode == "echo") ? .tcpEcho : .http
+        // For HTTP mode we provide either a single hello-world handler
+        // or a router with a few registered routes — selected by the
+        // `--mode http` / `--mode router` flag.
+        let helloHandler: HTTPHandler? = (cli.mode == "http")
+            ? helloWorldHandler
+            : nil
+        let httpHandler = helloHandler
+        let router: Router? = (cli.mode == "router")
+            ? makeBenchmarkRouter()
+            : nil
         try await server.start(
             host: cli.host,
             port: cli.port,
             mode: mode,
-            httpHandler: httpHandler
+            httpHandler: httpHandler,
+            router: router
         )
         out("  Listeners           : \(server.listenerChannels.count)  (one per event loop)")
         out("  Status              : listening")

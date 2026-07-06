@@ -61,12 +61,22 @@ public struct RequestContext: ~Copyable {
     /// status line.
     public var status: HTTPStatus
 
-    // ── Phase 2 will add: ───────────────────────────────────────────────
-    //   - path: Span<UInt8>          (zero-copy view into receive buffer)
-    //   - headers: HeaderView         (zero-copy view, populated by parser)
+    /// Request path (e.g. `/users/42`). Allocated in the arena during
+    /// request-line parsing. Reset by `reset()`.
+    public var path: String
+
+    /// Path parameters extracted by the router from dynamic segments
+    /// (e.g. `:id` in `/users/:id` → `params["id"] == "42"`).
+    ///
+    /// Phase 3 MVP: dictionary-backed. Phase 4 will replace this with
+    /// `Span<UInt8>` views into `path` to eliminate the per-match
+    /// allocation.
+    public var params: [String: String]
+
+    // ── Phase 3 will add: ───────────────────────────────────────────────
+    //   - headers: HeaderView         (case-insensitive ordered storage)
     //   - body: Span<UInt8>          (zero-copy for in-buffer bodies,
     //                                  arena-backed for streamed bodies)
-    //   - params: ParamView          (radix-router-extracted path params)
 
     /// Construct an empty context with a fresh arena.
     ///
@@ -77,13 +87,15 @@ public struct RequestContext: ~Copyable {
         self.arena = ArenaAllocator(initialChunkSize: initialArenaSize)
         self.method = .other
         self.status = .ok
+        self.path = ""
+        self.params = [:]
     }
 
     /// Reset the context between keep-alive requests on the same connection.
     ///
     /// Bulk-frees the arena (no `malloc` for the next request's
     /// allocations as long as they fit in the existing chunks) and
-    /// restores `method` and `status` to their defaults.
+    /// restores `method`, `status`, `path`, `params` to their defaults.
     ///
     /// - Complexity: O(chunks). Independent of the number of allocations
     ///   made by the previous request.
@@ -91,6 +103,14 @@ public struct RequestContext: ~Copyable {
         self.arena.reset()
         self.method = .other
         self.status = .ok
+        self.path = ""
+        // params is replaced wholesale on the next request — clearing
+        // it costs O(n) in the number of params from the previous
+        // request. We could leave it dirty and overwrite, but the
+        // arena-reset frees the underlying string storage anyway.
+        if !self.params.isEmpty {
+            self.params.removeAll(keepingCapacity: false)
+        }
     }
 
     /// Release all arena memory back to the system allocator. Use this

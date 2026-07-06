@@ -33,12 +33,17 @@ import NIOCore
 import NIOPosix
 import StarlightCore
 import StarlightHTTP
+import StarlightRouting
 
 /// Closure that, given a parsed request context, produces an HTTP
 /// response. The handler runs **synchronously on the connection's
 /// event loop** — exactly the H2O / Actix pattern. Async handlers
 /// will be wired in Phase 4 once the middleware protocol is in place.
-public typealias HTTPHandler = @Sendable (borrowing RequestContext) -> HTTPResponse
+///
+/// Deprecated alias — `HTTPHandler` now lives in `StarlightHTTP`
+/// alongside `HTTPResponse`. Kept here for source compatibility with
+/// Phase 2 callers that imported it from `StarlightServer`.
+public typealias _HTTPHandler_Deprecated = HTTPHandler
 
 /// ChannelHandler that decodes HTTP/1.1 requests and encodes HTTP/1.1
 /// responses.
@@ -52,7 +57,16 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
     typealias OutboundOut = ByteBuffer
 
     /// User handler. Set once at construction; never mutated.
-    private let handler: HTTPHandler
+    ///
+    /// Either `handler` or `router` is set, never both. When `router`
+    /// is non-nil it takes precedence — the codec invokes
+    /// `router.handle(&ctx)`, which performs routing + middleware and
+    /// dispatches to the matched route's handler.
+    private let handler: HTTPHandler?
+
+    /// Optional router. When set, replaces `handler` as the dispatch
+    /// entry point for each request.
+    private let router: Router?
 
     /// Per-connection parser. Reset between keep-alive requests.
     private var parser = HTTP1Parser()
@@ -68,6 +82,13 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
 
     init(handler: @escaping HTTPHandler) {
         self.handler = handler
+        self.router = nil
+        self.ctx = RequestContext()
+    }
+
+    init(router: Router) {
+        self.handler = nil
+        self.router = router
         self.ctx = RequestContext()
     }
 
@@ -132,8 +153,14 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
             }
 
             // A complete request has been parsed. Invoke the user handler
+            // (or the router, which dispatches via routing + middleware)
             // synchronously on this event loop thread.
-            let response = self.handler(self.ctx)
+            let response: HTTPResponse
+            if let router = self.router {
+                response = router.handle(&self.ctx)
+            } else {
+                response = self.handler!(self.ctx)
+            }
 
             // Reset per-request state for the next request on the same
             // connection (keep-alive). Arena is bulk-freed by reset().

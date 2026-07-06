@@ -19,6 +19,8 @@ import Foundation
 import NIOCore
 import NIOPosix
 import StarlightCore
+import StarlightHTTP
+import StarlightRouting
 
 #if canImport(Glibc)
 import Glibc
@@ -114,10 +116,14 @@ public final class StarlightServer: @unchecked Sendable {
         host: String,
         port: Int,
         mode: Mode = .tcpEcho,
-        httpHandler: HTTPHandler? = nil
+        httpHandler: HTTPHandler? = nil,
+        router: Router? = nil
     ) async throws {
         precondition(self.listenerChannels.isEmpty, "StarlightServer already started")
-        try self.bindListeners(host: host, port: port, mode: mode, httpHandler: httpHandler)
+        try self.bindListeners(
+            host: host, port: port, mode: mode,
+            httpHandler: httpHandler, router: router
+        )
     }
 
     /// Synchronous bind-and-listen helper. Factored out so that future
@@ -127,10 +133,11 @@ public final class StarlightServer: @unchecked Sendable {
         host: String,
         port: Int,
         mode: Mode,
-        httpHandler: HTTPHandler?
+        httpHandler: HTTPHandler?,
+        router: Router?
     ) throws {
-        precondition(mode != .http || httpHandler != nil,
-                     "HTTP mode requires an httpHandler closure")
+        precondition(mode != .http || httpHandler != nil || router != nil,
+                     "HTTP mode requires an httpHandler closure or a Router")
 
         // ── A/B TEST: single-listener (multi-threaded group) vs per-loop ──
         // Phase 0 ships per-loop (H2O pattern); the single-listener branch
@@ -144,7 +151,10 @@ public final class StarlightServer: @unchecked Sendable {
             let channel = try ServerBootstrap(group: self.eventLoopGroup)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
-                    let handler = self.makeChildHandler(mode: mode, stats: stats, httpHandler: httpHandler)
+                    let handler = self.makeChildHandler(
+                        mode: mode, stats: stats,
+                        httpHandler: httpHandler, router: router
+                    )
                     return channel.pipeline.addHandler(handler)
                 }
                 .bind(host: host, port: port)
@@ -160,7 +170,10 @@ public final class StarlightServer: @unchecked Sendable {
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .serverChannelOption(ChannelOptions.socketOption(SO_REUSEPORT), value: 1)
                 .childChannelInitializer { channel in
-                    let handler = self.makeChildHandler(mode: mode, stats: stats, httpHandler: httpHandler)
+                    let handler = self.makeChildHandler(
+                        mode: mode, stats: stats,
+                        httpHandler: httpHandler, router: router
+                    )
                     return channel.pipeline.addHandler(handler)
                 }
                 .bind(host: host, port: port)
@@ -175,16 +188,19 @@ public final class StarlightServer: @unchecked Sendable {
     private func makeChildHandler(
         mode: Mode,
         stats: ServerStats,
-        httpHandler: HTTPHandler?
+        httpHandler: HTTPHandler?,
+        router: Router?
     ) -> any ChannelHandler {
         switch mode {
         case .tcpEcho:
             return EchoHandler(stats: stats)
         case .http:
-            // The HTTP pipeline wraps the user handler in an HTTP1Codec
-            // that runs on the event loop. The codec owns its parser +
-            // RequestContext; nothing is allocated per request beyond
-            // the response ByteBuffer.
+            // Prefer the router if one was provided — it dispatches
+            // through routing + middleware. Otherwise fall back to a
+            // plain handler.
+            if let router = router {
+                return HTTP1Codec(router: router)
+            }
             return HTTP1Codec(handler: httpHandler!)
         }
     }

@@ -88,7 +88,6 @@ let package = Package(
             ],
             swiftSettings: baseSwiftSettings
         ),
-
         // ── Public umbrella (result-builder DSL, app entry) ──────────────────
         .target(
             name: "Starlight",
@@ -109,6 +108,8 @@ let package = Package(
                 "Starlight",
                 "StarlightServer",
                 "StarlightCore",
+                "StarlightHTTP",
+                "StarlightRouting",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Atomics", package: "swift-atomics"),

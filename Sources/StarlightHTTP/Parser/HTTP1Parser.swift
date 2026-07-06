@@ -201,14 +201,21 @@ public struct HTTP1Parser: ~Copyable {
         guard pathLen >= 1 else {
             state = .error; throw HTTP1ParseError.malformedRequestLine
         }
-        // Phase 3 will store this as a Span into `buffer`. For Phase 2
-        // we copy it into the arena so the request can outlive the
-        // receive buffer.
+        // Phase 2 copies path bytes into the arena, then constructs a
+        // Swift `String` view over them. The arena bytes remain valid
+        // until the next `ctx.reset()`. Phase 4 will replace this with
+        // a `Span<UInt8>` view directly into the receive buffer.
         let pathBuf = ctx.allocate(bytes: pathLen, alignment: 1)
         pathBuf.baseAddress!.copyMemory(
             from: UnsafeRawPointer(buffer.baseAddress!).advanced(by: pathStart),
             byteCount: pathLen
         )
+        // Construct a String over the arena-backed bytes. `String(decoding:as:)`
+        // copies, but for a path this is small (avg ~50 bytes). A
+        // zero-copy `String(bytesNoCopy:...)` is possible but tricky
+        // to lifetime-manage correctly across `ctx.reset()`; we use
+        // the simple copy path for now.
+        ctx.path = String(decoding: pathBuf, as: UTF8.self)
 
         // VERSION = [sp2+1, lineContentEnd)
         let versionStart = sp2 + 1
