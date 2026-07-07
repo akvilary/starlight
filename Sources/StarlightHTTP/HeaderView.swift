@@ -60,8 +60,15 @@ public struct HeaderView: @unchecked Sendable {
     /// Record the arena-backed header block. Called once by the
     /// parser after it has copied the entire header section into the
     /// arena as a single contiguous allocation.
+    ///
+    /// - Note: Internal rather than public. The pointer must point
+    ///   into a per-request arena allocation whose lifetime is bounded
+    ///   by `RequestContext.reset()`. Exposing this as `public` would
+    ///   let external callers install dangling pointers and crash the
+    ///   process via `subscript` access. The parser (same module) is
+    ///   the only legitimate caller.
     @inlinable
-    public mutating func setBlock(_ ptr: UnsafePointer<UInt8>, _ len: Int) {
+    internal mutating func setBlock(_ ptr: UnsafePointer<UInt8>, _ len: Int) {
         self.blockPtr = ptr
         self.blockLen = len
     }
