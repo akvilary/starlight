@@ -88,7 +88,7 @@ final class HTTP1Codec: @unchecked Sendable {
 
         // DoS defence.
         if self.accumulator.readableBytes > self.maxAccumulatorBytes {
-            self.accumulator.clear()  // discard everything
+            self.accumulator.clear()
             return HTTPResponse.plaintext(
                 "413 Payload Too Large\n",
                 status: HTTPStatus(413, reasonPhrase: "Payload Too Large"),
@@ -118,7 +118,12 @@ final class HTTP1Codec: @unchecked Sendable {
                     parseError = .unexpectedByte(offset: 0)
                     consumed = 0
                 }
-                return consumed
+                // CRITICAL: only discard bytes when parsing is
+                // complete. For partial parsing (incomplete request
+                // line, headers, or body), the parser's consumedBytes
+                // is relative to the current buffer. Discarding bytes
+                // would invalidate that offset for the next feed().
+                return complete ? consumed : 0
             }
         }
 

@@ -77,12 +77,14 @@ public struct HTTP1Parser: ~Copyable {
     /// Bytes consumed from the input buffer so far (across all phases).
     public private(set) var consumedBytes: Int = 0
 
-    /// Offset into the input buffer where the header section begins
-    /// (i.e. immediately after the request line's terminating LF).
-    /// Recorded when transitioning from `.requestLine` to `.headers`.
-    /// Used at end-of-headers to copy the entire header block into
-    /// the arena as one contiguous allocation.
+    /// Offset into the input buffer where the header section begins.
     private var headerBlockStart: Int = 0
+
+    /// Offset into the input buffer where the body section begins
+    /// (i.e. immediately after the empty line that terminates headers).
+    /// Used when the parser reaches `.body(remaining: 0)` to copy
+    /// body bytes into the arena.
+    private var bodyStart: Int = 0
 
     /// Maximum allowed total request size (request line + headers + body).
     /// Default 64 KiB — comfortably fits any reasonable HTTP/1.1 request.
@@ -109,6 +111,7 @@ public struct HTTP1Parser: ~Copyable {
         self.state = .requestLine
         self.consumedBytes = 0
         self.headerBlockStart = 0
+        self.bodyStart = 0
     }
 
     /// Feed bytes from an accumulated buffer. The parser reads from
@@ -145,6 +148,19 @@ public struct HTTP1Parser: ~Copyable {
                 consumedBytes &+= available
                 remaining &-= available
                 if remaining == 0 {
+                    // Body complete — copy body bytes from the buffer
+                    // into the arena and set ctx.body.
+                    let bodyLen = consumedBytes - bodyStart
+                    if bodyLen > 0 {
+                        let bodyBuf = ctx.allocate(bytes: bodyLen, alignment: 1)
+                        bodyBuf.baseAddress!.copyMemory(
+                            from: UnsafeRawPointer(buffer.baseAddress!).advanced(by: bodyStart),
+                            byteCount: bodyLen
+                        )
+                        // Construct [UInt8] from arena bytes.
+                        let bodyPtr = bodyBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                        ctx.body = UnsafeBufferPointer(start: bodyPtr, count: bodyLen).map { $0 }
+                    }
                     state = .complete
                     return true
                 } else {
@@ -285,7 +301,23 @@ public struct HTTP1Parser: ~Copyable {
                 )
             }
             consumedBytes = blockEnd
-            state = .complete
+            // Record where body starts (right after the empty line).
+            bodyStart = consumedBytes
+
+            // Check Content-Length to determine if there's a body.
+            // The headers are now in ctx.headers (lazy HeaderView).
+            let contentLength: Int?
+            if let clStr = ctx.headers["Content-Length"] {
+                contentLength = Int(clStr)
+            } else {
+                contentLength = nil
+            }
+
+            if let cl = contentLength, cl > 0 {
+                state = .body(remaining: cl)
+            } else {
+                state = .complete
+            }
             return
         }
 

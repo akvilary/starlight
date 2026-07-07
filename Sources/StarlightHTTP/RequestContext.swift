@@ -74,14 +74,12 @@ public struct RequestContext: ~Copyable {
     public var params: Params
 
     /// Captured request headers. Populated by the HTTP/1 parser after
-    /// the entire header block has been parsed. Case-insensitive
-    /// subscript access.
-    ///
-    /// `HeaderView` stores only a `(pointer, length)` pair (16 bytes
-    /// inline, no heap allocation). Subscript access scans the block
-    /// on demand and materializes the matched value as a `String` —
-    /// handlers that never read headers pay nothing.
+    /// the entire header block has been parsed.
     public var headers: HeaderView
+
+    /// Request body bytes (for POST/PUT/PATCH). Copied into the arena
+    /// during body parsing. Nil for bodyless requests (GET/HEAD/etc.).
+    public var body: [UInt8]?
 
     // ── Phase 3 will add: ───────────────────────────────────────────────
     //   - headers: HeaderView         (case-insensitive ordered storage)
@@ -100,6 +98,7 @@ public struct RequestContext: ~Copyable {
         self.path = ""
         self.params = Params()
         self.headers = HeaderView()
+        self.body = nil
     }
 
     /// Reset the context between keep-alive requests on the same connection.
@@ -121,6 +120,7 @@ public struct RequestContext: ~Copyable {
         // arena-reset frees the underlying string storage anyway.
         self.params.removeAll()
         self.headers.removeAll()
+        self.body = nil
     }
 
     /// Release all arena memory back to the system allocator. Use this
