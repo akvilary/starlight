@@ -78,10 +78,11 @@ final class HTTP1Codec: @unchecked Sendable {
     /// Process an inbound ByteBuffer chunk. Returns an optional
     /// response. `nil` means "need more data".
     ///
-    /// Pipelining: if the chunk contains multiple complete requests,
-    /// `process` is called in a loop by the connection handler until
-    /// it returns nil. Each call processes at most one request.
-    func process(_ bytes: ByteBuffer) -> HTTPResponse? {
+    /// This method is `async` to support async handlers. Sync
+    /// handlers are dispatched with zero overhead (direct call);
+    /// async handlers are dispatched via `await` inline in the
+    /// connection Task — zero Task-per-request allocation.
+    func process(_ bytes: ByteBuffer) async -> HTTPResponse? {
         // Append the newly-arrived bytes to the accumulator.
         self.accumulator.writeImmutableBuffer(bytes)
 
@@ -133,10 +134,11 @@ final class HTTP1Codec: @unchecked Sendable {
             return nil
         }
 
-        // Invoke the user handler (or the router) synchronously.
+        // Invoke the user handler (or the router). Sync handlers
+        // are called directly; async handlers via `await` inline.
         let response: HTTPResponse
         if let router = self.router {
-            response = router.handle(&self.ctx)
+            response = await router.handle(&self.ctx)
         } else {
             response = self.handler!(self.ctx)
         }

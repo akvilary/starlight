@@ -43,7 +43,7 @@ struct RouterTests {
         if let m = match {
             var ctx = RequestContext()
             ctx.params = m.params
-            _ = m.handler(ctx)
+            if case .sync(let fn) = m.handler { _ = fn(ctx) }
             #expect(registered.value)
         }
     }
@@ -134,7 +134,7 @@ struct RouterTests {
         if let m = match {
             var ctx = RequestContext()
             ctx.params = m.params
-            _ = m.handler(ctx)
+            if case .sync(let fn) = m.handler { _ = fn(ctx) }
         }
         #expect(hitStatic.value)
         #expect(!hitDynamic.value)
@@ -156,7 +156,7 @@ struct RouterTests {
         if let m = match {
             var ctx = RequestContext()
             ctx.params = m.params
-            _ = m.handler(ctx)
+            if case .sync(let fn) = m.handler { _ = fn(ctx) }
         }
         #expect(hitDynamic.value)
     }
@@ -190,7 +190,7 @@ struct RouterTests {
                 continue
             }
             var ctx = RequestContext()
-            _ = m.handler(ctx)
+            if case .sync(let fn) = m.handler { _ = fn(ctx) }
             #expect(hit.value == expected)
         }
     }
@@ -237,12 +237,12 @@ struct RouterTests {
     // MARK: - handle() dispatch through middleware
 
     @Test("handle() returns 404 response when no match")
-    func handleReturns404() {
+    func handleReturns404() async {
         let router = Router()
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.path = "/nope"
-        let response = router.handle(&ctx)
+        let response = await router.handle(&ctx)
         // We can't easily inspect the buffer contents here without
         // pulling in ByteBuffer read APIs; we just check that the
         // response exists. The "404" string is in there.
@@ -250,7 +250,7 @@ struct RouterTests {
     }
 
     @Test("handle() invokes matched handler with params set on ctx")
-    func handleInvokesMatched() {
+    func handleInvokesMatched() async {
         let router = Router()
         let capturedParam = Box<String?>(nil)
         router.get("/users/:id") { ctx in
@@ -260,13 +260,13 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.path = "/users/123"
-        _ = router.handle(&ctx)
+        _ = await router.handle(&ctx)
         #expect(capturedParam.value == "123")
         #expect(ctx.params["id"] == "123")
     }
 
     @Test("Middleware wraps the matched handler")
-    func middlewareWraps() {
+    func middlewareWraps() async {
         let router = Router()
         let log = Box<[String]>([])
         router.use(Middleware { next in
@@ -284,12 +284,12 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.path = "/x"
-        _ = router.handle(&ctx)
+        _ = await router.handle(&ctx)
         #expect(log.value == ["before", "handler", "after"])
     }
 
     @Test("Multiple middlewares compose outermost-first")
-    func multipleMiddlewares() {
+    func multipleMiddlewares() async {
         let router = Router()
         let log = Box<[String]>([])
         router.use(Middleware { next in
@@ -315,7 +315,7 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.path = "/x"
-        _ = router.handle(&ctx)
+        _ = await router.handle(&ctx)
         #expect(log.value == [
             "outer-before", "inner-before", "handler",
             "inner-after", "outer-after"

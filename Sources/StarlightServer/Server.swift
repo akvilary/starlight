@@ -220,15 +220,9 @@ public final class StarlightServer: @unchecked Sendable {
         do {
             try await channel.executeThenClose { (inbound, outbound) in
                 for try await bytes in inbound {
-                    // Pipelining: process() handles one request per
-                    // call. Loop until it returns nil (need more data).
-                    while let response = codec.process(bytes) {
-                        responseBuffer.clear()
-                        responseBuffer.writeBytes(response.buffer.readableBytesView)
-                        // Write a fresh copy to avoid COW when
-                        // responseBuffer is cleared on the next iteration.
-                        var out = ByteBufferAllocator().buffer(capacity: responseBuffer.readableBytes)
-                        out.writeBytes(responseBuffer.readableBytesView)
+                    while let response = await codec.process(bytes) {
+                        var out = ByteBufferAllocator().buffer(capacity: 256)
+                        out.writeBytes(response.buffer.readableBytesView)
                         try await outbound.write(out)
                     }
                 }

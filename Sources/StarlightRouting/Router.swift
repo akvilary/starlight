@@ -46,7 +46,8 @@ struct Route: Sendable {
     let pattern: String
     /// Pre-split segments for fast matching.
     let segments: [RouteSegment]
-    let handler: HTTPHandler
+    /// Sync or async dispatch kind.
+    let handler: HandlerKind
 }
 
 /// Closure-based middleware for Phase 3 MVP.
@@ -104,56 +105,61 @@ public final class Router: @unchecked Sendable {
 
     public init() {}
 
-    // MARK: - Registration
+    // MARK: - Registration (sync)
 
-    /// Register a handler for `GET <pattern>`.
+    /// Register a **sync** handler for `GET <pattern>`.
     public func get(_ pattern: String, _ handler: @escaping HTTPHandler) {
-        self.add(.GET, pattern, handler)
+        self.add(.GET, pattern, .sync(handler))
     }
-
-    /// Register a handler for `POST <pattern>`.
     public func post(_ pattern: String, _ handler: @escaping HTTPHandler) {
-        self.add(.POST, pattern, handler)
+        self.add(.POST, pattern, .sync(handler))
     }
-
-    /// Register a handler for `PUT <pattern>`.
     public func put(_ pattern: String, _ handler: @escaping HTTPHandler) {
-        self.add(.PUT, pattern, handler)
+        self.add(.PUT, pattern, .sync(handler))
     }
-
-    /// Register a handler for `PATCH <pattern>`.
     public func patch(_ pattern: String, _ handler: @escaping HTTPHandler) {
-        self.add(.PATCH, pattern, handler)
+        self.add(.PATCH, pattern, .sync(handler))
     }
-
-    /// Register a handler for `DELETE <pattern>`.
     public func delete(_ pattern: String, _ handler: @escaping HTTPHandler) {
-        self.add(.DELETE, pattern, handler)
+        self.add(.DELETE, pattern, .sync(handler))
     }
-
-    /// Register a handler for `HEAD <pattern>`.
     public func head(_ pattern: String, _ handler: @escaping HTTPHandler) {
-        self.add(.HEAD, pattern, handler)
+        self.add(.HEAD, pattern, .sync(handler))
+    }
+    public func options(_ pattern: String, _ handler: @escaping HTTPHandler) {
+        self.add(.OPTIONS, pattern, .sync(handler))
     }
 
-    /// Register a handler for `OPTIONS <pattern>`.
-    public func options(_ pattern: String, _ handler: @escaping HTTPHandler) {
-        self.add(.OPTIONS, pattern, handler)
+    // MARK: - Registration (async)
+
+    /// Register an **async** handler for `GET <pattern>`. Runs inline
+    /// in the connection Task via `await` — zero Task-per-request
+    /// allocation.
+    public func get(_ pattern: String, async handler: @escaping AsyncHTTPHandler) {
+        self.add(.GET, pattern, .async(handler))
+    }
+    public func post(_ pattern: String, async handler: @escaping AsyncHTTPHandler) {
+        self.add(.POST, pattern, .async(handler))
+    }
+    public func put(_ pattern: String, async handler: @escaping AsyncHTTPHandler) {
+        self.add(.PUT, pattern, .async(handler))
+    }
+    public func patch(_ pattern: String, async handler: @escaping AsyncHTTPHandler) {
+        self.add(.PATCH, pattern, .async(handler))
+    }
+    public func delete(_ pattern: String, async handler: @escaping AsyncHTTPHandler) {
+        self.add(.DELETE, pattern, .async(handler))
     }
 
     /// Register a handler for an arbitrary method + pattern.
-    ///
-    /// - Precondition: must be called before the router is attached
-    ///   to a server. Debug builds trap if called after the first
-    ///   `handle(_:)` invocation.
-    public func add(_ method: HTTPMethod, _ pattern: String, _ handler: @escaping HTTPHandler) {
+    public func add(_ method: HTTPMethod, _ pattern: String, _ kind: HandlerKind) {
         #if DEBUG
         precondition(!isFrozen,
             "Router.add called after the router has been attached to a server. " +
             "Register all routes before calling StarlightServer.start(...).")
         #endif
         let segments = Self.parsePattern(pattern)
-        routes.append(Route(method: method, pattern: pattern, segments: segments, handler: handler))
+        routes.append(Route(method: method, pattern: pattern, segments: segments, handler: kind))
     }
 
     /// Append a middleware to the chain. Middlewares are invoked in
@@ -179,14 +185,13 @@ public final class Router: @unchecked Sendable {
     /// request line + headers have been parsed. The router:
     ///   1. Matches `(ctx.method, ctx.path)` against the routes.
     ///   2. Populates `ctx.params` with any dynamic-segment captures.
-    ///   3. Invokes the matched handler (with middleware wrapping).
+    ///   3. Invokes the matched handler (sync or async).
     ///   4. Returns a 404 response if no route matched.
-    public func handle(_ ctx: inout RequestContext) -> HTTPResponse {
+    ///
+    /// Async handlers are dispatched via `await` — **inline in the
+    /// connection Task**, zero Task-per-request allocation.
+    public func handle(_ ctx: inout RequestContext) async -> HTTPResponse {
         #if DEBUG
-        // First dispatch call freezes the router against further
-        // add()/use() calls. From this point on, dispatch may run
-        // concurrently from multiple event loops, and any mutation
-        // would race.
         isFrozen = true
         #endif
         let (method, path) = (ctx.method, ctx.path)
@@ -199,15 +204,38 @@ public final class Router: @unchecked Sendable {
         }
         ctx.params = match.params
 
-        // Compose middleware around the matched handler. The
-        // composition happens per-request but is just function
-        // wrapping — no allocation when the closures are inlinable.
-        // Phase 4 will pre-compose the chain at registration time.
-        var handler: HTTPHandler = match.handler
-        for mw in self.middlewares.reversed() {
-            handler = mw.wrap(handler)
+        // Compose middleware around the matched handler.
+        let handler = self.composeMiddleware(match.handler)
+
+        switch handler {
+        case .sync(let fn):
+            return fn(ctx)
+        case .async(let fn):
+            return await fn(ctx)
         }
-        return handler(ctx)
+    }
+
+    /// Compose middleware around a handler. Returns a new HandlerKind
+    /// that runs the middleware chain around the matched handler.
+    ///
+    /// - Note: Phase 4.1b limitation — middleware only wraps sync
+    ///   handlers. Async handlers bypass middleware. This will be
+    ///   addressed when we add the generic Middleware protocol.
+    private func composeMiddleware(_ handler: HandlerKind) -> HandlerKind {
+        if self.middlewares.isEmpty { return handler }
+
+        switch handler {
+        case .sync(let fn):
+            var h: HTTPHandler = fn
+            for mw in self.middlewares.reversed() {
+                h = mw.wrap(h)
+            }
+            return .sync(h)
+        case .async(let fn):
+            // Async + middleware composition requires async-aware
+            // middleware. Phase 4.1b MVP: bypass middleware for async.
+            return .async(fn)
+        }
     }
 
     // MARK: - Internal matching
@@ -215,7 +243,7 @@ public final class Router: @unchecked Sendable {
     /// Match `(method, path)` against the registered routes and return
     /// the matching handler + extracted params. Returns `nil` if no
     /// route matched.
-    public func match(method: HTTPMethod, path: String) -> (handler: HTTPHandler, params: Params)? {
+    public func match(method: HTTPMethod, path: String) -> (handler: HandlerKind, params: Params)? {
         // Strip the query string if present — the router matches on
         // the path component only.
         let pathOnly: String

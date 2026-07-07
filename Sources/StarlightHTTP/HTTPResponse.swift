@@ -14,10 +14,22 @@ import NIOCore
 import NIOPosix
 
 /// Closure that, given a parsed request context, produces an HTTP
-/// response. The handler runs **synchronously on the connection's
-/// event loop** — exactly the H2O / Actix pattern. Async handlers
-/// will be wired in Phase 4 once the middleware protocol is in place.
+/// response. The handler runs **synchronously** — directly inline
+/// in the connection Task, zero allocation.
 public typealias HTTPHandler = @Sendable (borrowing RequestContext) -> HTTPResponse
+
+/// Async variant — same signature but with `async`. Runs inline in
+/// the connection Task via `await`, **zero Task-per-request
+/// allocation** (the connection Task is the only Task; async
+/// handlers are continuations within it, not spawned Tasks).
+public typealias AsyncHTTPHandler = @Sendable (borrowing RequestContext) async -> HTTPResponse
+
+/// Dispatch kind for a registered route. Either sync or async.
+/// Stored in `Route` so the codec can branch at dispatch time.
+public enum HandlerKind: Sendable {
+    case sync(HTTPHandler)
+    case async(AsyncHTTPHandler)
+}
 
 /// A fully-built HTTP/1.1 response, serialized into a `ByteBuffer`.
 ///
