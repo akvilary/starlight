@@ -80,6 +80,19 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
     /// has been consumed.
     private var accumulator: ByteBuffer = ByteBufferAllocator().buffer(capacity: 1024)
 
+    /// Per-connection response staging buffer. We copy the handler's
+    /// response bytes into this buffer before handing them to
+    /// `context.write`. This avoids the per-request retain/release on
+    /// any *shared* response storage (e.g. a process-wide cached
+    /// "Hello, World!" ByteBuffer) — under multi-core contention those
+    /// atomic refcount operations dominate throughput, so paying a
+    /// ~100-byte `memcpy` per request is a significant net win.
+    ///
+    /// The buffer is reused across requests on the same connection:
+    /// we `clear()` it before each write, which resets the reader /
+    /// writer indices without freeing the underlying storage.
+    private var responseBuffer: ByteBuffer = ByteBufferAllocator().buffer(capacity: 512)
+
     init(handler: @escaping HTTPHandler) {
         self.handler = handler
         self.router = nil
@@ -162,6 +175,21 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
                 response = self.handler!(self.ctx)
             }
 
+            // Stage the response bytes into the per-connection buffer.
+            // This is the key optimization that removes cross-core ARC
+            // traffic on shared response storage: instead of handing
+            // the handler's ByteBuffer (which may have shared COW
+            // storage with a process-wide cache) directly to
+            // `context.write`, we copy its readable bytes into this
+            // connection's private buffer and write that.
+            //
+            // The copy is ~100 bytes of `memcpy` for a typical
+            // response; the ARC savings on a 12-core machine are
+            // 4-8 atomic ops per request that would otherwise
+            // bounce a cache line between cores.
+            self.responseBuffer.clear()
+            self.responseBuffer.writeBytes(response.buffer.readableBytesView)
+
             // Reset per-request state for the next request on the same
             // connection (keep-alive). Arena is bulk-freed by reset().
             self.ctx.reset()
@@ -170,7 +198,7 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
             // Write & flush. The connection's owning event loop is the
             // thread we're on, so this is non-blocking from the caller's
             // perspective.
-            context.write(self.wrapOutboundOut(response.buffer), promise: nil)
+            context.write(self.wrapOutboundOut(self.responseBuffer), promise: nil)
             context.flush()
 
             // Loop back and see if more pipelined requests are buffered.
