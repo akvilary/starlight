@@ -76,6 +76,14 @@ public struct Middleware: Sendable {
 /// tried before dynamic-segment routes when both can match — this is
 /// implemented by partitioning routes at registration time so the
 /// search still terminates as soon as a match is found.
+///
+/// **Lifecycle invariant**: routes and middleware must be registered
+/// *before* the router is attached to a server (i.e. before
+/// `StarlightServer.start(... router: router ...)` is called). The
+/// router is not thread-safe for concurrent reads and writes — it
+/// assumes registration happens on a single thread during startup,
+/// and only `handle(_:)` is invoked concurrently from event loops.
+/// Debug builds assert this invariant; release builds trust the caller.
 public final class Router: @unchecked Sendable {
     /// User handlers indexed by route. Searched linearly.
     private var routes: [Route] = []
@@ -85,6 +93,14 @@ public final class Router: @unchecked Sendable {
     /// just "call the matched handler" — middleware wrapping is
     /// folded into the handler closure.
     private var middlewares: [Middleware] = []
+
+    #if DEBUG
+    /// Set to `true` on the first `handle(_:)` call. Subsequent
+    /// `add(...)` / `use(...)` calls will trap with a
+    /// "router-frozen-after-start" message rather than silently
+    /// racing with concurrent dispatch.
+    private var isFrozen: Bool = false
+    #endif
 
     public init() {}
 
@@ -126,14 +142,32 @@ public final class Router: @unchecked Sendable {
     }
 
     /// Register a handler for an arbitrary method + pattern.
+    ///
+    /// - Precondition: must be called before the router is attached
+    ///   to a server. Debug builds trap if called after the first
+    ///   `handle(_:)` invocation.
     public func add(_ method: HTTPMethod, _ pattern: String, _ handler: @escaping HTTPHandler) {
+        #if DEBUG
+        precondition(!isFrozen,
+            "Router.add called after the router has been attached to a server. " +
+            "Register all routes before calling StarlightServer.start(...).")
+        #endif
         let segments = Self.parsePattern(pattern)
         routes.append(Route(method: method, pattern: pattern, segments: segments, handler: handler))
     }
 
     /// Append a middleware to the chain. Middlewares are invoked in
     /// registration order, outermost-first.
+    ///
+    /// - Precondition: must be called before the router is attached
+    ///   to a server. Debug builds trap if called after the first
+    ///   `handle(_:)` invocation.
     public func use(_ middleware: Middleware) {
+        #if DEBUG
+        precondition(!isFrozen,
+            "Router.use called after the router has been attached to a server. " +
+            "Register all middleware before calling StarlightServer.start(...).")
+        #endif
         self.middlewares.append(middleware)
     }
 
@@ -148,6 +182,13 @@ public final class Router: @unchecked Sendable {
     ///   3. Invokes the matched handler (with middleware wrapping).
     ///   4. Returns a 404 response if no route matched.
     public func handle(_ ctx: inout RequestContext) -> HTTPResponse {
+        #if DEBUG
+        // First dispatch call freezes the router against further
+        // add()/use() calls. From this point on, dispatch may run
+        // concurrently from multiple event loops, and any mutation
+        // would race.
+        isFrozen = true
+        #endif
         let (method, path) = (ctx.method, ctx.path)
         guard let match = match(method: method, path: path) else {
             return HTTPResponse.plaintext(
