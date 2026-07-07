@@ -125,7 +125,15 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
 
             self.accumulator.readWithUnsafeReadableBytes { bytes -> Int in
                 let discarded: Int = bytes.withMemoryRebound(to: UInt8.self) { typedBytes in
-                    let buf = UnsafeBufferPointer(start: typedBytes.baseAddress!, count: typedBytes.count)
+                    // Defensive: a zero-length readable slice may have
+                    // a nil baseAddress. We must not force-unwrap —
+                    // returning 0 here is correct (no bytes consumed).
+                    guard let base = typedBytes.baseAddress else {
+                        complete = false
+                        consumed = 0
+                        return 0
+                    }
+                    let buf = UnsafeBufferPointer(start: base, count: typedBytes.count)
                     do {
                         complete = try self.parser.feed(buf, into: &self.ctx)
                         consumed = self.parser.consumedBytes
