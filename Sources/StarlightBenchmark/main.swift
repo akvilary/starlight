@@ -169,15 +169,55 @@ extension StarlightBenchmark {
 /// Build a router with three routes for the `--mode router` benchmark.
 /// This exercises the routing + path-param capture path on every request
 /// rather than the single-handler short-circuit.
+///
+/// Static routes (`/`, `/health`) return **pre-cached** `ByteBuffer`s —
+/// zero per-request allocation. The per-connection `responseBuffer`
+/// copy in `HTTP1Codec` still runs, but no new storage is allocated.
+/// The dynamic route (`/users/:id`) necessarily allocates per request
+/// (response depends on the captured id); it is the worst case.
 func makeBenchmarkRouter() -> Router {
+    // Pre-serialize the static responses once at startup so the
+    // static routes (`/`, `/health`) don't allocate per request.
+    let rootBytes = Array("""
+        HTTP/1.1 200 OK\r\n\
+        Content-Type: text/plain; charset=utf-8\r\n\
+        Content-Length: 14\r\n\
+        Connection: keep-alive\r\n\
+        \r\n\
+        Hello, World!\n
+        """.utf8)
+    let healthBytes = Array("""
+        HTTP/1.1 200 OK\r\n\
+        Content-Type: text/plain; charset=utf-8\r\n\
+        Content-Length: 3\r\n\
+        Connection: keep-alive\r\n\
+        \r\n\
+        ok\n
+        """.utf8)
+
+    var rootBuf = ByteBufferAllocator().buffer(capacity: rootBytes.count)
+    rootBuf.writeBytes(rootBytes)
+    var healthBuf = ByteBufferAllocator().buffer(capacity: healthBytes.count)
+    healthBuf.writeBytes(healthBytes)
+
+    // `let` bindings so the @Sendable handler closures can capture
+    // them withoutStrictConcurrency complaints. ByteBuffer is COW so
+    // sharing the value across connections is cheap; the per-request
+    // retain/release on shared storage is what the
+    // `responseBuffer.copy` path in HTTP1Codec removes.
+    let rootBufLet = rootBuf
+    let healthBufLet = healthBuf
+
     let router = Router()
     router.get("/") { _ in
-        HTTPResponse(buffer: StarlightBenchmark.helloResponse)
+        HTTPResponse(buffer: rootBufLet)
     }
     router.get("/health") { _ in
-        HTTPResponse.plaintext("ok\n")
+        HTTPResponse(buffer: healthBufLet)
     }
     router.get("/users/:id") { ctx in
+        // Dynamic route — response depends on the captured id. This
+        // necessarily allocates per request.
         let id = ctx.params["id"] ?? "?"
         return HTTPResponse.plaintext("user \(id)\n")
     }
