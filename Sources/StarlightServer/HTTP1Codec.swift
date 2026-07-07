@@ -93,15 +93,29 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
     /// writer indices without freeing the underlying storage.
     private var responseBuffer: ByteBuffer = ByteBufferAllocator().buffer(capacity: 512)
 
-    init(handler: @escaping HTTPHandler) {
+    /// Maximum number of unread bytes the accumulator may hold before
+    /// the connection is closed with 413 Payload Too Large. Defends
+    /// against memory-exhaustion DoS — without this check a malicious
+    /// client could send an unterminated request line (`"GET / HTTP/1.1\r\n"`
+    /// without the trailing `\r\n\r\n`) and force the server to buffer
+    /// arbitrary amounts of data per connection.
+    ///
+    /// Default 1 MiB, matching Hummingbird 2 / Vapor 4 / Go net/http.
+    /// Smaller values trade compatibility with esoteric huge-header
+    /// clients for tighter DoS protection.
+    private let maxAccumulatorBytes: Int
+
+    init(handler: @escaping HTTPHandler, maxAccumulatorBytes: Int = 1 * 1024 * 1024) {
         self.handler = handler
         self.router = nil
+        self.maxAccumulatorBytes = maxAccumulatorBytes
         self.ctx = RequestContext()
     }
 
-    init(router: Router) {
+    init(router: Router, maxAccumulatorBytes: Int = 1 * 1024 * 1024) {
         self.handler = nil
         self.router = router
+        self.maxAccumulatorBytes = maxAccumulatorBytes
         self.ctx = RequestContext()
     }
 
@@ -109,6 +123,27 @@ final class HTTP1Codec: ChannelInboundHandler, @unchecked Sendable {
         // Append the newly-arrived bytes to the accumulator.
         var input = self.unwrapInboundIn(data)
         self.accumulator.writeBuffer(&input)
+
+        // DoS defence: reject requests whose buffered size exceeds the
+        // configured maximum. Without this check a client could send
+        // an unterminated request line and force the server to buffer
+        // unbounded data per connection.
+        if self.accumulator.readableBytes > self.maxAccumulatorBytes {
+            let response = HTTPResponse.plaintext(
+                "413 Payload Too Large\n",
+                status: HTTPStatus(413, reasonPhrase: "Payload Too Large"),
+                allocator: context.channel.allocator,
+                keepAlive: false
+            )
+            // Stage into the per-connection responseBuffer (same path
+            // as the success case — avoids shared-storage ARC traffic).
+            self.responseBuffer.clear()
+            self.responseBuffer.writeBytes(response.buffer.readableBytesView)
+            context.write(self.wrapOutboundOut(self.responseBuffer), promise: nil)
+            context.flush()
+            context.close(promise: nil)
+            return
+        }
 
         // Try to parse as many requests as the buffer contains
         // (pipelining).
