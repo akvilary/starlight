@@ -174,7 +174,7 @@ public final class Router: @unchecked Sendable {
     /// Match `(method, path)` against the registered routes and return
     /// the matching handler + extracted params. Returns `nil` if no
     /// route matched.
-    public func match(method: HTTPMethod, path: String) -> (handler: HTTPHandler, params: [String: String])? {
+    public func match(method: HTTPMethod, path: String) -> (handler: HTTPHandler, params: Params)? {
         // Strip the query string if present — the router matches on
         // the path component only.
         let pathOnly: String
@@ -244,15 +244,15 @@ public final class Router: @unchecked Sendable {
 
     /// Match a request's path segments against a route's pattern segments.
     /// Returns the captured params if the segments match, otherwise nil.
-    static func matchSegments(_ pattern: [RouteSegment], _ request: [String]) -> [String: String]? {
+    static func matchSegments(_ pattern: [RouteSegment], _ request: [String]) -> Params? {
         guard pattern.count == request.count else { return nil }
-        var params: [String: String] = [:]
+        var params = Params()
         for (p, r) in zip(pattern, request) {
             switch p {
             case .literal(let s):
                 if s != r { return nil }
             case .param(let name):
-                params[name] = r
+                params.append(name: name, value: r)
             }
         }
         return params

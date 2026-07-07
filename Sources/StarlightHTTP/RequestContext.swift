@@ -68,10 +68,12 @@ public struct RequestContext: ~Copyable {
     /// Path parameters extracted by the router from dynamic segments
     /// (e.g. `:id` in `/users/:id` → `params["id"] == "42"`).
     ///
-    /// Phase 3 MVP: dictionary-backed. Phase 4 will replace this with
-    /// `Span<UInt8>` views into `path` to eliminate the per-match
-    /// allocation.
-    public var params: [String: String]
+    /// Backed by `Params` (array of `(name, value)` tuples) rather
+    /// than a `Dictionary` — for typical 0–2-param routes this is
+    /// cheaper to allocate and faster to look up. Phase 4 will
+    /// replace the `String` keys/values with `Substring` views into
+    /// `path` to eliminate the per-entry allocation.
+    public var params: Params
 
     // ── Phase 3 will add: ───────────────────────────────────────────────
     //   - headers: HeaderView         (case-insensitive ordered storage)
@@ -88,7 +90,7 @@ public struct RequestContext: ~Copyable {
         self.method = .other
         self.status = .ok
         self.path = ""
-        self.params = [:]
+        self.params = Params()
     }
 
     /// Reset the context between keep-alive requests on the same connection.
@@ -108,9 +110,7 @@ public struct RequestContext: ~Copyable {
         // it costs O(n) in the number of params from the previous
         // request. We could leave it dirty and overwrite, but the
         // arena-reset frees the underlying string storage anyway.
-        if !self.params.isEmpty {
-            self.params.removeAll(keepingCapacity: false)
-        }
+        self.params.removeAll()
     }
 
     /// Release all arena memory back to the system allocator. Use this
