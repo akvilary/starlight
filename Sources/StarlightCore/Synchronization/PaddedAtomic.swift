@@ -50,12 +50,18 @@ public struct CacheLinePadding {
 /// thread do not need padding.
 @frozen
 public struct PaddedAtomicInt64: ~Copyable, Sendable {
-    public var _leading = CacheLinePadding()
+    /// Cache-line padding before the atomic. Internal rather than
+    /// public so external code cannot observe or modify the padding
+    /// bytes (which exist solely to control the struct's memory
+    /// layout — touching them would defeat the false-sharing
+    /// isolation).
+    internal var _leading = CacheLinePadding()
     /// `Atomic<T>` is `~Copyable` and `@_staticExclusiveOnly`: it must be a
     /// `let`. Its mutator operations are `nonmutating`, so this still allows
     /// incrementing via an immutable binding.
     public let _value = Atomic<Int64>(0)
-    public var _trailing = CacheLinePadding()
+    /// See `_leading`.
+    internal var _trailing = CacheLinePadding()
 
     @inlinable public init() {}
 
