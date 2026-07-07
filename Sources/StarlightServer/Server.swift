@@ -3,15 +3,19 @@
 //  Server.swift
 //  StarlightServer
 //
-//  Phase 0 entry point — minimal TCP echo server built on SwiftNIO with the
-//  H2O-style thread-per-core accept model: one `ServerSocket` per event loop
-//  with `SO_REUSEPORT`, so the *kernel* load-balances incoming connections
-//  across loops (no acceptor thread, no user-space dispatch).
+//  NIOAsyncChannel-based server with the H2O-style thread-per-core accept
+//  model: one listener per event loop with SO_REUSEPORT, kernel-balanced
+//  accepts, and **one Task per connection** (not per request).
+//
+//  Phase 4.1a refactor: replaces the ChannelHandler pipeline with
+//  NIOAsyncChannel's AsyncSequence API. This is the foundational step
+//  for zero-cost async handlers (Phase 4.1b) — handlers will be
+//  invoked inline in the connection Task via `await`, with no
+//  Task-per-request allocation.
 //
 //  Every connection stays on the loop that accepted it for its entire
-//  lifetime — no cross-loop migration, no shared mutable state in the hot
-//  path. This is the substrate on top of which Phase 2 will bolt the HTTP/1
-//  codec and the per-request arena.
+//  lifetime — no cross-loop migration, no shared mutable state in the
+//  hot path.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,9 +32,7 @@ import Glibc
 import Darwin
 #endif
 
-/// Cross-platform `SO_REUSEPORT` socket option value. SwiftNIO does not ship
-/// a symbolic constant for it; both Linux (≥ 3.9) and macOS (≥ 10.11) define
-/// it in `<sys/socket.h>`.
+/// Cross-platform `SO_REUSEPORT` socket option value.
 @inlinable
 var SO_REUSEPORT: NIOBSDSocket.Option {
     #if canImport(Glibc)
@@ -42,76 +44,44 @@ var SO_REUSEPORT: NIOBSDSocket.Option {
     #endif
 }
 
-/// Connection counters for stats. Each counter is padded to its own pair of
-/// cache lines so increments from different event loops never invalidate one
-/// another's lines (the H2O false-sharing pattern).
+/// Connection counters for stats, padded to avoid false sharing.
 public final class ServerStats: @unchecked Sendable {
     public let connectionsAccepted = PaddedAtomicInt64()
     public let bytesReceived = PaddedAtomicInt64()
     public let bytesSent = PaddedAtomicInt64()
-
     @inlinable public init() {}
 }
 
-/// A `StarlightServer` owns a `MultiThreadedEventLoopGroup` and one bound
-/// listener `Channel` per event loop. The listener channels all share the
-/// same `(host, port)` via `SO_REUSEPORT` and the kernel dispatches accepted
-/// connections across them.
+/// The server mode — TCP echo (benchmark baseline) or HTTP/1.1.
+public enum Mode: Sendable {
+    case tcpEcho
+    case http
+}
+
+/// A `StarlightServer` owns a `MultiThreadedEventLoopGroup` and one
+/// bound listener per event loop via `NIOAsyncChannel`.
 ///
-/// Phase 0 ships a TCP echo pipeline. Phase 2 will replace the echo handler
-/// with the SIMD HTTP/1 codec and the `RequestContext` arena; the surrounding
-/// per-loop listener structure will not change.
+/// Each listener uses `SO_REUSEPORT` so the kernel load-balances
+/// accepts across loops. Connections are handled by **one Task per
+/// connection** (amortized through keep-alive requests), with the
+/// handler invoked inline in the connection Task.
 public final class StarlightServer: @unchecked Sendable {
-    /// The event-loop group — one loop per CPU core by default. Each loop is
-    /// the unambiguous owner of every connection it accepts.
     public let eventLoopGroup: MultiThreadedEventLoopGroup
-
-    /// One bound listener `Channel` per event loop.
-    public private(set) var listenerChannels: [any Channel] = []
-
-    /// Aggregate stats across all loops.
     public let stats = ServerStats()
-
-    /// Number of event loops (= OS threads) the server runs. Stored
-    /// explicitly because `MultiThreadedEventLoopGroup` does not expose it.
     public let loopCount: Int
 
-    /// Construct a server backed by a fresh `MultiThreadedEventLoopGroup`.
-    ///
-    /// - Parameter loopCount: number of event loops to run. Defaults to
-    ///   `System.coreCount` — one loop per CPU core (H2O's "thread-per-core"
-    ///   default).
+    /// Bound listeners. Populated by `start()`, closed by `shutdown()`.
+    private var listeners: [NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>] = []
+
     public init(loopCount: Int = System.coreCount) {
         self.loopCount = loopCount
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: loopCount)
     }
 
-    /// Bind one listener per event loop on `(host, port)` with `SO_REUSEPORT`,
-    /// so the kernel load-balances accepts. Returns when every listener is
-    /// bound and accepting.
-    ///
-    /// This method is async so that `main` can stay async (canonical Swift
-    /// Concurrency entry point). It is *not* in any request hot path — it
-    /// runs once at process bootstrap. The synchronous `.wait()` form is
-    /// used internally on the listener bind because there is nothing useful
-    /// to overlap it with at startup.
-    ///
-    /// Everything *after* this point — connection handling, request parsing,
-    /// response writing — runs concurrently on the event loops under Swift
-    /// Concurrency via `EventLoopExecutor` and `withTaskExecutorPreference`.
-    ///
-    /// - Parameters:
-    ///   - host: bind host (use `"0.0.0.0"` or `"::"` for all interfaces).
-    ///   - port: bind port. Pass `0` to let the kernel assign a port; all
-    ///     subsequent binds will reuse the same port via `SO_REUSEPORT`.
-    ///   - mode: TCP echo (Phase 0) or HTTP/1.1 hello-world (Phase 2).
-    ///   - httpHandler: user handler for HTTP mode. Required when
-    ///     `mode == .http`.
-    public enum Mode: Sendable {
-        case tcpEcho
-        case http
-    }
+    // MARK: - Start / Shutdown
 
+    /// Bind one listener per event loop on `(host, port)` and run the
+    /// accept loop until shutdown. This method blocks the calling task.
     public func start(
         host: String,
         port: Int,
@@ -119,164 +89,152 @@ public final class StarlightServer: @unchecked Sendable {
         httpHandler: HTTPHandler? = nil,
         router: Router? = nil
     ) async throws {
-        precondition(self.listenerChannels.isEmpty, "StarlightServer already started")
-        try self.bindListeners(
-            host: host, port: port, mode: mode,
-            httpHandler: httpHandler, router: router
-        )
-    }
-
-    /// Synchronous bind-and-listen helper. Factored out so that future
-    /// variants (e.g. `NIOPosix.singleThreadedEventLoopGroup`) can swap in
-    /// their own bind path without touching the public async surface.
-    private func bindListeners(
-        host: String,
-        port: Int,
-        mode: Mode,
-        httpHandler: HTTPHandler?,
-        router: Router?
-    ) throws {
         precondition(mode != .http || httpHandler != nil || router != nil,
                      "HTTP mode requires an httpHandler closure or a Router")
+        precondition(self.listeners.isEmpty, "StarlightServer already started")
 
-        // ── A/B TEST: single-listener (multi-threaded group) vs per-loop ──
-        // Phase 0 ships per-loop (H2O pattern); the single-listener branch
-        // is kept as a known-good fallback for diagnosing accept-pipeline
-        // regressions.
-        let usePerLoopListeners = true
-
-        if !usePerLoopListeners {
-            // Single-listener fallback.
-            let stats = self.stats
-            let channel = try ServerBootstrap(group: self.eventLoopGroup)
+        // Create per-loop listeners with SO_REUSEPORT.
+        for eventLoop in self.eventLoopGroup.makeIterator() {
+            let listener = try await ServerBootstrap(group: eventLoop)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .childChannelInitializer { channel in
-                    let handler = self.makeChildHandler(
-                        mode: mode, stats: stats,
-                        httpHandler: httpHandler, router: router
-                    )
-                    return channel.pipeline.addHandler(handler)
+                .serverChannelOption(ChannelOptions.socketOption(SO_REUSEPORT), value: 1)
+                .bind(host: host, port: port) { channel in
+                    channel.eventLoop.makeCompletedFuture {
+                        try NIOAsyncChannel(
+                            wrappingChannelSynchronously: channel,
+                            configuration: .init(
+                                inboundType: ByteBuffer.self,
+                                outboundType: ByteBuffer.self
+                            )
+                        )
+                    }
                 }
-                .bind(host: host, port: port)
-                .wait()
-            self.listenerChannels.append(channel)
+            self.listeners.append(listener)
+        }
+
+        // Run all listeners concurrently. Each listener owns its own
+        // discarding task group for connections — this avoids the
+        // "escaping closure captures inout parameter" error when
+        // trying to use a single outer group for both listeners and
+        // connections.
+        try await withThrowingDiscardingTaskGroup { listenerGroup in
+            for listener in self.listeners {
+                let stats = self.stats
+                let mode = mode
+                let handler = httpHandler
+                let router = router
+                listenerGroup.addTask {
+                    try await withThrowingDiscardingTaskGroup { connGroup in
+                        try await listener.executeThenClose { inbound in
+                            for try await connectionChannel in inbound {
+                                _ = stats.connectionsAccepted.increment()
+                                connGroup.addTask {
+                                    await Self.handleConnection(
+                                        channel: connectionChannel,
+                                        mode: mode,
+                                        stats: stats,
+                                        handler: handler,
+                                        router: router
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Close every listener. Causes `start()` to return.
+    public func shutdown() {
+        for listener in self.listeners {
+            listener.channel.close(promise: nil)
+        }
+        self.listeners.removeAll()
+    }
+
+    // MARK: - Per-connection handling
+
+    /// Dispatch a single accepted connection to the appropriate
+    /// handler based on the server mode.
+    private static func handleConnection(
+        channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+        mode: Mode,
+        stats: ServerStats,
+        handler: HTTPHandler?,
+        router: Router?
+    ) async {
+        switch mode {
+        case .tcpEcho:
+            await handleEchoConnection(channel: channel, stats: stats)
+        case .http:
+            await handleHTTPConnection(channel: channel, stats: stats, handler: handler, router: router)
+        }
+    }
+
+    /// TCP echo — bounce every received byte back. This is the
+    /// benchmark baseline that isolates NIOAsyncChannel overhead from
+    /// HTTP parsing.
+    private static func handleEchoConnection(
+        channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+        stats: ServerStats
+    ) async {
+        do {
+            try await channel.executeThenClose { (inbound, outbound) in
+                for try await bytes in inbound {
+                    let n = Int64(bytes.readableBytes)
+                    _ = stats.bytesReceived.add(n)
+                    _ = stats.bytesSent.add(n)
+                    try await outbound.write(bytes)
+                }
+            }
+        } catch {
+            // Connection error — the channel is already closed by
+            // executeThenClose.
+        }
+    }
+
+    /// HTTP/1.1 connection handler. One `HTTP1Codec` instance per
+    /// connection, reused across all keep-alive requests.
+    private static func handleHTTPConnection(
+        channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
+        stats: ServerStats,
+        handler: HTTPHandler?,
+        router: Router?
+    ) async {
+        let codec: HTTP1Codec
+        if let router = router {
+            codec = HTTP1Codec(router: router)
+        } else if let handler = handler {
+            codec = HTTP1Codec(handler: handler)
+        } else {
             return
         }
 
-        // Per-loop listeners with SO_REUSEPORT (H2O pattern).
-        for eventLoop in self.eventLoopGroup.makeIterator() {
-            let stats = self.stats
-            let channel = try ServerBootstrap(group: eventLoop)
-                .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .serverChannelOption(ChannelOptions.socketOption(SO_REUSEPORT), value: 1)
-                .childChannelInitializer { channel in
-                    let handler = self.makeChildHandler(
-                        mode: mode, stats: stats,
-                        httpHandler: httpHandler, router: router
-                    )
-                    return channel.pipeline.addHandler(handler)
-                }
-                .bind(host: host, port: port)
-                .wait()
-            self.listenerChannels.append(channel)
-        }
-    }
+        // Per-connection response staging buffer. We copy each
+        // response's bytes into this buffer before handing it to
+        // `outbound.write` — this avoids COW traffic on any shared
+        // response storage (process-wide cached ByteBuffer).
+        var responseBuffer = ByteBufferAllocator().buffer(capacity: 512)
 
-    /// Construct the inbound handler for an accepted connection based on
-    /// the server's current mode.
-    @inline(__always)
-    private func makeChildHandler(
-        mode: Mode,
-        stats: ServerStats,
-        httpHandler: HTTPHandler?,
-        router: Router?
-    ) -> any ChannelHandler {
-        switch mode {
-        case .tcpEcho:
-            return EchoHandler(stats: stats)
-        case .http:
-            // Prefer the router if one was provided — it dispatches
-            // through routing + middleware. Otherwise fall back to a
-            // plain handler.
-            if let router = router {
-                return HTTP1Codec(router: router)
-            }
-            return HTTP1Codec(handler: httpHandler!)
-        }
-    }
-
-    /// Block the calling task until every listener has closed. Use this from
-    /// an async `main` to keep the process alive while event loops process
-    /// connections concurrently.
-    public func wait() async throws {
-        // We deliberately do NOT use `for channel in listenerChannels { try await channel.closeFuture.get() }`
-        // — that serializes the waits. Instead, race them all concurrently
-        // and return as soon as the first one closes (which is typically
-        // triggered by SIGINT-driven shutdown in StarlightApp).
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for channel in self.listenerChannels {
-                group.addTask {
-                    try await channel.closeFuture.get()
+        do {
+            try await channel.executeThenClose { (inbound, outbound) in
+                for try await bytes in inbound {
+                    // Pipelining: process() handles one request per
+                    // call. Loop until it returns nil (need more data).
+                    while let response = codec.process(bytes) {
+                        responseBuffer.clear()
+                        responseBuffer.writeBytes(response.buffer.readableBytesView)
+                        // Write a fresh copy to avoid COW when
+                        // responseBuffer is cleared on the next iteration.
+                        var out = ByteBufferAllocator().buffer(capacity: responseBuffer.readableBytes)
+                        out.writeBytes(responseBuffer.readableBytesView)
+                        try await outbound.write(out)
+                    }
                 }
             }
-            // Wait for the first listener to close, then return. The other
-            // tasks will be cancelled when the task group goes out of scope.
-            try await group.next()
+        } catch {
+            // Connection error — channel already closed.
         }
-    }
-
-    /// Shut down every listener and the event-loop group. Blocks until the
-    /// loops have drained.
-    public func shutdown() async throws {
-        for channel in self.listenerChannels {
-            try await channel.close().get()
-        }
-        self.listenerChannels.removeAll()
-        try await self.eventLoopGroup.shutdownGracefully()
-    }
-}
-
-//===----------------------------------------------------------------------===//
-// Echo handler — Phase 0 hot path
-//===----------------------------------------------------------------------===//
-
-/// TCP echo handler. Every byte received is written back on the same channel.
-///
-/// Phase 0's purpose: give us a number. wrk against this echo server tells us
-/// the throughput ceiling of our per-loop `SO_REUSEPORT` acceptor model
-/// before any HTTP machinery is added — that's the baseline against which
-/// Phase 2's parser and Phase 3's `writev` response builder will be judged.
-final class EchoHandler: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = ByteBuffer
-    typealias OutboundOut = ByteBuffer
-
-    private let stats: ServerStats
-
-    @inlinable init(stats: ServerStats) {
-        self.stats = stats
-    }
-
-    func channelActive(context: ChannelHandlerContext) {
-        _ = self.stats.connectionsAccepted.increment()
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let buffer = self.unwrapInboundIn(data)
-        let n = Int64(buffer.readableBytes)
-        _ = self.stats.bytesReceived.add(n)
-        // Echo: write back exactly what we received. The byte buffer's
-        // reference-counted storage makes this a no-copy write until the
-        // kernel pulls it out on flush.
-        context.write(self.wrapOutboundOut(buffer), promise: nil)
-        _ = self.stats.bytesSent.add(n)
-    }
-
-    func channelReadComplete(context: ChannelHandlerContext) {
-        context.flush()
-    }
-
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        // Phase 0: close on error, no logging (avoids any I/O on the hot path).
-        context.close(promise: nil)
     }
 }

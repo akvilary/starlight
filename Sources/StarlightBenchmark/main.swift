@@ -231,61 +231,35 @@ struct StarlightBenchmark {
         let app = StarlightApp(loopCount: cli.loops)
         let server = app.server
 
-        // Ignore SIGPIPE — writes to broken sockets return EPIPE, which
-        // `EchoHandler.errorCaught` handles by closing the channel. A
-        // SIGPIPE-induced termination would leak resources and kill the
-        // whole server for one client's mistake.
         signal(SIGPIPE, SIG_IGN)
 
         out("""
         ╔══════════════════════════════════════════════════════════════════╗
-        ║              Starlight Phase 2 — \(cli.mode.uppercased()) pipeline            ║
+        ║         Starlight Phase 4 — \(cli.mode.uppercased()) (NIOAsyncChannel)        ║
         ╚══════════════════════════════════════════════════════════════════╝
         Configuration:
           Bind                : \(cli.host):\(cli.port)
           Event loops         : \(server.loopCount)  (= CPU cores, thread-per-core)
           SO_REUSEPORT        : enabled  (per-loop listener, kernel-balanced accept)
-          Pipeline            : \(cli.mode == "http" ? "HTTP/1.1 hello world" : "TCP echo")
+          Architecture        : NIOAsyncChannel (one Task per connection)
+          Pipeline            : \(cli.mode == "http" ? "HTTP/1.1 hello world" : cli.mode == "router" ? "HTTP/1.1 router" : "TCP echo")
         """)
-
-        // Bootstrap. Async to keep `main` canonical; under the hood it uses
-        // `.wait()` once per listener since there is nothing useful to
-        // overlap it with at startup. The interesting concurrency begins
-        // *after* this returns: every accepted connection is handled
-        // concurrently on its owning event loop.
-        let mode: StarlightServer.Mode = (cli.mode == "echo") ? .tcpEcho : .http
-        // For HTTP mode we provide either a single hello-world handler
-        // or a router with a few registered routes — selected by the
-        // `--mode http` / `--mode router` flag.
-        let helloHandler: HTTPHandler? = (cli.mode == "http")
-            ? helloWorldHandler
-            : nil
-        let httpHandler = helloHandler
-        let router: Router? = (cli.mode == "router")
-            ? makeBenchmarkRouter()
-            : nil
-        try await server.start(
-            host: cli.host,
-            port: cli.port,
-            mode: mode,
-            httpHandler: httpHandler,
-            router: router
-        )
-        out("  Listeners           : \(server.listenerChannels.count)  (one per event loop)")
-        out("  Status              : listening")
+        out("  Status              : starting…")
         out()
-        out("Press Ctrl-C to stop.")
 
-        // Stats printer task — runs concurrently on the global cooperative
-        // pool. This is NOT a request hot path, so we don't pin it to an
-        // event loop. Phase 2's HTTP hot path will live inside the sync
-        // ChannelHandler pipeline (zero Task allocations per request).
+        // Stats printer — runs on a dedicated pthread (NOT a request
+        // hot path). `server.start()` blocks, so the stats thread
+        // must be started before it.
         if cli.statsInterval > 0 {
             let interval = cli.statsInterval
             let stats = server.stats
-            Task {
+            Thread.detachNewThread {
                 while true {
-                    try await Task.sleep(for: .seconds(interval))
+                    var slept = 0
+                    while slept < interval * 1_000_000 {
+                        usleep(100_000)
+                        slept += 100_000
+                    }
                     let conns = stats.connectionsAccepted.load()
                     let rx = stats.bytesReceived.load()
                     let tx = stats.bytesSent.load()
@@ -294,17 +268,20 @@ struct StarlightBenchmark {
             }
         }
 
-        // Block this task forever. In Phase 0, SIGINT/SIGTERM use the
-        // default disposition and the process terminates immediately — the
-        // kernel closes listener sockets and the event loops wind down.
-        //
-        // We use a polling loop with `Task.sleep` rather than a single
-        // infinite sleep because `Task.sleep(for: .seconds(.greatestFiniteMagnitude))`
-        // overflows `Duration`'s internal attoseconds representation on
-        // Linux and traps. A 1-hour sleep with a re-arm loop is simple and
-        // avoids the overflow.
-        while true {
-            try await Task.sleep(for: .seconds(3600))
-        }
+        let mode: Mode = (cli.mode == "echo") ? .tcpEcho : .http
+        let helloHandler: HTTPHandler? = (cli.mode == "http") ? helloWorldHandler : nil
+        let httpHandler = helloHandler
+        let router: Router? = (cli.mode == "router") ? makeBenchmarkRouter() : nil
+
+        // `start()` blocks until shutdown (SIGINT terminates the
+        // process; the kernel closes listeners and the discarding
+        // task group drains).
+        try await server.start(
+            host: cli.host,
+            port: cli.port,
+            mode: mode,
+            httpHandler: httpHandler,
+            router: router
+        )
     }
 }

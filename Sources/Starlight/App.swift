@@ -3,9 +3,8 @@
 //  App.swift
 //  Starlight
 //
-//  Public umbrella entry point. Re-exports the submodules and provides the
-//  convenience `StarlightApp` builder API. The real result-builder DSL
-//  (Hummingbird/Vapor-style) lands in Phase 4.
+//  Public umbrella entry point. Re-exports the submodules and provides
+//  the convenience `StarlightApp` builder API.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,12 +24,9 @@ import StarlightServer
 
 /// A configured but not-yet-started Starlight server.
 ///
-/// `start()` and `wait()` are async — they are invoked once at process
-/// startup and shutdown, never in any request hot path. Everything *inside*
-/// a connection — request parsing, handler invocation, response writing —
-/// runs concurrently on the event loop that owns the connection, under
-/// Swift Concurrency via `EventLoopExecutor` +
-/// `withTaskExecutorPreference`.
+/// `start()` is async and **blocks until shutdown** — the NIOAsyncChannel
+/// accept loop runs inside a discarding task group. To shut down,
+/// call `shutdown()` (typically from a signal handler).
 public final class StarlightApp: @unchecked Sendable {
     public let server: StarlightServer
 
@@ -39,27 +35,25 @@ public final class StarlightApp: @unchecked Sendable {
         self.server = StarlightServer(loopCount: loopCount)
     }
 
-    /// Bind on `(host, port)` and begin accepting connections. Returns once
-    /// every per-loop listener is bound; call `wait()` afterwards to keep
-    /// the process alive while event loops process connections.
+    /// Bind on `(host, port)` and run the accept loop until shutdown.
+    /// This method blocks the calling task.
     @inlinable
-    public func start(host: String = "0.0.0.0", port: Int = 8080) async throws {
-        try await self.server.start(host: host, port: port)
+    public func start(
+        host: String = "0.0.0.0",
+        port: Int = 8080,
+        mode: Mode = .tcpEcho,
+        httpHandler: HTTPHandler? = nil,
+        router: Router? = nil
+    ) async throws {
+        try await self.server.start(
+            host: host, port: port, mode: mode,
+            httpHandler: httpHandler, router: router
+        )
     }
 
-    /// Suspend the calling task until the server shuts down. Use this from
-    /// async `main` to keep the process alive while connections are handled
-    /// concurrently on the event loops.
+    /// Shut down every listener. Causes `start()` to return.
     @inlinable
-    public func wait() async throws {
-        try await self.server.wait()
-    }
-
-    /// Convenience: `start()` + `wait()`. Async — meant to be the last
-    /// line of an async `@main` `static func main() async throws`.
-    @inlinable
-    public func run(host: String = "0.0.0.0", port: Int = 8080) async throws {
-        try await self.start(host: host, port: port)
-        try await self.wait()
+    public func shutdown() {
+        self.server.shutdown()
     }
 }
