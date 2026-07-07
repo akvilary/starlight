@@ -70,10 +70,18 @@ public struct RequestContext: ~Copyable {
     ///
     /// Backed by `Params` (array of `(name, value)` tuples) rather
     /// than a `Dictionary` — for typical 0–2-param routes this is
-    /// cheaper to allocate and faster to look up. Phase 4 will
-    /// replace the `String` keys/values with `Substring` views into
-    /// `path` to eliminate the per-entry allocation.
+    /// cheaper to allocate and faster to look up.
     public var params: Params
+
+    /// Captured request headers. Populated by the HTTP/1 parser after
+    /// the entire header block has been parsed. Case-insensitive
+    /// subscript access.
+    ///
+    /// `HeaderView` stores only a `(pointer, length)` pair (16 bytes
+    /// inline, no heap allocation). Subscript access scans the block
+    /// on demand and materializes the matched value as a `String` —
+    /// handlers that never read headers pay nothing.
+    public var headers: HeaderView
 
     // ── Phase 3 will add: ───────────────────────────────────────────────
     //   - headers: HeaderView         (case-insensitive ordered storage)
@@ -91,6 +99,7 @@ public struct RequestContext: ~Copyable {
         self.status = .ok
         self.path = ""
         self.params = Params()
+        self.headers = HeaderView()
     }
 
     /// Reset the context between keep-alive requests on the same connection.
@@ -111,6 +120,7 @@ public struct RequestContext: ~Copyable {
         // request. We could leave it dirty and overwrite, but the
         // arena-reset frees the underlying string storage anyway.
         self.params.removeAll()
+        self.headers.removeAll()
     }
 
     /// Release all arena memory back to the system allocator. Use this

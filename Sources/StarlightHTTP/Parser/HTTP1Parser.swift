@@ -75,10 +75,14 @@ public struct HTTP1Parser: ~Copyable {
     public private(set) var state: HTTP1ParserState = .requestLine
 
     /// Bytes consumed from the input buffer so far (across all phases).
-    /// Callers should drop this many bytes from their accumulator once
-    /// the parser reaches `.complete`, then call `reset()` to start
-    /// parsing the next pipelined request on the same connection.
     public private(set) var consumedBytes: Int = 0
+
+    /// Offset into the input buffer where the header section begins
+    /// (i.e. immediately after the request line's terminating LF).
+    /// Recorded when transitioning from `.requestLine` to `.headers`.
+    /// Used at end-of-headers to copy the entire header block into
+    /// the arena as one contiguous allocation.
+    private var headerBlockStart: Int = 0
 
     /// Maximum allowed total request size (request line + headers + body).
     /// Default 64 KiB — comfortably fits any reasonable HTTP/1.1 request.
@@ -104,6 +108,7 @@ public struct HTTP1Parser: ~Copyable {
     public mutating func reset() {
         self.state = .requestLine
         self.consumedBytes = 0
+        self.headerBlockStart = 0
     }
 
     /// Feed bytes from an accumulated buffer. The parser reads from
@@ -224,11 +229,15 @@ public struct HTTP1Parser: ~Copyable {
 
         // Advance past the trailing '\n'.
         consumedBytes = lineEnd + 1
+        // Record where the header section starts in the input buffer.
+        // We'll use this at end-of-headers to copy the whole block
+        // into the arena as a single contiguous allocation.
+        headerBlockStart = consumedBytes
         state = .headers
     }
 
     /// Parse one header line, or detect end-of-headers. Transitions to
-    /// `.body(remaining)` or `.complete` on end-of-headers.
+    /// `.complete` on end-of-headers (Phase 2 does not parse bodies).
     @usableFromInline
     mutating func stepHeaders(
         _ buffer: UnsafeBufferPointer<UInt8>,
@@ -247,48 +256,45 @@ public struct HTTP1Parser: ~Copyable {
 
         // End-of-headers marker: empty line (CRLF or LF).
         if lineContentEnd == lineStart {
-            consumedBytes = lineEnd + 1
-            // Look up Content-Length (if present) to determine body size.
-            // Phase 2 stores headers as offsets into the receive buffer;
-            // we don't have a "ctx.headers" yet — that lands when the
-            // HeaderView type is added. For now, we treat all requests
-            // as bodyless (GET / HEAD / DELETE / OPTIONS). POST/PUT
-            // support lands alongside HeaderView.
+            // We've reached the end of the header section. Copy the
+            // entire header block (from `headerBlockStart` through
+            // the end of this empty line, inclusive) into the arena
+            // as a single contiguous allocation, and hand HeaderView
+            // a (pointer, length) pair over it.
+            //
+            // This is the only per-request allocation we do for
+            // headers — one memcpy of the block, no per-header
+            // allocations, no String construction on the hot path.
+            let blockEnd = lineEnd + 1  // include the empty line's LF
+            let blockStart = headerBlockStart
+            let blockLen = blockEnd - blockStart
+            // Only copy the block if it actually contains headers.
+            // An empty header section is just the terminating LF
+            // (blockLen == 1) or CRLF (blockLen == 2) — copying that
+            // would make `headers.isEmpty` return false. Skip the
+            // copy for blocks that are just the terminator.
+            if blockLen > 2 {
+                let blockBuf = ctx.allocate(bytes: blockLen, alignment: 1)
+                blockBuf.baseAddress!.copyMemory(
+                    from: UnsafeRawPointer(buffer.baseAddress!).advanced(by: blockStart),
+                    byteCount: blockLen
+                )
+                ctx.headers.setBlock(
+                    blockBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                    blockLen
+                )
+            }
+            consumedBytes = blockEnd
             state = .complete
             return
         }
 
-        // Find the colon that separates name from value.
-        guard let colon = findByte(0x3A, in: buffer, from: lineStart, to: lineContentEnd)
+        // Validate that the line has a `:` separating name from value.
+        // We do NOT copy the name/value into the arena here — the
+        // entire block copy above handles that. We only validate so
+        // malformed requests trigger a 400.
+        guard findByte(0x3A, in: buffer, from: lineStart, to: lineContentEnd) != nil
         else { state = .error; throw HTTP1ParseError.malformedHeader }
-
-        // Header name = [lineStart, colon)
-        // Header value = [first-non-space-after-colon, lineContentEnd)
-        var valueStart = colon + 1
-        while valueStart < lineContentEnd && (buffer[valueStart] == 0x20 || buffer[valueStart] == 0x09) {
-            valueStart &+= 1
-        }
-        let valueEnd = lineContentEnd
-
-        // Copy the name + value into the arena. (Phase 3 will replace
-        // this with zero-copy Span views once `RequestContext` exposes
-        // a HeaderView type.)
-        let nameLen = colon - lineStart
-        let valueLen = valueEnd - valueStart
-        let nameBuf = ctx.allocate(bytes: nameLen, alignment: 1)
-        nameBuf.baseAddress!.copyMemory(
-            from: UnsafeRawPointer(buffer.baseAddress!).advanced(by: lineStart),
-            byteCount: nameLen
-        )
-        let valBuf = ctx.allocate(bytes: valueLen, alignment: 1)
-        valBuf.baseAddress!.copyMemory(
-            from: UnsafeRawPointer(buffer.baseAddress!).advanced(by: valueStart),
-            byteCount: valueLen
-        )
-        // Note: the actual headers structure on RequestContext lands in
-        // a follow-up commit. For now we just allocate the bytes — the
-        // router/handler can scan them. This is enough to exercise the
-        // parser's correctness end-to-end.
 
         consumedBytes = lineEnd + 1
         // Stay in `.headers` for the next line.
