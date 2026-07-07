@@ -116,9 +116,14 @@ public struct ArenaAllocator: ~Copyable, Sendable {
 
     /// Allocate `bytes` of memory aligned to `alignment`.
     ///
-    /// - Returns: a pointer to `bytes` of uninitialized memory. The memory
-    ///   is valid until the next call to `reset()` or until the arena is
-    ///   deinitialized.
+    /// - Important: The returned memory is **uninitialized**. Reading
+    ///   it before writing is undefined behaviour.
+    /// - Important: The returned pointer is valid only until the next
+    ///   `reset()` or `releaseAll()` call on this arena, or until the
+    ///   arena is deinitialized. Do not escape the pointer past those
+    ///   points — it will dangle or alias a different allocation.
+    ///
+    /// - Returns: a pointer to `bytes` of uninitialized memory.
     ///
     /// - Complexity: O(1) when the request fits in the current chunk;
     ///   O(chunks) only when a new chunk must be allocated (rare under
@@ -168,8 +173,16 @@ public struct ArenaAllocator: ~Copyable, Sendable {
     }
 
     /// Allocate room for `count` instances of `T`, returning a typed pointer.
-    /// The memory is uninitialized; the caller is responsible for
-    /// `initialize`-ing it.
+    /// The memory is **uninitialized**; the caller is responsible for
+    /// `initialize`-ing every byte before reading it back.
+    ///
+    /// - Important: The returned pointer is valid only until the next
+    ///   `reset()` or `releaseAll()` call on this arena, or until the
+    ///   arena is deinitialized. Do not escape the pointer past those
+    ///   points — it will dangle.
+    /// - Important: The memory is **uninitialized**. Reading it
+    ///   before calling `initialize(to:)` / `initializeMemory(as:repeating:)`
+    ///   is undefined behaviour.
     public mutating func allocateUninitialized<T>(
         _ type: T.Type,
         count: Int
@@ -185,7 +198,16 @@ public struct ArenaAllocator: ~Copyable, Sendable {
     }
 
     /// Allocate room for a single `T` and initialize it to `value`. Returns
-    /// a pointer that is valid until the next `reset()` or `deinit`.
+    /// a pointer that is valid until the next `reset()` or `releaseAll()`
+    /// on this arena, or until the arena is deinitialized — whichever
+    /// happens first.
+    ///
+    /// - Important: Escaping the returned pointer past the next
+    ///   `reset()` is undefined behaviour. The arena's bump pointer
+    ///   will advance past the underlying storage on the next
+    ///   allocation, but the storage may be reused by another
+    ///   allocation after `reset()` — at which point the old pointer
+    ///   aliases different data.
     public mutating func allocate<T>(_ value: T) -> UnsafeMutablePointer<T> {
         let ptr = self.allocateUninitialized(T.self, count: 1).baseAddress!
         ptr.initialize(to: value)
