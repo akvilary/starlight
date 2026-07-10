@@ -121,7 +121,7 @@ final class IOUringLoop: @unchecked Sendable {
     private let port: Int
     private let handler: HTTPHandler?
     private let router: Router?
-    private let ringEntries: UInt32 = 512
+    private let ringEntries: UInt32 = 4096
     private let readBufferSize: Int = 8192
 
     /// Maximum concurrent connections per loop. When this limit is
@@ -191,7 +191,13 @@ final class IOUringLoop: @unchecked Sendable {
         self.handler = handler
         self.router = router
         self.loopStats = stats
-        self.maxConnectionsPerLoop = maxConnectionsPerLoop
+        // Each connection holds at most 1 in-flight SQE (RECV or SEND).
+        // The ring has `ringEntries` slots. We reserve 4 for housekeeping
+        // (accept POLL_ADD, eventfd POLL_ADD, + 2 headroom). So the
+        // effective connection limit is the smaller of the requested
+        // limit and (ringEntries - 4).
+        let ringCapacity = Int(ringEntries) - 4
+        self.maxConnectionsPerLoop = min(maxConnectionsPerLoop, ringCapacity)
         pthread_mutex_init(&responseLock, nil)
     }
 
