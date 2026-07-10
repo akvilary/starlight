@@ -70,44 +70,29 @@ internal func unpackOp(_ data: UInt64) -> IouringOp {
 
 // MARK: - IOConnection
 
-/// All per-connection state in one object. Replaces the previous
-/// design's 5 separate dictionaries with a single lookup.
+/// All per-connection state in one object.
 ///
-/// Allocated at accept, freed at close. The read and send buffers
-/// are raw pointers (not Swift arrays) for stable io_uring access.
+/// The key insight: ByteBuffer uses heap-allocated, reference-counted
+/// backing storage that never moves. We store the response's ByteBuffer
+/// in `pendingResponse` to keep it alive, and pass its backing pointer
+/// directly to io_uring SEND — zero copy, zero allocation.
 final class IOConnection {
     let fd: CInt
-
-    /// Pre-allocated 8 KB read buffer. io_uring RECV writes here.
     let readBuffer: UnsafeMutablePointer<UInt8>
-
-    /// Per-connection codec (parser + arena + accumulator).
     let codec: HTTP1Codec
 
-    /// Pre-allocated 32 KB send buffer. Response bytes are copied
-    /// here (flattened header + body) for io_uring SEND. Avoids a
-    /// heap allocation per response. If the response exceeds 32 KB,
-    /// a dynamic `[UInt8]` fallback is used.
-    let sendBuffer: UnsafeMutablePointer<UInt8>
-    let sendBufferCapacity: Int = 32768
+    /// The response being sent. Kept alive until SEND CQE arrives
+    /// so io_uring can read from the ByteBuffer's backing storage.
+    var pendingResponse: HTTPResponse?
+    /// Alternative: raw bytes from the async response queue.
+    var pendingSendData: [UInt8]?
 
-    /// Dynamic send buffer for responses > sendBufferCapacity.
-    /// When non-nil, takes precedence over `sendBuffer`.
-    var dynamicSendBuffer: [UInt8]?
-
-    /// Total bytes to send (header + body).
-    var sendLen: Int = 0
-
-    /// Bytes already sent (for partial write tracking).
     var sendOffset: Int = 0
-
-    /// Keep-alive flag from the response.
     var keepAlive: Bool = true
 
     init(fd: CInt, readBufferSize: Int, router: Router?, handler: HTTPHandler?) {
         self.fd = fd
         self.readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
-        self.sendBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 32768)
         if let router = router {
             self.codec = HTTP1Codec(router: router)
         } else {
@@ -117,16 +102,67 @@ final class IOConnection {
 
     deinit {
         readBuffer.deallocate()
-        sendBuffer.deallocate()
     }
 
-    /// The base pointer for the current send operation.
-    /// Uses dynamicSendBuffer if set, otherwise the static sendBuffer.
-    var sendPtr: UnsafeRawPointer {
-        if let dyn = dynamicSendBuffer {
-            return UnsafeRawPointer(dyn.withUnsafeBufferPointer { $0.baseAddress! })
+    /// Total bytes to send.
+    var sendLen: Int {
+        if let r = pendingResponse {
+            return r.headerBuffer.readableBytes + (r.bodyBuffer?.readableBytes ?? 0)
         }
-        return UnsafeRawPointer(sendBuffer)
+        return pendingSendData?.count ?? 0
+    }
+
+    /// Submit SEND SQE using the pending data's pointer directly.
+    /// Called within `withUnsafeReadableBytes` / `withUnsafeBufferPointer`
+    /// so the pointer is valid during the `sl_prep_send` call.
+    /// The backing storage stays alive via pendingResponse / pendingSendData.
+    func fillSendSQE(_ sqe: UnsafeMutablePointer<io_uring_sqe>, offset: Int) {
+        let total = sendLen
+        let remaining = total - offset
+
+        if let r = pendingResponse {
+            // Single-buffer (all current responses): one pointer.
+            if r.bodyBuffer == nil {
+                r.headerBuffer.withUnsafeReadableBytes { ptr in
+                    sl_prep_send(sqe, fd,
+                                 ptr.baseAddress!.advanced(by: offset),
+                                 UInt32(remaining))
+                }
+            } else {
+                // Multi-buffer: flatten. (Future: WRITEV.)
+                // For now this path is never taken.
+                let hdr = r.headerBuffer.readableBytes
+                if offset < hdr {
+                    let hdrLen = UInt32(hdr - offset)
+                    r.headerBuffer.withUnsafeReadableBytes { ptr in
+                        sl_prep_send(sqe, fd,
+                                     ptr.baseAddress!.advanced(by: offset),
+                                     hdrLen)
+                    }
+                } else {
+                    let bodyOff = offset - hdr
+                    let bodyLen = UInt32(remaining)
+                    r.bodyBuffer!.withUnsafeReadableBytes { ptr in
+                        sl_prep_send(sqe, fd,
+                                     ptr.baseAddress!.advanced(by: bodyOff),
+                                     bodyLen)
+                    }
+                }
+            }
+        } else if let data = pendingSendData {
+            data.withUnsafeBufferPointer { ptr in
+                sl_prep_send(sqe, fd,
+                             ptr.baseAddress!.advanced(by: offset),
+                             UInt32(remaining))
+            }
+        }
+    }
+
+    /// Clear send state after SEND completes.
+    func clearSend() {
+        pendingResponse = nil
+        pendingSendData = nil
+        sendOffset = 0
     }
 }
 
@@ -353,44 +389,16 @@ final class IOUringLoop: @unchecked Sendable {
     // MARK: - Send
 
     private func submitSend(conn: IOConnection, response: HTTPResponse) {
-        let headerView = response.headerBuffer.readableBytesView
-        let headerLen = headerView.count
-        let bodyLen = response.bodyBuffer?.readableBytesView.count ?? 0
-        let totalLen = headerLen + bodyLen
-
-        _ = loopStats.bytesSent.add(Int64(totalLen))
-
+        _ = loopStats.bytesSent.add(Int64(response.headerBuffer.readableBytes
+                                          + (response.bodyBuffer?.readableBytes ?? 0)))
+        conn.pendingResponse = response
+        conn.pendingSendData = nil
         conn.sendOffset = 0
-        conn.sendLen = totalLen
         conn.keepAlive = response.keepAlive
 
-        // Copy response into send buffer. Use pre-allocated static
-        // buffer if the response fits (fast path — no allocation).
-        // Otherwise fall back to a dynamic [UInt8].
-        if totalLen <= conn.sendBufferCapacity {
-            conn.dynamicSendBuffer = nil
-            response.headerBuffer.withUnsafeReadableBytes { hptr in
-                memcpy(conn.sendBuffer, hptr.baseAddress!, headerLen)
-            }
-            if let body = response.bodyBuffer {
-                body.withUnsafeReadableBytes { bptr in
-                    memcpy(conn.sendBuffer.advanced(by: headerLen),
-                           bptr.baseAddress!, bodyLen)
-                }
-            }
-        } else {
-            var bytes = Array(headerView)
-            if let body = response.bodyBuffer {
-                bytes.append(contentsOf: body.readableBytesView)
-            }
-            conn.dynamicSendBuffer = bytes
-        }
-
         guard let sqe = ensureSQE() else { return }
-        let basePtr = conn.sendPtr
-        sl_prep_send(sqe, conn.fd, basePtr, UInt32(totalLen))
+        conn.fillSendSQE(sqe, offset: 0)
         sl_sqe_set_data(sqe, packUserData(fd: conn.fd, op: .send))
-        // No sl_submit — batched at loop top.
     }
 
     private func handleSend(fd: CInt, bytesWritten: CInt) {
@@ -401,23 +409,18 @@ final class IOUringLoop: @unchecked Sendable {
             return
         }
 
-        // Partial write handling.
+        // Partial write: re-submit remaining bytes.
         let newOffset = conn.sendOffset + Int(bytesWritten)
         if newOffset < conn.sendLen {
             conn.sendOffset = newOffset
             guard let sqe = ensureSQE() else { return }
-            let remainingPtr = conn.sendPtr.advanced(by: newOffset)
-            let remainingLen = UInt32(conn.sendLen - newOffset)
-            sl_prep_send(sqe, fd, remainingPtr, remainingLen)
+            conn.fillSendSQE(sqe, offset: newOffset)
             sl_sqe_set_data(sqe, packUserData(fd: fd, op: .send))
-            // No sl_submit — batched at loop top.
             return
         }
 
-        // Full response sent — clean up.
-        conn.dynamicSendBuffer = nil
-        conn.sendLen = 0
-        conn.sendOffset = 0
+        // Full response sent.
+        conn.clearSend()
         let keepAlive = conn.keepAlive
 
         if !keepAlive {
@@ -479,16 +482,21 @@ final class IOUringLoop: @unchecked Sendable {
 
         for item in pending {
             guard let conn = connections[item.fd] else { continue }
-            conn.dynamicSendBuffer = item.data
-            conn.sendLen = item.data.count
+            guard let sqe = ensureSQE() else {
+                pthread_mutex_lock(&responseLock)
+                responseQueue.insert(item, at: 0)
+                pthread_mutex_unlock(&responseLock)
+                return
+            }
+            // Store [UInt8] directly — its backing storage is stable.
+            // No copy, no allocation.
+            conn.pendingSendData = item.data
+            conn.pendingResponse = nil
             conn.sendOffset = 0
             conn.keepAlive = item.keepAlive
-            guard let sqe = ensureSQE() else { continue }
-            let ptr = conn.sendPtr
-            sl_prep_send(sqe, item.fd, ptr, UInt32(item.data.count))
+            conn.fillSendSQE(sqe, offset: 0)
             sl_sqe_set_data(sqe, packUserData(fd: item.fd, op: .send))
         }
-        // No sl_submit — batched at loop top.
     }
 
     // MARK: - Connection cleanup
