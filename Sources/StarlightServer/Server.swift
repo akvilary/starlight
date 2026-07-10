@@ -49,7 +49,7 @@ public final class StarlightServer: @unchecked Sendable {
     public let stats = ServerStats()
     public let loopCount: Int
 
-    private var ioUringLoops: [IOUringLoop] = []
+    private var ioUringLoops: [IOUringExecutorLoop] = []
     private var shutdownContinuation: CheckedContinuation<Void, Never>?
 
     public init(loopCount: Int = System.coreCount) {
@@ -71,11 +71,11 @@ public final class StarlightServer: @unchecked Sendable {
 
         router?.freeze()
 
-        // Create one IOUringLoop per CPU core with SO_REUSEPORT.
+        // Create one IOUringExecutorLoop per CPU core with SO_REUSEPORT.
         for cpuIndex in 0..<loopCount {
-            let loop = IOUringLoop(host: host, port: port,
-                                   handler: httpHandler, router: router,
-                                   stats: self.stats)
+            let loop = IOUringExecutorLoop(host: host, port: port,
+                                           handler: httpHandler, router: router,
+                                           stats: self.stats)
             try loop.setup()
             ioUringLoops.append(loop)
 
