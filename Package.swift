@@ -36,6 +36,13 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.1.0"),
     ],
     targets: [
+        // ── C shim for io_uring + Linux socket constants ─────────────────────
+        .target(
+            name: "CStarlightLinux",
+            path: "Sources/CStarlightLinux",
+            publicHeadersPath: "include"
+        ),
+
         // ── Core: zero-allocation primitives ─────────────────────────────────
         .target(
             name: "StarlightCore",
@@ -69,21 +76,10 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── Generic middleware protocol (monomorphized chain) ────────────────
-        // (removed — middleware lives in StarlightRouting as Middleware struct)
-
         // ── Server bootstrap: SO_REUSEPORT per-loop, NIOSSL ──────────────────
         .target(
             name: "StarlightServer",
-            dependencies: [
-                "StarlightCore",
-                "StarlightHTTP",
-                "StarlightRouting",
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "NIOSSL", package: "swift-nio-ssl"),
-                .product(name: "NIOExtras", package: "swift-nio-extras"),
-            ],
+            dependencies: serverDependencies,
             swiftSettings: baseSwiftSettings
         ),
         // ── Public umbrella (result-builder DSL, app entry) ──────────────────
@@ -145,6 +141,13 @@ let package = Package(
             ],
             swiftSettings: baseSwiftSettings
         ),
+
+        // ── io_uring C shim tests ─────────────────────────────────────────
+        // All test code is guarded by #if os(Linux) inside the file.
+        .testTarget(
+            name: "CStarlightLinuxTests",
+            dependencies: ["CStarlightLinux"]
+        ),
     ]
 )
 
@@ -183,3 +186,37 @@ var baseSwiftSettings: [SwiftSetting] {
         .enableExperimentalFeature("StrictMemorySafety"),
     ]
 }
+
+// ── Platform-conditional dependencies ────────────────────────────────────
+//
+// On Linux we use io_uring (via CStarlightLinux) as the primary I/O
+// backend. NIO (NIOPosix/NIOSSL/NIOExtras) is kept as a fallback and
+// for macOS. The #if os(Linux) split happens in Swift source code,
+// not here — both sets of dependencies are available on all platforms
+// so the code compiles, but only the relevant path is executed.
+
+#if os(Linux)
+var serverDependencies: [Target.Dependency] {
+    [
+        "StarlightCore",
+        "StarlightHTTP",
+        "StarlightRouting",
+        "CStarlightLinux",
+        .product(name: "NIOCore", package: "swift-nio"),
+        // NIO kept for fallback / tests on Linux:
+        .product(name: "NIOPosix", package: "swift-nio"),
+    ]
+}
+#else
+var serverDependencies: [Target.Dependency] {
+    [
+        "StarlightCore",
+        "StarlightHTTP",
+        "StarlightRouting",
+        .product(name: "NIOCore", package: "swift-nio"),
+        .product(name: "NIOPosix", package: "swift-nio"),
+        .product(name: "NIOSSL", package: "swift-nio-ssl"),
+        .product(name: "NIOExtras", package: "swift-nio-extras"),
+    ]
+}
+#endif
