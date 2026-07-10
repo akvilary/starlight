@@ -315,7 +315,7 @@ final class IOUringLoop: @unchecked Sendable {
     /// requires re-arming. This gives us natural back-pressure: if we
     /// don't re-arm, new connections queue in the kernel's backlog.
     private func submitAccept() throws {
-        guard let sqe = sl_get_sqe(&ring) else { return }
+        guard let sqe = ensureSQE() else { return }
         sl_prep_accept(sqe, listenerFd)
         sl_sqe_set_data(sqe, packUserData(fd: listenerFd, op: .accept))
     }
@@ -377,13 +377,38 @@ final class IOUringLoop: @unchecked Sendable {
         submitRecv(fd: fd, buf: readBuf)
     }
 
+    // MARK: - SQE allocation
+
+    /// Get an SQE from the ring, with one retry if the ring is full.
+    ///
+    /// Under normal operation (connection count ≤ ringEntries - 4,
+    /// each conn holding ≤1 pending SQE), the ring should never be
+    /// full. But accept bursts (many connections from one POLL_ADD)
+    /// can temporarily exhaust SQE slots.
+    ///
+    /// On first failure: flush pending SQEs to the kernel (this may
+    /// free slots as the kernel completes them) and retry once.
+    /// If still full: returns nil — caller must handle gracefully.
+    private func ensureSQE() -> UnsafeMutablePointer<io_uring_sqe>? {
+        if let sqe = sl_get_sqe(&ring) { return sqe }
+        // Ring full — flush and retry.
+        _ = sl_submit(&ring)
+        return sl_get_sqe(&ring)
+    }
+
     // MARK: - Recv
 
     /// Submit a RECV SQE for the given connection. The kernel will
     /// read up to `readBufferSize` bytes from the socket into `buf`
     /// and post a CQE when data is available.
     private func submitRecv(fd: CInt, buf: UnsafeMutablePointer<UInt8>) {
-        guard let sqe = sl_get_sqe(&ring) else { return }
+        guard let sqe = ensureSQE() else {
+            // Ring full after retry — connection will be retried
+            // on the next CQE batch when slots free up.
+            // For safety: close the connection to prevent a leak.
+            closeConnection(fd: fd)
+            return
+        }
         sl_prep_recv(sqe, fd, buf, UInt32(readBufferSize))
         sl_sqe_set_data(sqe, packUserData(fd: fd, op: .recv))
         _ = sl_submit(&ring)
@@ -492,7 +517,10 @@ final class IOUringLoop: @unchecked Sendable {
         sendKeepAlive[fd] = response.keepAlive
         sendOffsets[fd] = 0  // no bytes sent yet
 
-        guard let sqe = sl_get_sqe(&ring) else { return }
+        guard let sqe = ensureSQE() else {
+            // Ring full — response lost. Client will timeout.
+            return
+        }
         // Source the pointer from sendBuffers[fd] (the stable copy
         // in the dictionary), NOT from the local `bytes` variable.
         // The dictionary entry outlives this function call and keeps
@@ -530,7 +558,7 @@ final class IOUringLoop: @unchecked Sendable {
 
         if newOffset < totalLen {
             sendOffsets[fd] = newOffset
-            guard let sqe = sl_get_sqe(&ring) else { return }
+            guard let sqe = ensureSQE() else { return }
             sendBuffers[fd]!.withUnsafeBufferPointer { ptr in
                 let remainingPtr = ptr.baseAddress!.advanced(by: newOffset)
                 let remainingLen = UInt32(totalLen - newOffset)
@@ -580,7 +608,7 @@ final class IOUringLoop: @unchecked Sendable {
     /// writes to the eventfd (after an async handler completes), this
     /// poll fires and wakes the loop to drain the response queue.
     private func submitWakeupPoll() throws {
-        guard let sqe = sl_get_sqe(&ring) else { return }
+        guard let sqe = ensureSQE() else { return }
         // 0x0001 = POLLIN. multishot=1 means the kernel re-arms
         // automatically after each completion — we don't need to
         // re-submit.
