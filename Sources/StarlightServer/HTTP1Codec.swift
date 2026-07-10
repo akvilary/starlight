@@ -4,15 +4,13 @@
 //  StarlightServer
 //
 //  HTTP/1.1 request/response codec. One instance per connection,
-//  reused across all keep-alive requests. In Phase 4.1a (sync path
-//  only) the codec invokes handlers synchronously; Phase 4.1b will
-//  make `process()` async and allow `await handler(ctx)` inline in
-//  the connection Task.
+//  reused across all keep-alive requests.
 //
-//  Refactored from a ChannelInboundHandler to a plain class for the
-//  NIOAsyncChannel architecture. The codec is driven by
-//  `StarlightServer.handleHTTPConnection` which calls `process(_)`
-//  for each inbound ByteBuffer chunk.
+//  The codec is driven by `StarlightServer.handleHTTPConnection`:
+//    1. `feed(_:)` — called once per inbound ByteBuffer chunk
+//    2. `tryParse()` — called in a loop to parse and dispatch as
+//       many complete requests as the accumulator now contains
+//       (handles pipelining)
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,42 +21,12 @@ import StarlightHTTP
 import StarlightRouting
 
 /// HTTP/1.1 request/response codec. One instance per connection.
-///
-/// Owns a parser, accumulator ByteBuffer, response staging buffer,
-/// and a per-request `RequestContext` — all reused across keep-alive
-/// requests.
-///
-/// `process(_:)` takes an inbound ByteBuffer chunk and returns an
-/// array of outbound ByteBuffers (responses). An empty array means
-/// "not enough data yet — wait for more". A non-empty array contains
-/// one or more responses (pipelined requests produce multiple).
 final class HTTP1Codec: @unchecked Sendable {
-    /// User handler. Set once at construction; never mutated.
     private let handler: HTTPHandler?
-
-    /// Optional router.
     private let router: Router?
-
-    /// Per-connection parser.
     private var parser = HTTP1Parser()
-
-    /// Per-connection request context. Arena-backed, reset between
-    /// keep-alive requests.
     private var ctx: RequestContext
-
-    /// Byte accumulator. Bytes arrive in chunks from the socket; we
-    /// stage them here until the parser signals that a full request
-    /// has been consumed.
     private var accumulator: ByteBuffer = ByteBufferAllocator().buffer(capacity: 1024)
-
-    /// Per-connection response staging buffer. We copy the handler's
-    /// response bytes into this buffer before returning them — this
-    /// avoids per-request retain/release on shared response storage
-    /// (process-wide cached ByteBuffer) under multi-core contention.
-    private var responseBuffer: ByteBuffer = ByteBufferAllocator().buffer(capacity: 512)
-
-    /// Maximum bytes the accumulator may hold before the connection
-    /// is rejected with 413. Defends against memory-exhaustion DoS.
     private let maxAccumulatorBytes: Int
 
     init(handler: @escaping HTTPHandler, maxAccumulatorBytes: Int = 1 * 1024 * 1024) {
@@ -75,17 +43,21 @@ final class HTTP1Codec: @unchecked Sendable {
         self.ctx = RequestContext()
     }
 
-    /// Process an inbound ByteBuffer chunk. Returns an optional
-    /// response. `nil` means "need more data".
-    ///
-    /// This method is `async` to support async handlers. Sync
-    /// handlers are dispatched with zero overhead (direct call);
-    /// async handlers are dispatched via `await` inline in the
-    /// connection Task — zero Task-per-request allocation.
-    func process(_ bytes: ByteBuffer) async -> HTTPResponse? {
-        // Append the newly-arrived bytes to the accumulator.
-        self.accumulator.writeImmutableBuffer(bytes)
+    // MARK: - Feed (called once per inbound chunk)
 
+    /// Append new inbound bytes to the accumulator. Called once per
+    /// TCP read event — bytes are NOT re-added on subsequent
+    /// `tryParse()` calls.
+    func feed(_ bytes: ByteBuffer) {
+        self.accumulator.writeImmutableBuffer(bytes)
+    }
+
+    // MARK: - Parse + dispatch (called in a loop after feed)
+
+    /// Try to parse and dispatch one complete request from the
+    /// accumulator. Returns the response, or `nil` if the
+    /// accumulator doesn't have a complete request yet.
+    func tryParse() async -> HTTPResponse? {
         // DoS defence.
         if self.accumulator.readableBytes > self.maxAccumulatorBytes {
             self.accumulator.clear()
@@ -118,11 +90,9 @@ final class HTTP1Codec: @unchecked Sendable {
                     parseError = .unexpectedByte(offset: 0)
                     consumed = 0
                 }
-                // CRITICAL: only discard bytes when parsing is
-                // complete. For partial parsing (incomplete request
-                // line, headers, or body), the parser's consumedBytes
-                // is relative to the current buffer. Discarding bytes
-                // would invalidate that offset for the next feed().
+                // Only discard bytes when parsing is complete.
+                // For partial parsing, the parser's consumedBytes
+                // is relative to the current buffer.
                 return complete ? consumed : 0
             }
         }
@@ -139,8 +109,7 @@ final class HTTP1Codec: @unchecked Sendable {
             return nil
         }
 
-        // Invoke the user handler (or the router). Sync handlers
-        // are called directly; async handlers via `await` inline.
+        // Invoke the user handler (or the router).
         let response: HTTPResponse
         if let router = self.router {
             response = await router.handle(&self.ctx)
@@ -148,8 +117,7 @@ final class HTTP1Codec: @unchecked Sendable {
             response = self.handler!(self.ctx)
         }
 
-        // Reset per-request state for the next request on the same
-        // connection (keep-alive). Arena is bulk-freed by reset().
+        // Reset for next request on this connection (keep-alive).
         self.ctx.reset()
         self.parser.reset()
 
