@@ -52,11 +52,12 @@ public struct Params: Sendable {
     }
 
     /// Remove all captured parameters. Used between keep-alive
-    /// requests.
+    /// requests. Preserves capacity so subsequent requests on the
+    /// same connection don't re-allocate the backing buffer.
     @inlinable
     public mutating func removeAll() {
         if !self.entries.isEmpty {
-            self.entries.removeAll(keepingCapacity: false)
+            self.entries.removeAll(keepingCapacity: true)
         }
     }
 }

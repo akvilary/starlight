@@ -32,9 +32,13 @@ import StarlightCore
 import StarlightHTTP
 
 /// A single path segment of a route pattern.
-enum RouteSegment: Equatable {
-    /// Static text — must match exactly.
-    case literal(String)
+@usableFromInline
+enum RouteSegment: Equatable, Sendable {
+    /// Static text — must match exactly. `bytes` is the pre-compiled
+    /// UTF-8 of `text`, allocated once at registration time so the
+    /// per-request matcher can compare raw bytes without touching
+    /// `String.utf8` (which uses opaque indices).
+    case literal(text: String, bytes: [UInt8])
     /// Named capture — matches any non-empty segment, captures into params[name].
     case param(String)
 }
@@ -46,8 +50,9 @@ struct Route: Sendable {
     let pattern: String
     /// Pre-split segments for fast matching.
     let segments: [RouteSegment]
-    /// Sync or async dispatch kind.
-    let handler: HandlerKind
+    /// Sync or async dispatch kind. `var` so `freeze()` can replace
+    /// it with the middleware-composed version once at startup.
+    var handler: HandlerKind
 }
 
 /// Closure-based middleware for Phase 3 MVP.
@@ -197,6 +202,44 @@ public final class Router: @unchecked Sendable {
 
     // MARK: - Dispatch
 
+    /// Pre-compose middleware into each route's handler. Called once
+    /// (from the first `handle()` or explicitly from `StarlightServer.start()`)
+    /// so subsequent requests pay zero closure-allocation cost.
+    private var isComposed = false
+
+    public func freeze() {
+        guard !isComposed else { return }
+        isComposed = true
+        #if DEBUG
+        isFrozen = true
+        #endif
+        guard !middlewares.isEmpty else { return }
+        for i in staticRoutes.indices {
+            staticRoutes[i].handler = composeOne(staticRoutes[i].handler)
+        }
+        for i in dynamicRoutes.indices {
+            dynamicRoutes[i].handler = composeOne(dynamicRoutes[i].handler)
+        }
+        for i in routes.indices {
+            routes[i].handler = composeOne(routes[i].handler)
+        }
+    }
+
+    /// Compose middleware chain around a single handler. Called only
+    /// from `freeze()`, never per-request.
+    private func composeOne(_ handler: HandlerKind) -> HandlerKind {
+        switch handler {
+        case .sync(let fn):
+            var h: HTTPHandler = fn
+            for mw in self.middlewares.reversed() {
+                h = mw.wrap(h)
+            }
+            return .sync(h)
+        case .async(let fn):
+            return .async(fn)
+        }
+    }
+
     /// Dispatch a parsed request through the router.
     ///
     /// This is the entry point that `HTTP1Codec` calls once the
@@ -206,12 +249,10 @@ public final class Router: @unchecked Sendable {
     ///   3. Invokes the matched handler (sync or async).
     ///   4. Returns a 404 response if no route matched.
     ///
-    /// Async handlers are dispatched via `await` — **inline in the
-    /// connection Task**, zero Task-per-request allocation.
+    /// Middleware is pre-composed at `freeze()` time — per-request
+    /// dispatch is just "call the matched handler."
     public func handle(_ ctx: inout RequestContext) async -> HTTPResponse {
-        #if DEBUG
-        isFrozen = true
-        #endif
+        freeze()
         let (method, path) = (ctx.method, ctx.path)
         guard let match = match(method: method, path: path) else {
             return HTTPResponse.plaintext(
@@ -222,37 +263,11 @@ public final class Router: @unchecked Sendable {
         }
         ctx.params = match.params
 
-        // Compose middleware around the matched handler.
-        let handler = self.composeMiddleware(match.handler)
-
-        switch handler {
+        switch match.handler {
         case .sync(let fn):
             return fn(ctx)
         case .async(let fn):
             return await fn(ctx)
-        }
-    }
-
-    /// Compose middleware around a handler. Returns a new HandlerKind
-    /// that runs the middleware chain around the matched handler.
-    ///
-    /// - Note: Phase 4.1b limitation — middleware only wraps sync
-    ///   handlers. Async handlers bypass middleware. This will be
-    ///   addressed when we add the generic Middleware protocol.
-    private func composeMiddleware(_ handler: HandlerKind) -> HandlerKind {
-        if self.middlewares.isEmpty { return handler }
-
-        switch handler {
-        case .sync(let fn):
-            var h: HTTPHandler = fn
-            for mw in self.middlewares.reversed() {
-                h = mw.wrap(h)
-            }
-            return .sync(h)
-        case .async(let fn):
-            // Async + middleware composition requires async-aware
-            // middleware. Phase 4.1b MVP: bypass middleware for async.
-            return .async(fn)
         }
     }
 
@@ -261,31 +276,80 @@ public final class Router: @unchecked Sendable {
     /// Match `(method, path)` against the registered routes and return
     /// the matching handler + extracted params. Returns `nil` if no
     /// route matched.
+    ///
+    /// Uses `path.withUTF8` to obtain a contiguous byte view and walks
+    /// the pre-compiled route segments in-place — zero array
+    /// allocation, zero String allocation (except for param values,
+    /// which use SmallString for ≤ 15 bytes).
     public func match(method: HTTPMethod, path: String) -> (handler: HandlerKind, params: Params)? {
-        // Strip the query string if present — the router matches on
-        // the path component only.
-        let pathOnly: String
-        if let q = path.firstIndex(of: "?") {
-            pathOnly = String(path[path.startIndex..<q])
-        } else {
-            pathOnly = path
+        var pathMut = path
+        return pathMut.withUTF8 { pathBytes -> (handler: HandlerKind, params: Params)? in
+            let base = pathBytes.baseAddress!
+            let total = pathBytes.count
+            // Strip query string.
+            var pathLen = total
+            for i in 0..<total {
+                if base[i] == 0x3F { pathLen = i; break }
+            }
+            // Static routes first (pre-partitioned at registration).
+            for route in staticRoutes where route.method == method {
+                var params = Params()
+                if Self.matchBytes(route.segments, base, pathLen, &params) {
+                    return (route.handler, params)
+                }
+            }
+            // Dynamic routes.
+            for route in dynamicRoutes where route.method == method {
+                var params = Params()
+                if Self.matchBytes(route.segments, base, pathLen, &params) {
+                    return (route.handler, params)
+                }
+            }
+            return nil
         }
-        let requestSegments = Self.splitPath(pathOnly)
+    }
 
-        // First pass: prefer fully-static routes (pre-partitioned at
-        // registration — no per-request allSatisfy).
-        for route in staticRoutes where route.method == method {
-            if let params = Self.matchSegments(route.segments, requestSegments) {
-                return (route.handler, params)
+    /// Walk raw path bytes against pre-compiled route segments.
+    /// Returns `true` if the route matches, populating `params` with
+    /// captured values. Uses integer-indexed pointer arithmetic — no
+    /// String.UTF8View opaque-index overhead, no array allocation.
+    @usableFromInline
+    @inline(__always)
+    static func matchBytes(
+        _ segments: [RouteSegment],
+        _ path: UnsafePointer<UInt8>,
+        _ pathLen: Int,
+        _ params: inout Params
+    ) -> Bool {
+        var pos = 0
+        for segment in segments {
+            // Skip leading '/' separators (handles consecutive slashes).
+            while pos < pathLen && path[pos] == 0x2F { pos += 1 }
+            switch segment {
+            case .literal(_, let bytes):
+                guard pos + bytes.count <= pathLen else { return false }
+                for i in 0..<bytes.count {
+                    if path[pos] != bytes[i] { return false }
+                    pos += 1
+                }
+            case .param(let name):
+                // Capture until next '/' or end of (query-stripped) path.
+                let start = pos
+                while pos < pathLen && path[pos] != 0x2F {
+                    pos += 1
+                }
+                if pos == start { return false }
+                // SmallString handles ≤ 15 bytes inline — zero heap alloc.
+                let value = String(decoding: UnsafeBufferPointer(
+                    start: path.advanced(by: start), count: pos - start
+                ), as: UTF8.self)
+                params.append(name: name, value: value)
             }
         }
-        // Second pass: routes with any dynamic segments.
-        for route in dynamicRoutes where route.method == method {
-            if let params = Self.matchSegments(route.segments, requestSegments) {
-                return (route.handler, params)
-            }
-        }
-        return nil
+        // Entire path (up to query string) must be consumed.
+        // Tolerate a single trailing '/'.
+        return pos == pathLen
+            || (pos + 1 == pathLen && path[pos] == 0x2F)
     }
 
     // MARK: - Pattern / path parsing
@@ -295,32 +359,18 @@ public final class Router: @unchecked Sendable {
         path.split(separator: "/").map(String.init)
     }
 
-    /// Parse a route pattern (e.g. `/users/:id`) into segments.
+    /// Parse a route pattern (e.g. `/users/:id`) into segments with
+    /// pre-compiled bytes for zero-allocation matching.
     static func parsePattern(_ pattern: String) -> [RouteSegment] {
         let parts = splitPath(pattern)
         return parts.map { part in
             if part.hasPrefix(":") {
                 return .param(String(part.dropFirst()))
             } else {
-                return .literal(part)
+                let s = String(part)
+                return .literal(text: s, bytes: Array(s.utf8))
             }
         }
-    }
-
-    /// Match a request's path segments against a route's pattern segments.
-    /// Returns the captured params if the segments match, otherwise nil.
-    static func matchSegments(_ pattern: [RouteSegment], _ request: [String]) -> Params? {
-        guard pattern.count == request.count else { return nil }
-        var params = Params()
-        for (p, r) in zip(pattern, request) {
-            switch p {
-            case .literal(let s):
-                if s != r { return nil }
-            case .param(let name):
-                params.append(name: name, value: r)
-            }
-        }
-        return params
     }
 
     /// Number of registered routes. Useful for tests.

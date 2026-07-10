@@ -85,6 +85,49 @@ public struct HeaderView: @unchecked Sendable {
         )
     }
 
+    /// Zero-copy header lookup. Returns the value as a byte buffer
+    /// pointing directly into the arena-backed header block — no
+    /// `String` allocation. Use this in performance-critical handlers
+    /// that need to inspect header values without paying for String
+    /// construction.
+    ///
+    /// The returned pointer is valid until the next `ctx.reset()`.
+    ///
+    /// - Complexity: O(blockLen) byte comparisons.
+    public func bytes(for name: String) -> UnsafeBufferPointer<UInt8>? {
+        guard let block = self.blockPtr else { return nil }
+        guard let (start, len) = HeaderView.findBytes(
+            name: name, in: block, length: self.blockLen
+        ) else { return nil }
+        return UnsafeBufferPointer(start: block.advanced(by: start), count: len)
+    }
+
+    /// Case-insensitive comparison of a header value against an
+    /// expected ASCII string, without allocating a `String` for the
+    /// header value. Returns `true` if the header exists and matches.
+    public func value(_ name: String, equals expected: String) -> Bool {
+        guard let block = self.blockPtr else { return false }
+        guard let (start, len) = HeaderView.findBytes(
+            name: name, in: block, length: self.blockLen
+        ) else { return false }
+        let expectedBytes = expected.utf8
+        guard expectedBytes.count == len else { return false }
+        var ei = expectedBytes.startIndex
+        for i in 0..<len {
+            let hb = block[start + i]
+            let eb = expectedBytes[ei]
+            if hb == eb {
+                ei = expectedBytes.index(after: ei)
+                continue
+            }
+            let hbFold = (hb >= 0x41 && hb <= 0x5A) ? hb + 0x20 : hb
+            let ebFold = (eb >= 0x41 && eb <= 0x5A) ? eb + 0x20 : eb
+            if hbFold != ebFold { return false }
+            ei = expectedBytes.index(after: ei)
+        }
+        return true
+    }
+
     /// All values for `name`, in insertion order. Use for multi-valued
     /// headers like `Set-Cookie` (rare on requests, common on responses).
     public func values(for name: String) -> [String] {
@@ -158,20 +201,49 @@ public struct HeaderView: @unchecked Sendable {
         let needleLen = name.utf8.count
         var pos = 0
         while pos < length {
-            // Find end of current line.
             guard let lineEnd = findByte(0x0A, in: block, from: pos, to: length) else {
                 return nil
             }
             let lineContentEnd = (lineEnd > pos && block[lineEnd - 1] == 0x0D)
                 ? lineEnd - 1
                 : lineEnd
-            // Empty line → end of headers.
             if lineContentEnd == pos { return nil }
             if let value = matchLine(
                 block, lineStart: pos, lineContentEnd: lineContentEnd,
                 needle: name, needleLen: needleLen
             ) {
                 return value
+            }
+            pos = lineEnd + 1
+        }
+        return nil
+    }
+
+    /// Find the first value of `name` in the header block, returning
+    /// the byte range `(start, length)` into `block` without creating
+    /// a `String`. Zero-allocation lookup.
+    @usableFromInline
+    @inline(__always)
+    static func findBytes(
+        name: String,
+        in block: UnsafePointer<UInt8>,
+        length: Int
+    ) -> (start: Int, len: Int)? {
+        let needleLen = name.utf8.count
+        var pos = 0
+        while pos < length {
+            guard let lineEnd = findByte(0x0A, in: block, from: pos, to: length) else {
+                return nil
+            }
+            let lineContentEnd = (lineEnd > pos && block[lineEnd - 1] == 0x0D)
+                ? lineEnd - 1
+                : lineEnd
+            if lineContentEnd == pos { return nil }
+            if let range = matchLineRange(
+                block, lineStart: pos, lineContentEnd: lineContentEnd,
+                needle: name, needleLen: needleLen
+            ) {
+                return range
             }
             pos = lineEnd + 1
         }
@@ -190,10 +262,29 @@ public struct HeaderView: @unchecked Sendable {
         needle: String,
         needleLen: Int? = nil
     ) -> String? {
+        guard let range = matchLineRange(
+            block, lineStart: lineStart, lineContentEnd: lineContentEnd,
+            needle: needle, needleLen: needleLen
+        ) else { return nil }
+        return String(decoding: UnsafeBufferPointer(
+            start: block.advanced(by: range.start), count: range.len
+        ), as: UTF8.self)
+    }
+
+    /// Match a header line and return the value's byte range without
+    /// creating a String. Shared core of `matchLine` (String-returning)
+    /// and `findBytes` (zero-copy).
+    @usableFromInline
+    @inline(__always)
+    static func matchLineRange(
+        _ block: UnsafePointer<UInt8>,
+        lineStart: Int,
+        lineContentEnd: Int,
+        needle: String,
+        needleLen: Int? = nil
+    ) -> (start: Int, len: Int)? {
         let nl = needleLen ?? needle.utf8.count
-        // Need at least: needle + ':' + value (1 char).
         guard lineContentEnd - lineStart >= nl + 2 else { return nil }
-        // Compare `needle` byte-by-byte against the line, case-insensitively.
         var ni = needle.utf8.startIndex
         var li = lineStart
         var matched = true
@@ -212,20 +303,14 @@ public struct HeaderView: @unchecked Sendable {
             ni = needle.utf8.index(after: ni)
         }
         if !matched { return nil }
-        // The byte after the name must be ':' (ignoring leading
-        // whitespace is not standard for header *names* — RFC 7230
-        // forbids whitespace between field-name and colon).
         guard block[li] == 0x3A else { return nil }
         var valueStart = li + 1
-        // Skip optional leading whitespace in the value.
         while valueStart < lineContentEnd
                 && (block[valueStart] == 0x20 || block[valueStart] == 0x09) {
             valueStart &+= 1
         }
         let valueLen = lineContentEnd - valueStart
-        return String(decoding: UnsafeBufferPointer(
-            start: block.advanced(by: valueStart), count: valueLen
-        ), as: UTF8.self)
+        return (valueStart, valueLen)
     }
 
     /// SWAR-accelerated single-byte search inside the block.

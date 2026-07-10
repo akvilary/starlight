@@ -55,15 +55,21 @@ public struct HTTPResponse: Sendable {
 /// Convenience helpers for the common Phase 2 cases (plaintext, JSON,
 /// "hello world"). The real DSL lands in Phase 4.
 extension HTTPResponse {
+    /// Shared allocator — `ByteBufferAllocator` is a stateless thread-safe
+    /// factory, so one instance serves all responses. Eliminates the
+    /// per-call `ByteBufferAllocator()` class allocation that the old
+    /// default-parameter pattern caused.
+    @usableFromInline
+    internal static let sharedAllocator = ByteBufferAllocator()
+
     /// `status`-coded response with `text/plain; charset=utf-8` body.
     /// Use for error responses (404, 400, 500) and short strings.
     public static func plaintext(
         _ body: String,
         status: HTTPStatus = .ok,
-        allocator: ByteBufferAllocator = ByteBufferAllocator(),
         keepAlive: Bool = true
     ) -> HTTPResponse {
-        var buf = allocator.buffer(capacity: 256 + body.utf8.count)
+        var buf = sharedAllocator.buffer(capacity: 256 + body.utf8.count)
         let connection = keepAlive ? "keep-alive" : "close"
         buf.writeString("HTTP/1.1 \(status.code) \(status.reasonPhrase)\r\n")
         buf.writeString("Content-Type: text/plain; charset=utf-8\r\n")
