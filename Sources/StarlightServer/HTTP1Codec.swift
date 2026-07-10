@@ -40,6 +40,10 @@ final class HTTP1Codec: @unchecked Sendable {
     /// consumes this flag and returns a 413 response.
     private var overflowed: Bool = false
 
+    /// Cached route match from `tryParseSync()`, used by
+    /// `dispatchAsync()` to avoid matching the route twice.
+    private var pendingMatch: (handler: HandlerKind, params: Params)?
+
     init(handler: @escaping HTTPHandler, maxAccumulatorBytes: Int = 1 * 1024 * 1024) {
         self.handler = handler
         self.router = nil
@@ -118,8 +122,9 @@ final class HTTP1Codec: @unchecked Sendable {
                 let r = fn(self.ctx)
                 self.afterDispatch()
                 return .response(r)
-            case .async:
-                // Don't reset — dispatchAsync will do it
+            case .async(let fn):
+                // Cache the match so dispatchAsync() doesn't re-match.
+                self.pendingMatch = (m.handler, m.params)
                 return .needsAsync
             }
         } else if let handler = self.handler {
@@ -140,9 +145,23 @@ final class HTTP1Codec: @unchecked Sendable {
 
     /// Async dispatch — used when `tryParseSync()` returned `.needsAsync`.
     /// Must be called from an async context.
+    ///
+    /// Uses the cached route match from `tryParseSync()` to avoid
+    /// matching the route a second time.
     func dispatchAsync() async -> HTTPResponse {
         let response: HTTPResponse
-        if let router = self.router {
+
+        if let cached = self.pendingMatch {
+            // Use cached match — avoids redundant router.match() call.
+            self.pendingMatch = nil
+            self.ctx.params = cached.params
+            switch cached.handler {
+            case .sync(let fn):
+                response = fn(self.ctx)
+            case .async(let fn):
+                response = await fn(self.ctx)
+            }
+        } else if let router = self.router {
             response = await router.handle(&self.ctx)
         } else if let handler = self.handler {
             response = handler(self.ctx)
