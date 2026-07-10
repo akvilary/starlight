@@ -396,13 +396,20 @@ final class IOUringLoop: @unchecked Sendable {
                    + (response.bodyBuffer?.readableBytes ?? 0)
         _ = loopStats.bytesSent.add(Int64(len))
 
+        // Obtain SQE BEFORE mutating connection state.
+        // If the ring is full after retry, close the connection
+        // rather than leaving it in an inconsistent dead state.
+        guard let sqe = ensureSQE() else {
+            closeConnection(conn: conn)
+            return
+        }
+
         conn.pendingResponse = response
         conn.pendingSendData = nil
         conn.sendLen = len
         conn.sendOffset = 0
         conn.keepAlive = response.keepAlive
 
-        guard let sqe = ensureSQE() else { return }
         conn.fillSendSQE(sqe, offset: 0)
         sl_sqe_set_data(sqe, packUserData(fd: conn.fd, op: .send))
     }
