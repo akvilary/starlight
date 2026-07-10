@@ -21,6 +21,7 @@
 
 #include "CStarlightLinux.h"
 #include <sys/syscall.h>
+#include <sched.h>
 #include <stdlib.h>
 
 /* ── Raw syscall wrappers ─────────────────────────────────────────────── */
@@ -319,6 +320,15 @@ int sl_listen(const char *host, int port, int backlog) {
 
 int sl_accept4(int fd) {
     return accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+}
+
+/* ── CPU pinning ──────────────────────────────────────────────────────── */
+
+void sl_pin_to_cpu(int cpu) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+    sched_setaffinity(0, sizeof(cpuset), &cpuset);
 }
 
 #endif /* __linux__ */

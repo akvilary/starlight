@@ -329,5 +329,10 @@ static inline void sl_set_keepalive(int fd, int idle_sec, int intvl_sec, int cnt
 /// Direct accept4 syscall — declared in shim.c (requires _GNU_SOURCE).
 int sl_accept4(int fd);
 
+/// Pin the calling thread to a specific CPU core.
+/// Implemented in shim.c (requires _GNU_SOURCE for sched_setaffinity).
+/// Best-effort: silently ignores errors (e.g., cpu index > num cores).
+void sl_pin_to_cpu(int cpu);
+
 #endif /* __linux__ */
 #endif /* CSTARLIGHTLINUX_H */

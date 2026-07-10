@@ -72,14 +72,16 @@ public final class StarlightServer: @unchecked Sendable {
         router?.freeze()
 
         // Create one IOUringLoop per CPU core with SO_REUSEPORT.
-        for _ in 0..<loopCount {
+        for cpuIndex in 0..<loopCount {
             let loop = IOUringLoop(host: host, port: port,
                                    handler: httpHandler, router: router,
                                    stats: self.stats)
             try loop.setup()
             ioUringLoops.append(loop)
 
+            let cpu = CInt(cpuIndex)
             Thread.detachNewThread { [loop] in
+                sl_pin_to_cpu(cpu)
                 do { try loop.run() }
                 catch { /* log */ }
             }
