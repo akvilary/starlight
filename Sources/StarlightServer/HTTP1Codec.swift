@@ -78,6 +78,17 @@ final class HTTP1Codec: @unchecked Sendable {
         self.accumulator.writeImmutableBuffer(bytes)
     }
 
+    /// Feed raw bytes directly — avoids intermediate ByteBuffer allocation.
+    /// Used by the io_uring backend which reads into a raw buffer.
+    func feed(_ bytes: UnsafeBufferPointer<UInt8>) {
+        let projected = self.accumulator.readableBytes + bytes.count
+        if projected > self.maxAccumulatorBytes {
+            self.overflowed = true
+            return
+        }
+        self.accumulator.writeBytes(bytes)
+    }
+
     // MARK: - Parse + dispatch (called in a loop after feed)
 
     /// Result of a synchronous parse + dispatch attempt.

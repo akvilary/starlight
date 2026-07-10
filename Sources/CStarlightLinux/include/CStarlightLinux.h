@@ -310,5 +310,24 @@ static inline int sl_set_tcp_nodelay(int fd) {
     return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 }
 
+/*
+ * Enable TCP keepalive on a socket to automatically close idle
+ * connections. Probes after `idle_sec` of inactivity, every
+ * `intvl_sec`, up to `cnt` times before giving up.
+ *
+ * This prevents resource leaks from clients that open a connection
+ * and never send data (or never close it).
+ */
+static inline void sl_set_keepalive(int fd, int idle_sec, int intvl_sec, int cnt) {
+    int flag = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(flag));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle_sec, sizeof(idle_sec));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl_sec, sizeof(intvl_sec));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+}
+
+/// Direct accept4 syscall — declared in shim.c (requires _GNU_SOURCE).
+int sl_accept4(int fd);
+
 #endif /* __linux__ */
 #endif /* CSTARLIGHTLINUX_H */
