@@ -61,6 +61,8 @@ final class HTTP1Codec: @unchecked Sendable {
         // DoS defence.
         if self.accumulator.readableBytes > self.maxAccumulatorBytes {
             self.accumulator.clear()
+            self.parser.reset()
+            self.ctx.reset()
             return HTTPResponse.plaintext(
                 "413 Payload Too Large\n",
                 status: HTTPStatus(413, reasonPhrase: "Payload Too Large"),
@@ -90,14 +92,19 @@ final class HTTP1Codec: @unchecked Sendable {
                     parseError = .unexpectedByte(offset: 0)
                     consumed = 0
                 }
-                // Only discard bytes when parsing is complete.
-                // For partial parsing, the parser's consumedBytes
-                // is relative to the current buffer.
                 return complete ? consumed : 0
             }
         }
 
         if let err = parseError {
+            // CRITICAL: reset all state to prevent an infinite loop.
+            // Without this the parser stays in .error (or an
+            // inconsistent state), consumedBytes doesn't advance,
+            // and the while-loop in handleHTTPConnection spins
+            // forever generating 400 responses on the same bytes.
+            self.accumulator.clear()
+            self.parser.reset()
+            self.ctx.reset()
             return HTTPResponse.plaintext(
                 "400 Bad Request: \(err)\n",
                 status: HTTPStatus(400, reasonPhrase: "Bad Request"),
@@ -113,8 +120,14 @@ final class HTTP1Codec: @unchecked Sendable {
         let response: HTTPResponse
         if let router = self.router {
             response = await router.handle(&self.ctx)
+        } else if let handler = self.handler {
+            response = handler(self.ctx)
         } else {
-            response = self.handler!(self.ctx)
+            response = HTTPResponse.plaintext(
+                "500 Internal Server Error\n",
+                status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
+                keepAlive: false
+            )
         }
 
         // Reset for next request on this connection (keep-alive).

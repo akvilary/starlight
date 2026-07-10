@@ -429,23 +429,31 @@ public struct HTTP1Parser: ~Copyable {
 
     @usableFromInline
     @inline(__always)
-    func validateVersion(
+    mutating func validateVersion(
         _ buffer: UnsafeBufferPointer<UInt8>,
         offset: Int,
         length: Int
     ) throws {
         // Accept "HTTP/1.0" and "HTTP/1.1".
         guard length == 8 else {
+            state = .error
             throw HTTP1ParseError.unsupportedVersion
         }
         let base = buffer.baseAddress!
-        let prefix: [UInt8] = [0x48, 0x54, 0x54, 0x50, 0x2F, 0x31, 0x2E]  // "HTTP/1."
-        for (i, b) in prefix.enumerated() {
-            if base[offset + i] != b {
-                throw HTTP1ParseError.unsupportedVersion
-            }
+        // Inline byte comparison — no [UInt8] allocation.
+        if  base[offset]     != 0x48  // H
+            || base[offset + 1] != 0x54  // T
+            || base[offset + 2] != 0x54  // T
+            || base[offset + 3] != 0x50  // P
+            || base[offset + 4] != 0x2F  // /
+            || base[offset + 5] != 0x31  // 1
+            || base[offset + 6] != 0x2E  // .
+        {
+            state = .error
+            throw HTTP1ParseError.unsupportedVersion
         }
-        if base[offset + 7] != 0x30 && base[offset + 7] != 0x31 {  // '0' or '1'
+        if base[offset + 7] != 0x30 && base[offset + 7] != 0x31 {
+            state = .error
             throw HTTP1ParseError.unsupportedVersion
         }
     }

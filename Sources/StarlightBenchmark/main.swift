@@ -150,10 +150,9 @@ fileprivate func helloWorldHandler(_ ctx: borrowing RequestContext) -> HTTPRespo
 extension StarlightBenchmark {
     /// Cached "Hello, World!" response. We build it once at startup and
     /// hand the same buffer to every request. NIO's `ByteBuffer` is a
-    /// COW value type, so the per-request "copy" through `context.write`
-    /// just bumps the storage's reference count without copying bytes.
-    /// This eliminates the largest single allocation in the HTTP hot
-    /// path.
+    /// COW value type, so `outbound.write(response.buffer)` just bumps
+    /// the storage's reference count without copying bytes. This
+    /// eliminates the largest single allocation in the HTTP hot path.
     static let helloResponse: ByteBuffer = {
         var buf = ByteBufferAllocator().buffer(capacity: 256)
         buf.writeString("HTTP/1.1 200 OK\r\n")
@@ -171,8 +170,9 @@ extension StarlightBenchmark {
 /// rather than the single-handler short-circuit.
 ///
 /// Static routes (`/`, `/health`) return **pre-cached** `ByteBuffer`s —
-/// zero per-request allocation. The per-connection `responseBuffer`
-/// copy in `HTTP1Codec` still runs, but no new storage is allocated.
+/// zero per-request allocation. ByteBuffer is COW, so each
+/// `outbound.write(response.buffer)` just bumps the shared storage's
+/// reference count — no memcpy, no new heap allocation.
 /// The dynamic route (`/users/:id`) necessarily allocates per request
 /// (response depends on the captured id); it is the worst case.
 func makeBenchmarkRouter() -> Router {
@@ -201,10 +201,9 @@ func makeBenchmarkRouter() -> Router {
     healthBuf.writeBytes(healthBytes)
 
     // `let` bindings so the @Sendable handler closures can capture
-    // them withoutStrictConcurrency complaints. ByteBuffer is COW so
-    // sharing the value across connections is cheap; the per-request
-    // retain/release on shared storage is what the
-    // `responseBuffer.copy` path in HTTP1Codec removes.
+    // them without strict-concurrency complaints. ByteBuffer is COW so
+    // sharing the value across connections is cheap — the server
+    // writes `response.buffer` directly to the channel without copying.
     let rootBufLet = rootBuf
     let healthBufLet = healthBuf
 

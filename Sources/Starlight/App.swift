@@ -13,13 +13,11 @@ import NIOPosix
 import StarlightCore
 import StarlightHTTP
 import StarlightRouting
-import StarlightMiddleware
 import StarlightServer
 
 @_exported import StarlightCore
 @_exported import StarlightHTTP
 @_exported import StarlightRouting
-@_exported import StarlightMiddleware
 @_exported import StarlightServer
 
 /// A configured but not-yet-started Starlight server.

@@ -89,6 +89,15 @@ public final class Router: @unchecked Sendable {
     /// User handlers indexed by route. Searched linearly.
     private var routes: [Route] = []
 
+    /// Static-only routes (all segments are `.literal`), tried first
+    /// so static precedence is guaranteed without per-request
+    /// `allSatisfy` overhead.
+    private var staticRoutes: [Route] = []
+
+    /// Routes containing at least one `.param` segment, tried after
+    /// the static partition.
+    private var dynamicRoutes: [Route] = []
+
     /// Middleware chain applied around every handler. The chain is
     /// pre-composed at `makeHandler()` time so per-request dispatch is
     /// just "call the matched handler" — middleware wrapping is
@@ -159,7 +168,16 @@ public final class Router: @unchecked Sendable {
             "Register all routes before calling StarlightServer.start(...).")
         #endif
         let segments = Self.parsePattern(pattern)
-        routes.append(Route(method: method, pattern: pattern, segments: segments, handler: kind))
+        let route = Route(method: method, pattern: pattern, segments: segments, handler: kind)
+        let isAllStatic = segments.allSatisfy {
+            if case .literal = $0 { return true } else { return false }
+        }
+        if isAllStatic {
+            staticRoutes.append(route)
+        } else {
+            dynamicRoutes.append(route)
+        }
+        routes.append(route)
     }
 
     /// Append a middleware to the chain. Middlewares are invoked in
@@ -254,22 +272,15 @@ public final class Router: @unchecked Sendable {
         }
         let requestSegments = Self.splitPath(pathOnly)
 
-        // First pass: prefer fully-static routes.
-        for route in routes where route.method == method {
-            let isAllStatic = route.segments.allSatisfy {
-                if case .literal = $0 { return true } else { return false }
-            }
-            if !isAllStatic { continue }
+        // First pass: prefer fully-static routes (pre-partitioned at
+        // registration — no per-request allSatisfy).
+        for route in staticRoutes where route.method == method {
             if let params = Self.matchSegments(route.segments, requestSegments) {
                 return (route.handler, params)
             }
         }
         // Second pass: routes with any dynamic segments.
-        for route in routes where route.method == method {
-            let isAllStatic = route.segments.allSatisfy {
-                if case .literal = $0 { return true } else { return false }
-            }
-            if isAllStatic { continue }
+        for route in dynamicRoutes where route.method == method {
             if let params = Self.matchSegments(route.segments, requestSegments) {
                 return (route.handler, params)
             }
@@ -281,22 +292,7 @@ public final class Router: @unchecked Sendable {
 
     /// Split a URL path into non-empty segments.
     static func splitPath(_ path: String) -> [String] {
-        var segments: [String] = []
-        var current = ""
-        for byte in path.utf8 {
-            if byte == 0x2F {  // '/'
-                if !current.isEmpty {
-                    segments.append(current)
-                    current = ""
-                }
-            } else {
-                current.append(Character(UnicodeScalar(byte)))
-            }
-        }
-        if !current.isEmpty {
-            segments.append(current)
-        }
-        return segments
+        path.split(separator: "/").map(String.init)
     }
 
     /// Parse a route pattern (e.g. `/users/:id`) into segments.

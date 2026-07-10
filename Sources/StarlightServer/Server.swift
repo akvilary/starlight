@@ -211,23 +211,17 @@ public final class StarlightServer: @unchecked Sendable {
             return
         }
 
-        // Per-connection response staging buffer. We copy each
-        // response's bytes into this buffer before handing it to
-        // `outbound.write` — this avoids COW traffic on any shared
-        // response storage (process-wide cached ByteBuffer).
-        var responseBuffer = ByteBufferAllocator().buffer(capacity: 512)
-
         do {
             try await channel.executeThenClose { (inbound, outbound) in
                 for try await bytes in inbound {
-                    // Feed new bytes once, then try to parse and
-                    // dispatch as many complete requests as the
-                    // accumulator now contains (pipelining).
+                    _ = stats.bytesReceived.add(Int64(bytes.readableBytes))
                     codec.feed(bytes)
                     while let response = await codec.tryParse() {
-                        var out = ByteBufferAllocator().buffer(capacity: 256)
-                        out.writeBytes(response.buffer.readableBytesView)
-                        try await outbound.write(out)
+                        _ = stats.bytesSent.add(Int64(response.buffer.readableBytes))
+                        try await outbound.write(response.buffer)
+                        if !response.keepAlive {
+                            return
+                        }
                     }
                 }
             }

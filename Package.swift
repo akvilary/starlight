@@ -23,7 +23,6 @@ let package = Package(
         .library(name: "StarlightCore", targets: ["StarlightCore"]),
         .library(name: "StarlightHTTP", targets: ["StarlightHTTP"]),
         .library(name: "StarlightRouting", targets: ["StarlightRouting"]),
-        .library(name: "StarlightMiddleware", targets: ["StarlightMiddleware"]),
         .library(name: "StarlightServer", targets: ["StarlightServer"]),
         .executable(name: "starlight-benchmark", targets: ["StarlightBenchmark"]),
     ],
@@ -67,11 +66,7 @@ let package = Package(
         ),
 
         // ── Generic middleware protocol (monomorphized chain) ────────────────
-        .target(
-            name: "StarlightMiddleware",
-            dependencies: ["StarlightCore", "StarlightHTTP"],
-            swiftSettings: baseSwiftSettings
-        ),
+        // (removed — middleware lives in StarlightRouting as Middleware struct)
 
         // ── Server bootstrap: SO_REUSEPORT per-loop, NIOSSL ──────────────────
         .target(
@@ -80,7 +75,6 @@ let package = Package(
                 "StarlightCore",
                 "StarlightHTTP",
                 "StarlightRouting",
-                "StarlightMiddleware",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
@@ -95,7 +89,6 @@ let package = Package(
                 "StarlightCore",
                 "StarlightHTTP",
                 "StarlightRouting",
-                "StarlightMiddleware",
                 "StarlightServer",
             ],
             swiftSettings: baseSwiftSettings
@@ -135,6 +128,17 @@ let package = Package(
         .testTarget(
             name: "StarlightRoutingTests",
             dependencies: ["StarlightRouting"],
+            swiftSettings: baseSwiftSettings
+        ),
+        .testTarget(
+            name: "StarlightServerTests",
+            dependencies: [
+                "StarlightServer",
+                "StarlightHTTP",
+                "StarlightCore",
+                "StarlightRouting",
+                .product(name: "NIOCore", package: "swift-nio"),
+            ],
             swiftSettings: baseSwiftSettings
         ),
     ]

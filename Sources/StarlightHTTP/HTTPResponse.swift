@@ -40,9 +40,15 @@ public enum HandlerKind: Sendable {
 public struct HTTPResponse: Sendable {
     public let buffer: ByteBuffer
 
+    /// Whether the connection should stay open after this response.
+    /// Error responses (400, 404, 413) set this to `false` — the
+    /// server closes the TCP connection after writing the response.
+    public let keepAlive: Bool
+
     @inlinable
-    public init(buffer: ByteBuffer) {
+    public init(buffer: ByteBuffer, keepAlive: Bool = true) {
         self.buffer = buffer
+        self.keepAlive = keepAlive
     }
 }
 
@@ -65,6 +71,6 @@ extension HTTPResponse {
         buf.writeString("Connection: \(connection)\r\n")
         buf.writeString("\r\n")
         buf.writeString(body)
-        return HTTPResponse(buffer: buf)
+        return HTTPResponse(buffer: buf, keepAlive: keepAlive)
     }
 }
