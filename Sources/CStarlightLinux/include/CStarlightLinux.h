@@ -92,12 +92,24 @@ struct io_uring_params {
 };
 
 /* io_uring_setup flags (we use none — simplest path) */
-/* io_uring opcodes */
-#define IORING_OP_NOP       0
-#define IORING_OP_ACCEPT    11
-#define IORING_OP_RECV      13
-#define IORING_OP_SEND      14
-#define IORING_OP_SENDZC    16
+
+/* ── io_uring opcodes ───────────────────────────────────────────────────
+ * These values match the kernel's enum io_uring_op exactly.
+ * Verified against /usr/include/linux/io_uring.h (kernel 6.x).
+ * DO NOT change these — they are kernel ABI.
+ *
+ * Full enum reference (we only need the 5 listed here):
+ *   0=NOP 1=READV 2=WRITEV 3=FSYNC 4=READ_FIXED 5=WRITE_FIXED
+ *   6=POLL_ADD 7=POLL_REMOVE 8=SYNC_FILE_RANGE 9=SENDMSG 10=RECVMSG
+ *  11=TIMEOUT 12=TIMEOUT_REMOVE 13=ACCEPT 14=ASYNC_CANCEL 15=LINK_TIMEOUT
+ *  16=CONNECT 17=FALLOCATE 18=OPENAT 19=CLOSE 20=FILES_UPDATE 21=STATX
+ *  22=READ 23=WRITE 24=FADVISE 25=MADVISE 26=SEND 27=RECV ...
+ */
+#define IORING_OP_NOP        0
+#define IORING_OP_POLL_ADD   6
+#define IORING_OP_ACCEPT     13
+#define IORING_OP_SEND       26
+#define IORING_OP_RECV       27
 
 /* io_uring_enter flags */
 #define IORING_ENTER_GETEVENTS (1U << 0)

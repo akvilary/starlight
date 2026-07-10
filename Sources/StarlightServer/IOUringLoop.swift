@@ -80,6 +80,8 @@ final class IOUringLoop: @unchecked Sendable {
     private var readBuffers: [CInt: UnsafeMutablePointer<UInt8>] = [:]
     /// fd → send buffer (kept alive until SEND CQE)
     private var sendBuffers: [CInt: [UInt8]] = [:]
+    /// fd → bytes already sent (for partial write tracking)
+    private var sendOffsets: [CInt: Int] = [:]
     /// fd → keep-alive flag for pending send
     private var sendKeepAlive: [CInt: Bool] = [:]
     /// fd → codec
@@ -275,7 +277,14 @@ final class IOUringLoop: @unchecked Sendable {
     // MARK: - Send
 
     private func submitSend(fd: CInt, response: HTTPResponse) {
-        // Copy response bytes to a stable buffer
+        // Copy response bytes into a [UInt8] that we own. This array
+        // stays alive in sendBuffers[fd] until the SEND CQE arrives,
+        // ensuring the pointer passed to io_uring remains valid.
+        //
+        // The copy is unavoidable for safety: the HTTPResponse's
+        // ByteBuffer backing storage might be shared (COW) and could
+        // be modified by another connection. We need exclusive
+        // ownership of the bytes until the kernel finishes reading them.
         var bytes = Array(response.headerBuffer.readableBytesView)
         if let body = response.bodyBuffer {
             bytes.append(contentsOf: body.readableBytesView)
@@ -285,35 +294,76 @@ final class IOUringLoop: @unchecked Sendable {
 
         sendBuffers[fd] = bytes
         sendKeepAlive[fd] = response.keepAlive
+        sendOffsets[fd] = 0  // bytes already sent (for partial write tracking)
 
         guard let sqe = sl_get_sqe(&ring) else { return }
-        let stable = bytes
-        stable.withUnsafeBufferPointer { ptr in
+        // Use sendBuffers[fd] (not the local `bytes`) as the pointer
+        // source — it's the stable copy that outlives this function.
+        sendBuffers[fd]!.withUnsafeBufferPointer { ptr in
             sl_prep_send(sqe, fd, ptr.baseAddress!, UInt32(ptr.count))
         }
         sl_sqe_set_data(sqe, packUserData(fd: fd, op: .send))
+        _ = sl_submit(&ring)  // flush immediately — don't wait for next loop iteration
     }
 
     private func handleSend(fd: CInt, bytesWritten: CInt) {
-        sendBuffers[fd] = nil
-        let keepAlive = sendKeepAlive.removeValue(forKey: fd) ?? true
-
-        if bytesWritten < 0 || !keepAlive {
+        // Handle errors: connection reset, broken pipe, etc.
+        if bytesWritten < 0 {
             closeConnection(fd: fd)
             return
         }
 
-        // Keep-alive: check for pipelined requests, else re-arm RECV
+        // Partial write handling: the kernel may have accepted fewer
+        // bytes than we submitted (e.g., socket send buffer full on
+        // a slow client). We must send the remaining bytes.
+        let offset = sendOffsets[fd] ?? 0
+        let totalLen = sendBuffers[fd]?.count ?? 0
+        let newOffset = offset + Int(bytesWritten)
+
+        if newOffset < totalLen {
+            // More bytes to send — submit another SEND SQE for the
+            // remaining portion of the buffer.
+            sendOffsets[fd] = newOffset
+            guard let sqe = sl_get_sqe(&ring) else { return }
+            sendBuffers[fd]!.withUnsafeBufferPointer { ptr in
+                let remainingPtr = ptr.baseAddress!.advanced(by: newOffset)
+                let remainingLen = UInt32(totalLen - newOffset)
+                sl_prep_send(sqe, fd, remainingPtr, remainingLen)
+            }
+            sl_sqe_set_data(sqe, packUserData(fd: fd, op: .send))
+            _ = sl_submit(&ring)
+            return
+        }
+
+        // Full response sent — clean up and proceed.
+        sendBuffers[fd] = nil
+        sendOffsets[fd] = nil
+        let keepAlive = sendKeepAlive.removeValue(forKey: fd) ?? true
+
+        if !keepAlive {
+            closeConnection(fd: fd)
+            return
+        }
+
+        // Keep-alive: try to process pipelined requests that are
+        // already in the codec's accumulator (no new TCP data needed).
+        // If none available, re-arm RECV to wait for the next request.
         if let codec = codecs[fd], let readBuf = readBuffers[fd] {
-            // Try to process more pipelined requests first
-            var buf = ByteBufferAllocator().buffer(capacity: 0)
-            codec.feed(buf)  // no-op feed to trigger re-parse
-            // Actually, just call processRequests which loops tryParseSync
-            // But we need to NOT feed empty bytes — just re-parse existing
-            // The codec's accumulator may have pipelined data.
-            // For simplicity: re-arm RECV. Pipelined requests will be
-            // processed when new data arrives.
-            submitRecv(fd: fd, buf: readBuf)
+            // Check if there's buffered data in the accumulator that
+            // constitutes another complete request (pipelining).
+            let result = codec.tryParseSync()
+            switch result {
+            case .response(let response):
+                submitSend(fd: fd, response: response)
+            case .incomplete:
+                submitRecv(fd: fd, buf: readBuf)
+            case .needsAsync:
+                let r = HTTPResponse.plaintext(
+                    "500 Async handlers require NIO backend\n",
+                    status: .internalServerError, keepAlive: false)
+                codec.afterDispatch()
+                submitSend(fd: fd, response: r)
+            }
         } else {
             closeConnection(fd: fd)
         }
@@ -373,6 +423,7 @@ final class IOUringLoop: @unchecked Sendable {
             buf.deallocate()
         }
         sendBuffers[fd] = nil
+        sendOffsets[fd] = nil
         sendKeepAlive[fd] = nil
         codecs[fd] = nil
         close(fd)
