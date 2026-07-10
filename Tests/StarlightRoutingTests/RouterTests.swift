@@ -241,7 +241,7 @@ struct RouterTests {
         let router = Router()
         var ctx = RequestContext()
         ctx.method = .GET
-        ctx.path = "/nope"
+        ctx.setPath("/nope")
         let response = await router.handle(&ctx)
         // We can't easily inspect the buffer contents here without
         // pulling in ByteBuffer read APIs; we just check that the
@@ -259,7 +259,7 @@ struct RouterTests {
         }
         var ctx = RequestContext()
         ctx.method = .GET
-        ctx.path = "/users/123"
+        ctx.setPath("/users/123")
         _ = await router.handle(&ctx)
         #expect(capturedParam.value == "123")
         #expect(ctx.params["id"] == "123")
@@ -269,21 +269,17 @@ struct RouterTests {
     func middlewareWraps() async {
         let router = Router()
         let log = Box<[String]>([])
-        router.use(Middleware { next in
-            return { ctx in
-                log.value.append("before")
-                let resp = next(ctx)
-                log.value.append("after")
-                return resp
-            }
-        })
+        router.use(Middleware(
+            before: { _ in log.value.append("before"); return .proceed },
+            after: { _, r in log.value.append("after"); return r }
+        ))
         router.get("/x") { _ in
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
-        ctx.path = "/x"
+        ctx.setPath("/x")
         _ = await router.handle(&ctx)
         #expect(log.value == ["before", "handler", "after"])
     }
@@ -292,34 +288,70 @@ struct RouterTests {
     func multipleMiddlewares() async {
         let router = Router()
         let log = Box<[String]>([])
-        router.use(Middleware { next in
-            return { ctx in
-                log.value.append("outer-before")
-                let r = next(ctx)
-                log.value.append("outer-after")
-                return r
-            }
-        })
-        router.use(Middleware { next in
-            return { ctx in
-                log.value.append("inner-before")
-                let r = next(ctx)
-                log.value.append("inner-after")
-                return r
-            }
-        })
+        router.use(Middleware(
+            before: { _ in log.value.append("outer-before"); return .proceed },
+            after: { _, r in log.value.append("outer-after"); return r }
+        ))
+        router.use(Middleware(
+            before: { _ in log.value.append("inner-before"); return .proceed },
+            after: { _, r in log.value.append("inner-after"); return r }
+        ))
         router.get("/x") { _ in
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
-        ctx.path = "/x"
+        ctx.setPath("/x")
         _ = await router.handle(&ctx)
         #expect(log.value == [
             "outer-before", "inner-before", "handler",
             "inner-after", "outer-after"
         ])
+    }
+
+    @Test("Middleware applies to async handlers")
+    func middlewareWrapsAsync() async {
+        let router = Router()
+        let log = Box<[String]>([])
+        router.use(Middleware(
+            before: { _ in log.value.append("before"); return .proceed },
+            after: { _, r in log.value.append("after"); return r }
+        ))
+        router.get("/x") { _ async in
+            log.value.append("handler")
+            return HTTPResponse.plaintext("ok")
+        }
+        var ctx = RequestContext()
+        ctx.method = .GET
+        ctx.setPath("/x")
+        _ = await router.handle(&ctx)
+        #expect(log.value == ["before", "handler", "after"])
+    }
+
+    @Test("Middleware shortCircuit skips handler")
+    func middlewareShortCircuit() async {
+        let router = Router()
+        let handlerCalled = Box(false)
+        router.use(Middleware(
+            before: { ctx in
+                if ctx.pathString == "/blocked" {
+                    return .shortCircuit(HTTPResponse.plaintext("denied"))
+                }
+                return .proceed
+            }
+        ))
+        router.get("/blocked") { _ in
+            handlerCalled.value = true
+            return HTTPResponse.plaintext("ok")
+        }
+        var ctx = RequestContext()
+        ctx.method = .GET
+        ctx.setPath("/blocked")
+        let response = await router.handle(&ctx)
+        #expect(!handlerCalled.value)
+        let body = response.buffer.getString(at: 0, length: response.buffer.readableBytes)
+        #expect(body?.contains("denied") == true)
     }
 
     // MARK: - Pattern parsing edge cases

@@ -35,6 +35,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import NIOCore
 import StarlightCore
 
 /// Per-request state owned by a single connection's task.
@@ -61,9 +62,11 @@ public struct RequestContext: ~Copyable {
     /// status line.
     public var status: HTTPStatus
 
-    /// Request path (e.g. `/users/42`). Allocated in the arena during
-    /// request-line parsing. Reset by `reset()`.
-    public var path: String
+    /// Request path (e.g. `/users/42`). Stored as a COW `ByteBuffer`
+    /// slice of the connection's receive accumulator — zero-copy.
+    /// Use `pathString` to get a `String` when needed (rare — most
+    /// handlers use `params` for dynamic segments).
+    public var path: ByteBuffer
 
     /// Path parameters extracted by the router from dynamic segments
     /// (e.g. `:id` in `/users/:id` → `params["id"] == "42"`).
@@ -77,12 +80,26 @@ public struct RequestContext: ~Copyable {
     /// the entire header block has been parsed.
     public var headers: HeaderView
 
-    /// Request body bytes (for POST/PUT/PATCH). Copied into the arena
-    /// during body parsing. Nil for bodyless requests (GET/HEAD/etc.).
-    public var body: [UInt8]?
+    /// Request body bytes (for POST/PUT/PATCH). Stored as a COW
+    /// `ByteBuffer` slice of the connection's receive accumulator —
+    /// zero-copy until the handler actually reads/modifies the body.
+    /// Nil for bodyless requests (GET/HEAD/etc.).
+    public var body: ByteBuffer?
+
+    /// Reusable response buffer. Cleared and refilled per request by
+    /// `HTTPResponse.plaintext(_:into:)` or any response builder that
+    /// accepts an `inout ByteBuffer`. `ByteBuffer` is COW, so the
+    /// returned `HTTPResponse` shares storage until the next write
+    /// triggers copy-on-write — no memcpy on the hot path.
+    ///
+    /// Used internally by the codec (400/413/500 responses) and the
+    /// router (404 responses). Handlers receive the context as
+    /// `borrowing` and cannot pass this as `inout` — for zero-alloc
+    /// responses in handlers, pre-build response buffers at startup
+    /// (as the benchmark does).
+    public var responseBuffer: ByteBuffer
 
     // ── Phase 3 will add: ───────────────────────────────────────────────
-    //   - headers: HeaderView         (case-insensitive ordered storage)
     //   - body: Span<UInt8>          (zero-copy for in-buffer bodies,
     //                                  arena-backed for streamed bodies)
 
@@ -95,10 +112,11 @@ public struct RequestContext: ~Copyable {
         self.arena = ArenaAllocator(initialChunkSize: initialArenaSize)
         self.method = .other
         self.status = .ok
-        self.path = ""
+        self.path = ByteBufferAllocator().buffer(capacity: 0)
         self.params = Params()
         self.headers = HeaderView()
         self.body = nil
+        self.responseBuffer = ByteBufferAllocator().buffer(capacity: 512)
     }
 
     /// Reset the context between keep-alive requests on the same connection.
@@ -113,7 +131,7 @@ public struct RequestContext: ~Copyable {
         self.arena.reset()
         self.method = .other
         self.status = .ok
-        self.path = ""
+        self.path.clear()
         // params is replaced wholesale on the next request — clearing
         // it costs O(n) in the number of params from the previous
         // request. We could leave it dirty and overwrite, but the
@@ -157,4 +175,22 @@ public struct RequestContext: ~Copyable {
     /// Bytes currently in use by the arena.
     @inlinable
     public var arenaUsedBytes: Int { self.arena.usedBytes }
+
+    /// Decode the path to a `String` on demand. Allocates a heap
+    /// `String` for paths > 15 bytes — use sparingly (the router
+    /// matches against raw bytes, so most handlers never need this).
+    @inlinable
+    public var pathString: String {
+        guard let s = self.path.getString(at: 0, length: self.path.readableBytes) else {
+            return ""
+        }
+        return s
+    }
+
+    /// Convenience setter for tests and manual construction.
+    /// Copies the string into the path buffer.
+    public mutating func setPath(_ s: String) {
+        self.path = ByteBufferAllocator().buffer(capacity: s.utf8.count)
+        self.path.writeString(s)
+    }
 }

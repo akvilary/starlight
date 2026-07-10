@@ -28,6 +28,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import NIOCore
 import StarlightCore
 import StarlightHTTP
 
@@ -55,24 +56,100 @@ struct Route: Sendable {
     var handler: HandlerKind
 }
 
-/// Closure-based middleware for Phase 3 MVP.
-///
-/// A middleware wraps a handler and returns a new handler that runs
-/// its own logic around the wrapped one. The composition is plain
-/// function wrapping — no protocol existentials, no boxing. The
-/// compiler specializes the whole chain into a single async/sync
-/// function when the closures are inlinable.
-///
-/// Phase 4 will introduce a generic `protocol Middleware` with
-/// `associatedtype` for cases that need type-level composition
-/// (e.g., a `Logger<Auth<Router>>` chain that fully monomorphizes).
-public struct Middleware: Sendable {
-    /// The wrap function. Given the next handler in the chain, return
-    /// a handler that runs this middleware's logic around it.
-    public let wrap: @Sendable (@escaping HTTPHandler) -> HTTPHandler
+/// Result of a middleware's `before` hook: proceed to the handler,
+/// or short-circuit by returning a response immediately.
+public enum MiddlewareResult: Sendable {
+    /// Continue to the next middleware / handler in the chain.
+    case proceed
+    /// Skip the handler and all remaining middleware. The supplied
+    /// response is returned to the client (after running this
+    /// middleware's `after` hook and all outer middleware's `after`
+    /// hooks).
+    case shortCircuit(HTTPResponse)
+}
 
-    public init(wrap: @escaping @Sendable (@escaping HTTPHandler) -> HTTPHandler) {
-        self.wrap = wrap
+/// HTTP middleware — composable before/after hooks around route handlers.
+///
+/// A middleware has two hooks:
+/// - `before`: inspects the request. Return `.shortCircuit` to reject
+///   early (auth, rate-limit) or `.proceed` to continue.
+/// - `after`: inspects/modifies the response (CORS headers, logging,
+///   compression).
+///
+/// Both hooks are **sync** closures. This covers virtually all middleware
+/// use cases (auth header checks, CORS, logging, rate-limiting). When a
+/// middleware needs async work (database lookup, upstream call), use the
+/// `init(sync:async:)` or `init(_:)` initialiser to provide a full
+/// async wrapper.
+///
+/// **Sync fast-path**: when *every* middleware in the chain is created
+/// via `init(before:after:)` or `init(sync:async:)`, sync routes stay
+/// fully sync — zero async overhead. When any middleware is async-only
+/// (`init(_:)`), sync routes are promoted to async (minimal overhead
+/// with `NonisolatedNonsendingByDefault` — no Task allocation, no
+/// executor hop).
+public struct Middleware: Sendable {
+    // MARK: - Composition closures
+
+    /// Compose this middleware around a sync handler. `nil` when the
+    /// middleware is async-only.
+    public let wrapSync: (@Sendable (@escaping HTTPHandler) -> HTTPHandler)?
+
+    /// Compose this middleware around an async handler. Always present —
+    /// guarantees middleware works for async routes.
+    public let wrapAsync: @Sendable (@escaping AsyncHTTPHandler) -> AsyncHTTPHandler
+
+    // MARK: - Initialisers
+
+    /// Before/after hook middleware. The simplest and most common form —
+    /// covers auth, CORS, logging, rate-limiting.
+    ///
+    /// Both hooks are sync. This generates both `wrapSync` and
+    /// `wrapAsync` automatically, so sync routes with this middleware
+    /// stay fully sync.
+    public init(
+        before: @escaping @Sendable (borrowing RequestContext) -> MiddlewareResult = { _ in .proceed },
+        after: @escaping @Sendable (borrowing RequestContext, HTTPResponse) -> HTTPResponse = { _, r in r }
+    ) {
+        self.wrapSync = { next in
+            return { ctx in
+                switch before(ctx) {
+                case .proceed:
+                    return after(ctx, next(ctx))
+                case .shortCircuit(let response):
+                    return after(ctx, response)
+                }
+            }
+        }
+        self.wrapAsync = { next in
+            return { ctx async in
+                switch before(ctx) {
+                case .proceed:
+                    return after(ctx, await next(ctx))
+                case .shortCircuit(let response):
+                    return after(ctx, response)
+                }
+            }
+        }
+    }
+
+    /// Async-only middleware. Sync routes in the chain will be promoted
+    /// to async. Use when the middleware needs `await` (database auth,
+    /// upstream HTTP calls).
+    public init(_ wrapAsync: @escaping @Sendable (@escaping AsyncHTTPHandler) -> AsyncHTTPHandler) {
+        self.wrapAsync = wrapAsync
+        self.wrapSync = nil
+    }
+
+    /// Full-control middleware: explicit sync and async wrappers.
+    /// The sync wrapper keeps sync routes zero-overhead; the async
+    /// wrapper covers async routes.
+    public init(
+        sync wrapSync: @escaping @Sendable (@escaping HTTPHandler) -> HTTPHandler,
+        async wrapAsync: @escaping @Sendable (@escaping AsyncHTTPHandler) -> AsyncHTTPHandler
+    ) {
+        self.wrapSync = wrapSync
+        self.wrapAsync = wrapAsync
     }
 }
 
@@ -203,8 +280,9 @@ public final class Router: @unchecked Sendable {
     // MARK: - Dispatch
 
     /// Pre-compose middleware into each route's handler. Called once
-    /// (from the first `handle()` or explicitly from `StarlightServer.start()`)
-    /// so subsequent requests pay zero closure-allocation cost.
+    /// from `StarlightServer.start()` before any connection is
+    /// accepted, so per-request dispatch pays zero closure-allocation
+    /// cost. Must not be called concurrently from multiple event loops.
     private var isComposed = false
 
     public func freeze() {
@@ -227,16 +305,38 @@ public final class Router: @unchecked Sendable {
 
     /// Compose middleware chain around a single handler. Called only
     /// from `freeze()`, never per-request.
+    ///
+    /// Composition rules:
+    /// - **Sync handler + all-middleware-have-wrapSync**: stays sync.
+    ///   Zero async overhead — the fast path for typical apps.
+    /// - **Sync handler + any-middleware-async-only**: promoted to async.
+    ///   Overhead is one continuation hop (no Task allocation, no
+    ///   executor hop under `NonisolatedNonsendingByDefault`).
+    /// - **Async handler**: always composes via `wrapAsync`. Middleware
+    ///   is fully applied (the bug that silently skipped middleware
+    ///   for async routes is fixed).
     private func composeOne(_ handler: HandlerKind) -> HandlerKind {
         switch handler {
         case .sync(let fn):
-            var h: HTTPHandler = fn
-            for mw in self.middlewares.reversed() {
-                h = mw.wrap(h)
+            if middlewares.allSatisfy({ $0.wrapSync != nil }) {
+                var h: HTTPHandler = fn
+                for mw in self.middlewares.reversed() {
+                    h = mw.wrapSync!(h)
+                }
+                return .sync(h)
             }
-            return .sync(h)
+            var h: AsyncHTTPHandler = { ctx async in fn(ctx) }
+            for mw in self.middlewares.reversed() {
+                h = mw.wrapAsync(h)
+            }
+            return .async(h)
+
         case .async(let fn):
-            return .async(fn)
+            var h: AsyncHTTPHandler = fn
+            for mw in self.middlewares.reversed() {
+                h = mw.wrapAsync(h)
+            }
+            return .async(h)
         }
     }
 
@@ -252,13 +352,19 @@ public final class Router: @unchecked Sendable {
     /// Middleware is pre-composed at `freeze()` time — per-request
     /// dispatch is just "call the matched handler."
     public func handle(_ ctx: inout RequestContext) async -> HTTPResponse {
+        // freeze() is idempotent. In production, Server.start() calls
+        // it before any connection is accepted, so this is a no-op.
+        // In tests (where start() isn't called), this ensures
+        // middleware is composed on first use — single-threaded, no
+        // race.
         freeze()
-        let (method, path) = (ctx.method, ctx.path)
-        guard let match = match(method: method, path: path) else {
+        let method = ctx.method
+        guard let match = match(method: method, path: ctx.path) else {
             return HTTPResponse.plaintext(
-                "404 Not Found: \(method) \(path)\n",
+                "404 Not Found: \(method) \(ctx.pathString)\n",
                 status: HTTPStatus(404, reasonPhrase: "Not Found"),
-                keepAlive: false
+                keepAlive: false,
+                into: &ctx.responseBuffer
             )
         }
         ctx.params = match.params
@@ -277,15 +383,19 @@ public final class Router: @unchecked Sendable {
     /// the matching handler + extracted params. Returns `nil` if no
     /// route matched.
     ///
-    /// Uses `path.withUTF8` to obtain a contiguous byte view and walks
-    /// the pre-compiled route segments in-place — zero array
-    /// allocation, zero String allocation (except for param values,
-    /// which use SmallString for ≤ 15 bytes).
-    public func match(method: HTTPMethod, path: String) -> (handler: HandlerKind, params: Params)? {
-        var pathMut = path
-        return pathMut.withUTF8 { pathBytes -> (handler: HandlerKind, params: Params)? in
-            let base = pathBytes.baseAddress!
-            let total = pathBytes.count
+    /// Accepts a `ByteBuffer` (COW slice of the accumulator) instead of
+    /// a `String` — avoids the heap allocation that `String(decoding:)`
+    /// incurs for paths > 15 bytes. Uses `withUnsafeReadableBytes` to
+    /// get a contiguous byte view and walks the pre-compiled route
+    /// segments in-place — zero array allocation, zero String
+    /// allocation (except for param values, which use SmallString for
+    /// ≤ 15 bytes).
+    public func match(method: HTTPMethod, path: ByteBuffer) -> (handler: HandlerKind, params: Params)? {
+        path.withUnsafeReadableBytes { rawBytes -> (handler: HandlerKind, params: Params)? in
+            guard let base = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return nil
+            }
+            let total = rawBytes.count
             // Strip query string.
             var pathLen = total
             for i in 0..<total {
@@ -307,6 +417,15 @@ public final class Router: @unchecked Sendable {
             }
             return nil
         }
+    }
+
+    /// Convenience overload that accepts a `String` path. Allocates
+    /// a temporary `ByteBuffer` — use the `ByteBuffer` overload for
+    /// the hot path (zero-copy from the accumulator).
+    public func match(method: HTTPMethod, path: String) -> (handler: HandlerKind, params: Params)? {
+        var buf = ByteBufferAllocator().buffer(capacity: path.utf8.count)
+        buf.writeString(path)
+        return self.match(method: method, path: buf)
     }
 
     /// Walk raw path bytes against pre-compiled route segments.

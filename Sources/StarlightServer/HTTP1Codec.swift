@@ -29,6 +29,17 @@ final class HTTP1Codec: @unchecked Sendable {
     private var accumulator: ByteBuffer = ByteBufferAllocator().buffer(capacity: 1024)
     private let maxAccumulatorBytes: Int
 
+    /// Reusable response buffer — cleared and refilled per request.
+    /// `ByteBuffer` is COW, so `HTTPResponse(buffer: responseBuffer)`
+    /// shares storage until the next write triggers copy-on-write.
+    /// Eliminates per-error-response ByteBuffer allocation.
+    private var responseBuffer: ByteBuffer = ByteBufferAllocator().buffer(capacity: 512)
+
+    /// Set when feed() detects that writing the incoming chunk would
+    /// exceed `maxAccumulatorBytes`. The next `tryParse()` call
+    /// consumes this flag and returns a 413 response.
+    private var overflowed: Bool = false
+
     init(handler: @escaping HTTPHandler, maxAccumulatorBytes: Int = 1 * 1024 * 1024) {
         self.handler = handler
         self.router = nil
@@ -48,7 +59,18 @@ final class HTTP1Codec: @unchecked Sendable {
     /// Append new inbound bytes to the accumulator. Called once per
     /// TCP read event — bytes are NOT re-added on subsequent
     /// `tryParse()` calls.
+    ///
+    /// - Important: The size limit is enforced **here**, before the
+    ///   bytes are written, to prevent a single large TCP chunk from
+    ///   growing the accumulator to gigabytes. If the projected size
+    ///   exceeds `maxAccumulatorBytes`, the chunk is dropped and the
+    ///   `overflowed` flag is set so the next `tryParse()` returns 413.
     func feed(_ bytes: ByteBuffer) {
+        let projected = self.accumulator.readableBytes + bytes.readableBytes
+        if projected > self.maxAccumulatorBytes {
+            self.overflowed = true
+            return
+        }
         self.accumulator.writeImmutableBuffer(bytes)
     }
 
@@ -58,28 +80,32 @@ final class HTTP1Codec: @unchecked Sendable {
     /// accumulator. Returns the response, or `nil` if the
     /// accumulator doesn't have a complete request yet.
     func tryParse() async -> HTTPResponse? {
-        // DoS defence.
-        if self.accumulator.readableBytes > self.maxAccumulatorBytes {
+        // DoS defence — flag was set by feed() when the incoming
+        // chunk would have exceeded maxAccumulatorBytes.
+        if self.overflowed {
+            self.overflowed = false
             self.accumulator.clear()
             self.parser.reset()
             self.ctx.reset()
             return HTTPResponse.plaintext(
                 "413 Payload Too Large\n",
                 status: HTTPStatus(413, reasonPhrase: "Payload Too Large"),
-                keepAlive: false
+                keepAlive: false,
+                into: &self.responseBuffer
             )
         }
 
         var complete = false
         var consumed = 0
         var parseError: HTTP1ParseError? = nil
+        let readerIndexBefore = self.accumulator.readerIndex
 
-        self.accumulator.readWithUnsafeReadableBytes { rawBytes -> Int in
+        self.accumulator.withUnsafeReadableBytes { rawBytes in
             rawBytes.withMemoryRebound(to: UInt8.self) { typedBytes in
                 guard let base = typedBytes.baseAddress else {
                     complete = false
                     consumed = 0
-                    return 0
+                    return
                 }
                 let buf = UnsafeBufferPointer(start: base, count: typedBytes.count)
                 do {
@@ -92,7 +118,6 @@ final class HTTP1Codec: @unchecked Sendable {
                     parseError = .unexpectedByte(offset: 0)
                     consumed = 0
                 }
-                return complete ? consumed : 0
             }
         }
 
@@ -108,13 +133,46 @@ final class HTTP1Codec: @unchecked Sendable {
             return HTTPResponse.plaintext(
                 "400 Bad Request: \(err)\n",
                 status: HTTPStatus(400, reasonPhrase: "Bad Request"),
-                keepAlive: false
+                keepAlive: false,
+                into: &self.responseBuffer
             )
         }
 
         if !complete {
             return nil
         }
+
+        // Extract path as a zero-copy COW ByteBuffer slice (same
+        // technique as body). Avoids the heap String allocation that
+        // String(decoding:as:) incurs for paths > 15 bytes.
+        if self.parser.pathLength > 0 {
+            self.ctx.path = self.accumulator.getSlice(
+                at: readerIndexBefore + self.parser.pathStart,
+                length: self.parser.pathLength
+            ) ?? self.ctx.path
+        }
+
+        // Extract body as a zero-copy COW ByteBuffer slice from the
+        // accumulator. The body bytes live at
+        // [readerIndexBefore + bodyStart, readerIndexBefore + consumed)
+        // in the buffer's underlying storage. `getSlice` bumps the
+        // storage's reference count — no memcpy, no arena allocation.
+        // When `feed()` later writes new bytes and the accumulator
+        // grows, COW gives the accumulator fresh storage while this
+        // slice retains the old one.
+        let bodyLen = self.parser.bodyLength
+        if bodyLen > 0 {
+            self.ctx.body = self.accumulator.getSlice(
+                at: readerIndexBefore + self.parser.bodyStart,
+                length: bodyLen
+            )
+        }
+
+        // Discard consumed bytes from the accumulator. Deferred from
+        // parse because NIO's getSlice requires index >= readerIndex
+        // — we must extract all zero-copy slices BEFORE advancing.
+        // After this call, only unconsumed (pipelined) bytes remain.
+        self.accumulator.moveReaderIndex(forwardBy: consumed)
 
         // Invoke the user handler (or the router).
         let response: HTTPResponse
@@ -126,7 +184,8 @@ final class HTTP1Codec: @unchecked Sendable {
             response = HTTPResponse.plaintext(
                 "500 Internal Server Error\n",
                 status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
-                keepAlive: false
+                keepAlive: false,
+                into: &self.responseBuffer
             )
         }
 

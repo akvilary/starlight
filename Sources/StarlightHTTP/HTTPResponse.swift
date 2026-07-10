@@ -64,19 +64,56 @@ extension HTTPResponse {
 
     /// `status`-coded response with `text/plain; charset=utf-8` body.
     /// Use for error responses (404, 400, 500) and short strings.
+    ///
+    /// - Note: Allocates a new `ByteBuffer` per call. For the hot
+    ///   path, use `plaintext(_:status:keepAlive:into:)` with a
+    ///   reusable buffer to eliminate per-response allocation.
     public static func plaintext(
         _ body: String,
         status: HTTPStatus = .ok,
         keepAlive: Bool = true
     ) -> HTTPResponse {
         var buf = sharedAllocator.buffer(capacity: 256 + body.utf8.count)
-        let connection = keepAlive ? "keep-alive" : "close"
+        writeResponse(into: &buf, body: body, status: status, keepAlive: keepAlive)
+        return HTTPResponse(buffer: buf, keepAlive: keepAlive)
+    }
+
+    /// Zero-allocation response builder that writes into a reusable
+    /// buffer. The caller owns the buffer (typically per-connection)
+    /// and clears it between requests. `ByteBuffer` is COW, so the
+    /// returned `HTTPResponse` shares storage with `buffer` until the
+    /// next write triggers COW — no memcpy.
+    ///
+    /// Usage:
+    /// ```swift
+    /// // In a handler, using the codec's per-connection buffer:
+    /// return HTTPResponse.plaintext("ok", into: &ctx.responseBuffer)
+    /// ```
+    public static func plaintext(
+        _ body: String,
+        status: HTTPStatus = .ok,
+        keepAlive: Bool = true,
+        into buffer: inout ByteBuffer
+    ) -> HTTPResponse {
+        buffer.clear()
+        writeResponse(into: &buffer, body: body, status: status, keepAlive: keepAlive)
+        return HTTPResponse(buffer: buffer, keepAlive: keepAlive)
+    }
+
+    /// Shared response-writing logic. Writes status line, standard
+    /// headers, blank line, and body into `buf`.
+    @inlinable
+    static func writeResponse(
+        into buf: inout ByteBuffer,
+        body: String,
+        status: HTTPStatus,
+        keepAlive: Bool
+    ) {
         buf.writeString("HTTP/1.1 \(status.code) \(status.reasonPhrase)\r\n")
         buf.writeString("Content-Type: text/plain; charset=utf-8\r\n")
         buf.writeString("Content-Length: \(body.utf8.count)\r\n")
-        buf.writeString("Connection: \(connection)\r\n")
+        buf.writeString("Connection: \(keepAlive ? "keep-alive" : "close")\r\n")
         buf.writeString("\r\n")
         buf.writeString(body)
-        return HTTPResponse(buffer: buf, keepAlive: keepAlive)
     }
 }

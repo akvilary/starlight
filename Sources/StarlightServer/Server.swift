@@ -93,6 +93,13 @@ public final class StarlightServer: @unchecked Sendable {
                      "HTTP mode requires an httpHandler closure or a Router")
         precondition(self.listeners.isEmpty, "StarlightServer already started")
 
+        // Freeze the router before any connection is accepted.
+        // This pre-composes middleware into each route's handler
+        // exactly once, on the start() caller's thread — eliminating
+        // the data race that occurred when multiple event loops
+        // called freeze() concurrently from handle().
+        router?.freeze()
+
         // Create per-loop listeners with SO_REUSEPORT.
         for eventLoop in self.eventLoopGroup.makeIterator() {
             let listener = try await ServerBootstrap(group: eventLoop)

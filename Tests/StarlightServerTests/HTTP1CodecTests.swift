@@ -91,6 +91,40 @@ struct HTTP1CodecTests {
         #expect(response2 == nil)
     }
 
+    @Test("Overflow detected in feed() — bytes are NOT written to accumulator")
+    func overflowInFeedNotTryParse() async {
+        let codec = HTTP1Codec(
+            handler: { _ in HTTPResponse.plaintext("ok") },
+            maxAccumulatorBytes: 32
+        )
+        // Feed a valid small request first.
+        var small = ByteBufferAllocator().buffer(capacity: 64)
+        small.writeString("GET / HTTP/1.1\r\n\r\n")
+        codec.feed(small)
+        // This should parse fine.
+        let ok = await codec.tryParse()
+        #expect(ok != nil)
+        #expect(ok!.keepAlive == true)
+
+        // Now feed a chunk that exceeds the limit. The bytes should
+        // be dropped immediately in feed(), not buffered.
+        var huge = ByteBufferAllocator().buffer(capacity: 128)
+        huge.writeBytes([UInt8](repeating: 0x41, count: 100))
+        codec.feed(huge)
+
+        let resp = await codec.tryParse()
+        #expect(resp != nil)
+        #expect(resp!.keepAlive == false)
+
+        // Recovery: feed a valid request after overflow.
+        var good = ByteBufferAllocator().buffer(capacity: 64)
+        good.writeString("GET /ok HTTP/1.1\r\n\r\n")
+        codec.feed(good)
+        let recovered = await codec.tryParse()
+        #expect(recovered != nil)
+        #expect(recovered!.keepAlive == true)
+    }
+
     // MARK: - Valid-after-error recovery
 
     @Test("Valid request parses correctly after a prior error on the same codec")

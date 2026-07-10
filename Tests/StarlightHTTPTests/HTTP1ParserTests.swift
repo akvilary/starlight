@@ -175,6 +175,95 @@ struct HTTP1ParserTests {
         }
     }
 
+    // MARK: - Body / Content-Length
+
+    @Test("Valid Content-Length parses body")
+    func validContentLengthBody() throws {
+        let raw = """
+        POST /upload HTTP/1.1\r
+        Content-Length: 5\r
+        \r
+        hello
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+            try parser.feed(ptr, into: &ctx)
+        }
+        #expect(complete)
+        // Parser records body location but does NOT copy — the codec
+        // creates a zero-copy ByteBuffer slice after parsing.
+        #expect(parser.bodyLength == 5)
+    }
+
+    @Test("Content-Length: 0 means no body")
+    func zeroContentLength() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Content-Length: 0\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+            try parser.feed(ptr, into: &ctx)
+        }
+        #expect(complete)
+        #expect(parser.bodyLength == 0)
+    }
+
+    @Test("Non-numeric Content-Length is rejected with 400")
+    func invalidContentLengthNonNumeric() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Content-Length: abc\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    @Test("Negative Content-Length is rejected")
+    func negativeContentLength() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Content-Length: -1\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    @Test("Content-Length with trailing junk is rejected")
+    func contentLengthTrailingJunk() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Content-Length: 5 extra\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
     // MARK: - Partial reads (streaming)
 
     @Test("Request split across two feeds parses correctly")

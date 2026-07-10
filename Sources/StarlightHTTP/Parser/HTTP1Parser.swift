@@ -61,6 +61,10 @@ public enum HTTP1ParseError: Error, Sendable, Equatable {
     /// A chunked-transfer request was received — Phase 2 supports only
     /// `Content-Length`-bounded bodies.
     case chunkedNotSupported
+    /// The `Content-Length` header was present but contained a
+    /// non-integer, negative, or otherwise invalid value.
+    /// RFC 7230 §3.3.2 requires a 400 response.
+    case invalidContentLength
     /// An unexpected byte was found at the indicated offset.
     case unexpectedByte(offset: Int)
 }
@@ -77,14 +81,25 @@ public struct HTTP1Parser: ~Copyable {
     /// Bytes consumed from the input buffer so far (across all phases).
     public private(set) var consumedBytes: Int = 0
 
+    /// Offset into the input buffer where the URL path begins.
+    /// Set during request-line parsing. The codec uses this (plus
+    /// `pathLength`) to create a zero-copy `ByteBuffer` slice for
+    /// `ctx.path` — avoiding the heap `String` allocation that
+    /// `String(decoding:as:)` incurs for paths > 15 bytes.
+    public private(set) var pathStart: Int = 0
+
+    /// Length of the URL path in the input buffer.
+    /// Valid after the request line has been parsed.
+    public private(set) var pathLength: Int = 0
+
     /// Offset into the input buffer where the header section begins.
     private var headerBlockStart: Int = 0
 
     /// Offset into the input buffer where the body section begins
     /// (i.e. immediately after the empty line that terminates headers).
-    /// Used when the parser reaches `.body(remaining: 0)` to copy
-    /// body bytes into the arena.
-    private var bodyStart: Int = 0
+    /// Used by the codec to create a zero-copy `ByteBuffer` slice for
+    /// `ctx.body` after parsing is complete.
+    public private(set) var bodyStart: Int = 0
 
     /// Maximum allowed total request size (request line + headers + body).
     /// Default 64 KiB — comfortably fits any reasonable HTTP/1.1 request.
@@ -93,6 +108,11 @@ public struct HTTP1Parser: ~Copyable {
     /// Maximum number of headers. Default 100. Rejects pathological
     /// "header-bomb" requests early.
     public let maxHeaderCount: Int
+
+    /// Length of the parsed body in bytes. Zero for bodyless requests.
+    /// Valid only when `state == .complete`.
+    @inlinable
+    public var bodyLength: Int { consumedBytes - bodyStart }
 
     /// Initialize a fresh parser.
     @inlinable
@@ -112,6 +132,8 @@ public struct HTTP1Parser: ~Copyable {
         self.consumedBytes = 0
         self.headerBlockStart = 0
         self.bodyStart = 0
+        self.pathStart = 0
+        self.pathLength = 0
     }
 
     /// Feed bytes from an accumulated buffer. The parser reads from
@@ -148,19 +170,10 @@ public struct HTTP1Parser: ~Copyable {
                 consumedBytes &+= available
                 remaining &-= available
                 if remaining == 0 {
-                    // Body complete — copy body bytes from the buffer
-                    // into the arena and set ctx.body.
-                    let bodyLen = consumedBytes - bodyStart
-                    if bodyLen > 0 {
-                        let bodyBuf = ctx.allocate(bytes: bodyLen, alignment: 1)
-                        bodyBuf.baseAddress!.copyMemory(
-                            from: UnsafeRawPointer(buffer.baseAddress!).advanced(by: bodyStart),
-                            byteCount: bodyLen
-                        )
-                        // Construct [UInt8] from arena bytes.
-                        let bodyPtr = bodyBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                        ctx.body = UnsafeBufferPointer(start: bodyPtr, count: bodyLen).map { $0 }
-                    }
+                    // Body is fully received. The body bytes are at
+                    // [bodyStart, consumedBytes) in the input buffer.
+                    // The codec creates a zero-copy ByteBuffer slice
+                    // from the accumulator — no copy needed here.
                     state = .complete
                     return true
                 } else {
@@ -217,21 +230,17 @@ public struct HTTP1Parser: ~Copyable {
         ctx.method = decodeMethod(buffer, offset: lineStart, length: methodLen)
 
         // PATH = [sp1+1, sp2)
-        let pathStart = sp1 + 1
-        let pathLen = sp2 - pathStart
-        guard pathLen >= 1 else {
+        let pStart = sp1 + 1
+        let pLen = sp2 - pStart
+        guard pLen >= 1 else {
             state = .error; throw HTTP1ParseError.malformedRequestLine
         }
-        // Decode path directly from the receive buffer into a String.
-        // For paths ≤ 15 bytes (the vast majority), Swift's SmallString
-        // stores the bytes inline — zero heap allocation. We skip the
-        // arena copy entirely: the arena allocation was wasted because
-        // String(decoding:as:) copies the bytes into its own storage
-        // anyway.
-        ctx.path = String(decoding: UnsafeBufferPointer(
-            start: buffer.baseAddress!.advanced(by: pathStart),
-            count: pathLen
-        ), as: UTF8.self)
+        // Record the path's byte location for the codec to create a
+        // zero-copy ByteBuffer slice. Avoids the heap String allocation
+        // that String(decoding:as:) incurs for paths > 15 bytes
+        // (the majority of real-world paths like /api/v1/users/42).
+        self.pathStart = pStart
+        self.pathLength = pLen
 
         // VERSION = [sp2+1, lineContentEnd)
         let versionStart = sp2 + 1
@@ -301,9 +310,16 @@ public struct HTTP1Parser: ~Copyable {
 
             // Check Content-Length to determine if there's a body.
             // The headers are now in ctx.headers (lazy HeaderView).
+            // RFC 7230 §3.3.2: an invalid Content-Length MUST be
+            // rejected with 400. We validate strictly — only
+            // non-negative decimal integers are accepted.
             let contentLength: Int?
             if let clStr = ctx.headers["Content-Length"] {
-                contentLength = Int(clStr)
+                guard let cl = Self.parseContentLength(clStr) else {
+                    state = .error
+                    throw HTTP1ParseError.invalidContentLength
+                }
+                contentLength = cl
             } else {
                 contentLength = nil
             }
@@ -451,5 +467,33 @@ public struct HTTP1Parser: ~Copyable {
             state = .error
             throw HTTP1ParseError.unsupportedVersion
         }
+    }
+
+    /// Strict Content-Length validator.
+    ///
+    /// Accepts only non-negative decimal integers (e.g. `"0"`, `"42"`,
+    /// `"1048576"`). Rejects empty strings, negative numbers, values
+    /// with leading/trailing whitespace inside the digits, non-ASCII
+    /// digits, and values that overflow `Int`.
+    ///
+    /// This is stricter than `Int(_:)` which silently returns `nil`
+    /// for invalid input — we need to distinguish "header absent"
+    /// from "header invalid" and return 400 for the latter.
+    ///
+    /// - Returns: The parsed length, or `nil` if the string is invalid.
+    @usableFromInline
+    @inline(__always)
+    static func parseContentLength(_ str: String) -> Int? {
+        guard !str.isEmpty else { return nil }
+        var result = 0
+        for byte in str.utf8 {
+            // Only ASCII digits 0x30–0x39 are valid.
+            if byte < 0x30 || byte > 0x39 { return nil }
+            result = result &* 10 &+ Int(byte - 0x30)
+            // Overflow check: if result went negative, the value
+            // exceeded Int.max on this platform.
+            if result < 0 { return nil }
+        }
+        return result
     }
 }

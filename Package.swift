@@ -61,7 +61,11 @@ let package = Package(
         // ── Radix-trie router with zero-copy path params ─────────────────────
         .target(
             name: "StarlightRouting",
-            dependencies: ["StarlightCore", "StarlightHTTP"],
+            dependencies: [
+                "StarlightCore",
+                "StarlightHTTP",
+                .product(name: "NIOCore", package: "swift-nio"),
+            ],
             swiftSettings: baseSwiftSettings
         ),
 
