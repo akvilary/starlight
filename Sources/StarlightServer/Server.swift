@@ -224,8 +224,16 @@ public final class StarlightServer: @unchecked Sendable {
                     _ = stats.bytesReceived.add(Int64(bytes.readableBytes))
                     codec.feed(bytes)
                     while let response = await codec.tryParse() {
-                        _ = stats.bytesSent.add(Int64(response.buffer.readableBytes))
-                        try await outbound.write(response.buffer)
+                        if let bodyBuf = response.bodyBuffer {
+                            _ = stats.bytesSent.add(Int64(
+                                response.buffer.readableBytes &+ bodyBuf.readableBytes))
+                            try await outbound.write(contentsOf: [
+                                response.buffer, bodyBuf,
+                            ])
+                        } else {
+                            _ = stats.bytesSent.add(Int64(response.buffer.readableBytes))
+                            try await outbound.write(response.buffer)
+                        }
                         if !response.keepAlive {
                             return
                         }
