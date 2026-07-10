@@ -144,13 +144,13 @@ func printHelp() {
 @Sendable
 fileprivate func helloWorldHandler(_ ctx: borrowing RequestContext) -> HTTPResponse {
     _ = ctx
-    return HTTPResponse(buffer: StarlightBenchmark.helloResponse)
+    return HTTPResponse(headerBuffer: StarlightBenchmark.helloResponse)
 }
 
 extension StarlightBenchmark {
     /// Cached "Hello, World!" response. We build it once at startup and
     /// hand the same buffer to every request. NIO's `ByteBuffer` is a
-    /// COW value type, so `outbound.write(response.buffer)` just bumps
+    /// COW value type, so `outbound.write(response.headerBuffer)` just bumps
     /// the storage's reference count without copying bytes. This
     /// eliminates the largest single allocation in the HTTP hot path.
     static let helloResponse: ByteBuffer = {
@@ -171,7 +171,7 @@ extension StarlightBenchmark {
 ///
 /// Static routes (`/`, `/health`) return **pre-cached** `ByteBuffer`s —
 /// zero per-request allocation. ByteBuffer is COW, so each
-/// `outbound.write(response.buffer)` just bumps the shared storage's
+/// `outbound.write(response.headerBuffer)` just bumps the shared storage's
 /// reference count — no memcpy, no new heap allocation.
 /// The dynamic route (`/users/:id`) necessarily allocates per request
 /// (response depends on the captured id); it is the worst case.
@@ -203,16 +203,16 @@ func makeBenchmarkRouter() -> Router {
     // `let` bindings so the @Sendable handler closures can capture
     // them without strict-concurrency complaints. ByteBuffer is COW so
     // sharing the value across connections is cheap — the server
-    // writes `response.buffer` directly to the channel without copying.
+    // writes `response.headerBuffer` directly to the channel without copying.
     let rootBufLet = rootBuf
     let healthBufLet = healthBuf
 
     let router = Router()
     router.get("/") { _ in
-        HTTPResponse(buffer: rootBufLet)
+        HTTPResponse(headerBuffer: rootBufLet)
     }
     router.get("/health") { _ in
-        HTTPResponse(buffer: healthBufLet)
+        HTTPResponse(headerBuffer: healthBufLet)
     }
     router.get("/users/:id") { ctx in
         // Dynamic route — response depends on the captured id. This

@@ -52,16 +52,18 @@ public enum HandlerKind: Sendable {
 ///
 /// In the single-buffer case (`bodyBuffer == nil`), `buffer` holds
 /// the complete serialized response (status line + headers + body).
-/// In the multi-buffer case (`bodyBuffer != nil`), `buffer` holds
+/// In the multi-buffer case (`bodyBuffer != nil`), `headerBuffer` holds
 /// only the header section and `bodyBuffer` holds the body — the
 /// server writes both via a single `writev()` syscall.
 public struct HTTPResponse: Sendable {
-    public let buffer: ByteBuffer
+    /// Header buffer (or full response when `bodyBuffer` is nil).
+    public let headerBuffer: ByteBuffer
 
     /// Optional separate body buffer for writev. When non-nil,
-    /// `buffer` contains only the response headers and `bodyBuffer`
-    /// holds the body — the server writes both via a single
-    /// `writev()` syscall (NIO coalesces ≥2 ByteBuffers on flush).
+    /// `headerBuffer` contains only the response headers and
+    /// `bodyBuffer` holds the body — the server writes both via a
+    /// single `writev()` syscall (NIO coalesces ≥2 ByteBuffers on
+    /// flush).
     ///
     /// `Optional<ByteBuffer>` is the same size as `ByteBuffer` (23 B)
     /// thanks to Swift's spare-bit optimization, so the total struct
@@ -73,10 +75,11 @@ public struct HTTPResponse: Sendable {
     /// server closes the TCP connection after writing the response.
     public let keepAlive: Bool
 
-    /// Single-buffer response — `buffer` contains the full response.
+    /// Single-buffer response — `headerBuffer` contains the full
+    /// response (status line + headers + body).
     @inlinable
-    public init(buffer: ByteBuffer, keepAlive: Bool = true) {
-        self.buffer = buffer
+    public init(headerBuffer: ByteBuffer, keepAlive: Bool = true) {
+        self.headerBuffer = headerBuffer
         self.bodyBuffer = nil
         self.keepAlive = keepAlive
     }
@@ -86,7 +89,7 @@ public struct HTTPResponse: Sendable {
     /// via `writev()`.
     @inlinable
     public init(header: ByteBuffer, body: ByteBuffer, keepAlive: Bool = true) {
-        self.buffer = header
+        self.headerBuffer = header
         self.bodyBuffer = body
         self.keepAlive = keepAlive
     }
@@ -115,7 +118,7 @@ extension HTTPResponse {
     ) -> HTTPResponse {
         var buf = sharedAllocator.buffer(capacity: 256 + body.utf8.count)
         writeResponse(into: &buf, body: body, status: status, keepAlive: keepAlive)
-        return HTTPResponse(buffer: buf, keepAlive: keepAlive)
+        return HTTPResponse(headerBuffer: buf, keepAlive: keepAlive)
     }
 
     /// Zero-allocation response builder that writes into a reusable
@@ -137,7 +140,7 @@ extension HTTPResponse {
     ) -> HTTPResponse {
         buffer.clear()
         writeResponse(into: &buffer, body: body, status: status, keepAlive: keepAlive)
-        return HTTPResponse(buffer: buffer, keepAlive: keepAlive)
+        return HTTPResponse(headerBuffer: buffer, keepAlive: keepAlive)
     }
 
     // MARK: - Zero-interpolation response serialization

@@ -246,7 +246,7 @@ struct RouterTests {
         // We can't easily inspect the buffer contents here without
         // pulling in ByteBuffer read APIs; we just check that the
         // response exists. The "404" string is in there.
-        #expect(response.buffer.readableBytes > 0)
+        #expect(response.headerBuffer.readableBytes > 0)
     }
 
     @Test("handle() invokes matched handler with params set on ctx")
@@ -350,7 +350,7 @@ struct RouterTests {
         ctx.setPath("/blocked")
         let response = await router.handle(&ctx)
         #expect(!handlerCalled.value)
-        let body = response.buffer.getString(at: 0, length: response.buffer.readableBytes)
+        let body = response.headerBuffer.getString(at: 0, length: response.headerBuffer.readableBytes)
         #expect(body?.contains("denied") == true)
     }
 

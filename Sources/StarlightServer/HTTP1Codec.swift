@@ -30,7 +30,7 @@ final class HTTP1Codec: @unchecked Sendable {
     private let maxAccumulatorBytes: Int
 
     /// Reusable response buffer — cleared and refilled per request.
-    /// `ByteBuffer` is COW, so `HTTPResponse(buffer: responseBuffer)`
+    /// `ByteBuffer` is COW, so `HTTPResponse(headerBuffer: responseBuffer)`
     /// shares storage until the next write triggers copy-on-write.
     /// Eliminates per-error-response ByteBuffer allocation.
     private var responseBuffer: ByteBuffer = ByteBufferAllocator().buffer(capacity: 512)

@@ -205,7 +205,7 @@ struct HTTP1CodecTests {
         #expect(response!.keepAlive == true)
 
         // Verify the response body contains "user 42".
-        let body = response!.buffer.getString(at: 0, length: response!.buffer.readableBytes)
+        let body = response!.headerBuffer.getString(at: 0, length: response!.headerBuffer.readableBytes)
         #expect(body?.contains("user 42") == true)
     }
 }
