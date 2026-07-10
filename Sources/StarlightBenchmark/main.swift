@@ -232,15 +232,21 @@ struct StarlightBenchmark {
 
         signal(SIGPIPE, SIG_IGN)
 
+        #if os(Linux)
+        let backendName = "io_uring"
+        #else
+        let backendName = "NIOAsyncChannel"
+        #endif
+
         out("""
         ╔══════════════════════════════════════════════════════════════════╗
-        ║         Starlight Phase 4 — \(cli.mode.uppercased()) (NIOAsyncChannel)        ║
+        ║         Starlight Phase 4 — \(cli.mode.uppercased()) (\(backendName))        ║
         ╚══════════════════════════════════════════════════════════════════╝
         Configuration:
           Bind                : \(cli.host):\(cli.port)
           Event loops         : \(server.loopCount)  (= CPU cores, thread-per-core)
           SO_REUSEPORT        : enabled  (per-loop listener, kernel-balanced accept)
-          Architecture        : NIOAsyncChannel (one Task per connection)
+          Architecture        : \(backendName) (thread-per-core, batch submit)
           Pipeline            : \(cli.mode == "http" ? "HTTP/1.1 hello world" : cli.mode == "router" ? "HTTP/1.1 router" : "TCP echo")
         """)
         out("  Status              : starting…")
