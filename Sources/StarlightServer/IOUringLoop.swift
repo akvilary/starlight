@@ -27,6 +27,7 @@
 //    │                                                              │
 //    │  (SQEs are filled above but NOT submitted — they accumulate) │
 //    │  drainResponseQueue()                                        │
+//    │  ensureAcceptArmed() — safety net                           │
 //    └── loop back: sl_wait_cqe flushes everything in one syscall ─┘
 //
 //===----------------------------------------------------------------------===//
@@ -72,21 +73,23 @@ internal func unpackOp(_ data: UInt64) -> IouringOp {
 
 /// All per-connection state in one object.
 ///
-/// The key insight: ByteBuffer uses heap-allocated, reference-counted
-/// backing storage that never moves. We store the response's ByteBuffer
-/// in `pendingResponse` to keep it alive, and pass its backing pointer
-/// directly to io_uring SEND — zero copy, zero allocation.
+/// ByteBuffer uses heap-allocated, reference-counted backing storage
+/// that never moves. We store the response in `pendingResponse` to
+/// keep it alive, and pass its backing pointer directly to io_uring
+/// SEND — zero copy, zero allocation.
 final class IOConnection {
     let fd: CInt
     let readBuffer: UnsafeMutablePointer<UInt8>
     let codec: HTTP1Codec
 
-    /// The response being sent. Kept alive until SEND CQE arrives
-    /// so io_uring can read from the ByteBuffer's backing storage.
+    /// Response being sent. Kept alive until SEND CQE arrives.
     var pendingResponse: HTTPResponse?
     /// Alternative: raw bytes from the async response queue.
     var pendingSendData: [UInt8]?
 
+    /// Stored once at submit time — avoids repeated ByteBuffer
+    /// property reads in the hot path.
+    var sendLen: Int = 0
     var sendOffset: Int = 0
     var keepAlive: Bool = true
 
@@ -104,48 +107,35 @@ final class IOConnection {
         readBuffer.deallocate()
     }
 
-    /// Total bytes to send.
-    var sendLen: Int {
-        if let r = pendingResponse {
-            return r.headerBuffer.readableBytes + (r.bodyBuffer?.readableBytes ?? 0)
-        }
-        return pendingSendData?.count ?? 0
-    }
-
-    /// Submit SEND SQE using the pending data's pointer directly.
-    /// Called within `withUnsafeReadableBytes` / `withUnsafeBufferPointer`
-    /// so the pointer is valid during the `sl_prep_send` call.
-    /// The backing storage stays alive via pendingResponse / pendingSendData.
+    /// Fill SEND SQE using pending data's pointer directly.
+    /// The pointer is valid because pendingResponse / pendingSendData
+    /// keep the backing storage alive until the SEND CQE arrives.
     func fillSendSQE(_ sqe: UnsafeMutablePointer<io_uring_sqe>, offset: Int) {
-        let total = sendLen
-        let remaining = total - offset
+        let remaining = UInt32(sendLen - offset)
 
         if let r = pendingResponse {
-            // Single-buffer (all current responses): one pointer.
             if r.bodyBuffer == nil {
+                // Single-buffer — all current responses take this path.
                 r.headerBuffer.withUnsafeReadableBytes { ptr in
                     sl_prep_send(sqe, fd,
                                  ptr.baseAddress!.advanced(by: offset),
-                                 UInt32(remaining))
+                                 remaining)
                 }
             } else {
-                // Multi-buffer: flatten. (Future: WRITEV.)
-                // For now this path is never taken.
+                // Multi-buffer (future: WRITEV).
                 let hdr = r.headerBuffer.readableBytes
                 if offset < hdr {
-                    let hdrLen = UInt32(hdr - offset)
                     r.headerBuffer.withUnsafeReadableBytes { ptr in
                         sl_prep_send(sqe, fd,
                                      ptr.baseAddress!.advanced(by: offset),
-                                     hdrLen)
+                                     UInt32(hdr - offset))
                     }
                 } else {
                     let bodyOff = offset - hdr
-                    let bodyLen = UInt32(remaining)
                     r.bodyBuffer!.withUnsafeReadableBytes { ptr in
                         sl_prep_send(sqe, fd,
                                      ptr.baseAddress!.advanced(by: bodyOff),
-                                     bodyLen)
+                                     remaining)
                     }
                 }
             }
@@ -153,7 +143,7 @@ final class IOConnection {
             data.withUnsafeBufferPointer { ptr in
                 sl_prep_send(sqe, fd,
                              ptr.baseAddress!.advanced(by: offset),
-                             UInt32(remaining))
+                             remaining)
             }
         }
     }
@@ -162,6 +152,7 @@ final class IOConnection {
     func clearSend() {
         pendingResponse = nil
         pendingSendData = nil
+        sendLen = 0
         sendOffset = 0
     }
 }
@@ -179,11 +170,11 @@ final class IOUringLoop: @unchecked Sendable {
     private let handler: HTTPHandler?
     private let router: Router?
     private let ringEntries: UInt32 = 4096
-    private let readBufferSize: Int = 8192
+    private let readBufferSize: Int = 4096
     private let maxConnectionsPerLoop: Int
     internal let loopStats: ServerStats
 
-    /// Single dictionary: fd → IOConnection. One lookup per request.
+    /// Single dictionary: fd → IOConnection.
     private var connections: [CInt: IOConnection] = [:]
 
     private var responseQueue: [(fd: CInt, data: [UInt8], keepAlive: Bool)] = []
@@ -191,6 +182,12 @@ final class IOUringLoop: @unchecked Sendable {
 
     private var stopped = false
     private var connectionCount: Int = 0
+
+    /// Tracks whether a POLL_ADD for the listener is in-flight.
+    /// Prevents duplicate submissions and enables the safety-net
+    /// re-arm in the main loop (fixes edge case where ensureSQE
+    /// fails during closeConnection's re-arm).
+    private var acceptArmed = false
 
     init(host: String, port: Int, handler: HTTPHandler?, router: Router?,
          stats: ServerStats, maxConnectionsPerLoop: Int = 10_000) {
@@ -242,9 +239,6 @@ final class IOUringLoop: @unchecked Sendable {
 
     func run() throws {
         while !stopped {
-            // sl_wait_cqe flushes ALL pending SQEs (filled during the
-            // previous iteration) and then blocks for ≥1 CQE.
-            // This is the ONLY io_uring_enter per loop iteration.
             var cqe: UnsafeMutablePointer<io_uring_cqe>? = nil
             let ret = sl_wait_cqe(&ring, &cqe)
 
@@ -255,8 +249,6 @@ final class IOUringLoop: @unchecked Sendable {
             guard let first = cqe else { continue }
 
             // Process all available CQEs in a batch.
-            // Each handler fills new SQEs but does NOT submit them.
-            // Submission happens at the top of the next iteration.
             var current: UnsafeMutablePointer<io_uring_cqe>? = first
             while current != nil {
                 processCQE(current!)
@@ -266,13 +258,13 @@ final class IOUringLoop: @unchecked Sendable {
             }
 
             drainResponseQueue()
+            ensureAcceptArmed()
         }
         sl_ring_exit(&ring)
     }
 
     // MARK: - SQE allocation
 
-    /// Get an SQE, flushing once if the ring is full.
     private func ensureSQE() -> UnsafeMutablePointer<io_uring_sqe>? {
         if let sqe = sl_get_sqe(&ring) { return sqe }
         _ = sl_submit(&ring)
@@ -297,12 +289,25 @@ final class IOUringLoop: @unchecked Sendable {
     // MARK: - Accept
 
     private func submitAccept() {
+        guard !acceptArmed else { return }
         guard let sqe = ensureSQE() else { return }
         sl_prep_accept(sqe, listenerFd)
         sl_sqe_set_data(sqe, packUserData(fd: listenerFd, op: .accept))
+        acceptArmed = true
+    }
+
+    /// Safety net: if under the connection limit and accept is not
+    /// armed (e.g., ensureSQE failed during closeConnection's re-arm),
+    /// try again. Called once per loop iteration.
+    private func ensureAcceptArmed() {
+        if connectionCount < maxConnectionsPerLoop && !acceptArmed {
+            submitAccept()
+        }
     }
 
     private func handleAccept(res: CInt) {
+        acceptArmed = false
+
         while true {
             let fd = sl_accept4(listenerFd)
             if fd >= 0 {
@@ -319,7 +324,6 @@ final class IOUringLoop: @unchecked Sendable {
     }
 
     private func setupNewConnection(fd: CInt) {
-        // TCP_NODELAY + keepalive (60s idle → 3 probes × 10s)
         _ = sl_set_tcp_nodelay(fd)
         sl_set_keepalive(fd, 60, 10, 3)
 
@@ -341,7 +345,6 @@ final class IOUringLoop: @unchecked Sendable {
         }
         sl_prep_recv(sqe, conn.fd, conn.readBuffer, UInt32(readBufferSize))
         sl_sqe_set_data(sqe, packUserData(fd: conn.fd, op: .recv))
-        // No sl_submit — batched at loop top.
     }
 
     private func handleRecv(fd: CInt, bytesRead: CInt) {
@@ -354,45 +357,48 @@ final class IOUringLoop: @unchecked Sendable {
 
         guard let conn = connections[fd] else { return }
 
-        // Feed raw bytes directly to codec — no intermediate ByteBuffer.
-        // Eliminates one heap allocation and one memcpy per read.
         conn.codec.feed(UnsafeBufferPointer(
             start: conn.readBuffer, count: Int(bytesRead)))
 
-        processRequests(conn: conn)
+        processNextOrRecv(conn: conn)
     }
 
-    private func processRequests(conn: IOConnection) {
-        while true {
-            let result = conn.codec.tryParseSync()
+    // MARK: - Request dispatch (shared by handleRecv and handleSend)
 
-            switch result {
-            case .incomplete:
-                submitRecv(conn: conn)
-                return
+    /// Try to parse and dispatch one request from the codec's accumulator.
+    /// - .response → submit SEND (pipelining: next request processed
+    ///   after SEND completes to preserve response ordering).
+    /// - .incomplete → submit RECV to wait for more data.
+    /// - .needsAsync → return 500 (Phase 2: eventfd + Task).
+    private func processNextOrRecv(conn: IOConnection) {
+        let result = conn.codec.tryParseSync()
 
-            case .response(let response):
-                submitSend(conn: conn, response: response)
-                return
+        switch result {
+        case .incomplete:
+            submitRecv(conn: conn)
 
-            case .needsAsync:
-                let r = HTTPResponse.plaintext(
-                    "500 Async handlers require NIO backend\n",
-                    status: .internalServerError, keepAlive: false)
-                conn.codec.afterDispatch()
-                submitSend(conn: conn, response: r)
-                return
-            }
+        case .response(let response):
+            submitSend(conn: conn, response: response)
+
+        case .needsAsync:
+            let r = HTTPResponse.plaintext(
+                "500 Async handlers require NIO backend\n",
+                status: .internalServerError, keepAlive: false)
+            conn.codec.afterDispatch()
+            submitSend(conn: conn, response: r)
         }
     }
 
     // MARK: - Send
 
     private func submitSend(conn: IOConnection, response: HTTPResponse) {
-        _ = loopStats.bytesSent.add(Int64(response.headerBuffer.readableBytes
-                                          + (response.bodyBuffer?.readableBytes ?? 0)))
+        let len = response.headerBuffer.readableBytes
+                   + (response.bodyBuffer?.readableBytes ?? 0)
+        _ = loopStats.bytesSent.add(Int64(len))
+
         conn.pendingResponse = response
         conn.pendingSendData = nil
+        conn.sendLen = len
         conn.sendOffset = 0
         conn.keepAlive = response.keepAlive
 
@@ -421,27 +427,14 @@ final class IOUringLoop: @unchecked Sendable {
 
         // Full response sent.
         conn.clearSend()
-        let keepAlive = conn.keepAlive
 
-        if !keepAlive {
+        if !conn.keepAlive {
             closeConnection(conn: conn)
             return
         }
 
-        // Keep-alive: try pipelined requests from the accumulator.
-        let result = conn.codec.tryParseSync()
-        switch result {
-        case .response(let response):
-            submitSend(conn: conn, response: response)
-        case .incomplete:
-            submitRecv(conn: conn)
-        case .needsAsync:
-            let r = HTTPResponse.plaintext(
-                "500 Async handlers require NIO backend\n",
-                status: .internalServerError, keepAlive: false)
-            conn.codec.afterDispatch()
-            submitSend(conn: conn, response: r)
-        }
+        // Keep-alive: process pipelined request or re-arm RECV.
+        processNextOrRecv(conn: conn)
     }
 
     // MARK: - Wakeup (eventfd)
@@ -488,10 +481,9 @@ final class IOUringLoop: @unchecked Sendable {
                 pthread_mutex_unlock(&responseLock)
                 return
             }
-            // Store [UInt8] directly — its backing storage is stable.
-            // No copy, no allocation.
             conn.pendingSendData = item.data
             conn.pendingResponse = nil
+            conn.sendLen = item.data.count
             conn.sendOffset = 0
             conn.keepAlive = item.keepAlive
             conn.fillSendSQE(sqe, offset: 0)
@@ -505,15 +497,9 @@ final class IOUringLoop: @unchecked Sendable {
         let fd = conn.fd
         connections.removeValue(forKey: fd)
         close(fd)
-
         connectionCount -= 1
-
-        if connectionCount == maxConnectionsPerLoop - 1 {
-            submitAccept()
-            // Flush immediately — don't wait for next loop iteration
-            // to re-arm the accept, or we might miss connections.
-            _ = sl_submit(&ring)
-        }
+        // Accept re-arm is handled by ensureAcceptArmed() in the
+        // main loop — no need for special-case logic here.
     }
 
     // MARK: - Shutdown
