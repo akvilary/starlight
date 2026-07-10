@@ -196,9 +196,15 @@ final class IOUringExecutorLoop: @unchecked Sendable {
     private var readWaiters: [CInt: CheckedContinuation<Int, Never>] = [:]
     private var writeWaiters: [CInt: CheckedContinuation<CInt, Never>] = [:]
 
-    // Job queue (thread-safe — enqueue from any thread, drain on loop)
-    private var jobQueue: [UnownedJob] = []
+    // Job queues — split by source thread:
+    // loopJobs: enqueued by loop thread (cont.resume in processCQE).
+    //           No lock needed — single-threaded access.
+    // poolJobs: enqueued by pool threads (async handler completion).
+    //           Spinlock protected.
+    private var loopJobs: [UnownedJob] = []
+    private var poolJobs: [UnownedJob] = []
     private var jobLock = pthread_spinlock_t()
+    private var loopThreadId: pthread_t? = nil
     private var blocked = false
 
     private var stopped = false
@@ -257,11 +263,10 @@ final class IOUringExecutorLoop: @unchecked Sendable {
     // MARK: - Event loop
 
     func run() throws {
+        loopThreadId = pthread_self()
+        defer { loopThreadId = nil }
         while !stopped {
-            // 1. Run pending connection handler continuations.
-            drainJobs()
-
-            // 2. Wait for I/O completions.
+            // Wait for I/O completions.
             blocked = true
             var cqe: UnsafeMutablePointer<io_uring_cqe>? = nil
             let ret = sl_wait_cqe(&ring, &cqe)
@@ -273,7 +278,7 @@ final class IOUringExecutorLoop: @unchecked Sendable {
             }
             guard let first = cqe else { continue }
 
-            // 3. Process CQEs → resume continuations → enqueue jobs.
+            // Process CQEs → resume continuations → enqueue jobs.
             var current: UnsafeMutablePointer<io_uring_cqe>? = first
             while current != nil {
                 processCQE(current!)
@@ -282,9 +287,7 @@ final class IOUringExecutorLoop: @unchecked Sendable {
                 if n == 0 { break }
             }
 
-            // 4. Resume jobs that were enqueued by CQE processing.
-            //    (cont.resume in processCQE → enqueue → drainJobs next iter)
-            //    But we can also run them now for lower latency:
+            // Run jobs enqueued by CQE processing (cont.resume → enqueue).
             drainJobs()
 
             ensureAcceptArmed()
@@ -295,24 +298,38 @@ final class IOUringExecutorLoop: @unchecked Sendable {
     // MARK: - Job queue management
 
     private func drainJobs() {
-        pthread_spin_lock(&jobLock)
-        let jobs = jobQueue
-        jobQueue.removeAll(keepingCapacity: true)
-        pthread_spin_unlock(&jobLock)
+        // Loop-thread jobs — no lock needed (single-threaded).
+        var jobs = loopJobs
+        loopJobs.removeAll(keepingCapacity: true)
+
+        // Pool-thread jobs — lock only if non-empty.
+        if !poolJobs.isEmpty {
+            pthread_spin_lock(&jobLock)
+            jobs.append(contentsOf: poolJobs)
+            poolJobs.removeAll(keepingCapacity: true)
+            pthread_spin_unlock(&jobLock)
+        }
 
         for job in jobs {
             job.runSynchronously(on: cachedExecutor)
         }
     }
 
-    // Called by the Swift runtime when a continuation is resumed.
-    // Can be called from the loop thread (inline) or pool threads.
+    // Called by the Swift runtime via SerialExecutor.enqueue.
+    // Can originate from loop thread (cont.resume in processCQE) or
+    // pool threads (async handler completion).
     func enqueueJob(_ job: UnownedJob) {
-        pthread_spin_lock(&jobLock)
-        jobQueue.append(job)
-        let needWake = blocked
-        pthread_spin_unlock(&jobLock)
-        if needWake { wakeup() }
+        if pthread_self() == loopThreadId {
+            // Loop thread — no lock, direct append.
+            loopJobs.append(job)
+        } else {
+            // Pool thread — spinlock + wakeup.
+            pthread_spin_lock(&jobLock)
+            poolJobs.append(job)
+            let needWake = blocked
+            pthread_spin_unlock(&jobLock)
+            if needWake { wakeup() }
+        }
     }
 
     // MARK: - SQE helpers (loop thread only)
