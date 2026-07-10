@@ -405,6 +405,7 @@ public final class Router: @unchecked Sendable {
             for route in staticRoutes where route.method == method {
                 var params = Params()
                 if Self.matchBytes(route.segments, base, pathLen, &params) {
+                    params.setBackingBuffer(path)
                     return (route.handler, params)
                 }
             }
@@ -412,6 +413,7 @@ public final class Router: @unchecked Sendable {
             for route in dynamicRoutes where route.method == method {
                 var params = Params()
                 if Self.matchBytes(route.segments, base, pathLen, &params) {
+                    params.setBackingBuffer(path)
                     return (route.handler, params)
                 }
             }
@@ -458,11 +460,10 @@ public final class Router: @unchecked Sendable {
                     pos += 1
                 }
                 if pos == start { return false }
-                // SmallString handles ≤ 15 bytes inline — zero heap alloc.
-                let value = String(decoding: UnsafeBufferPointer(
-                    start: path.advanced(by: start), count: pos - start
-                ), as: UTF8.self)
-                params.append(name: name, value: value)
+                // Record the byte range — no String allocation during
+                // matching. The value is materialised on-demand via
+                // subscript when (and if) the handler reads it.
+                params.appendParam(name: name, offset: start, length: pos - start)
             }
         }
         // Entire path (up to query string) must be consumed.
