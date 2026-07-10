@@ -177,7 +177,7 @@ final class IOUringLoop: @unchecked Sendable {
     /// Single dictionary: fd → IOConnection.
     private var connections: [CInt: IOConnection] = [:]
 
-    private var responseQueue: [(fd: CInt, data: [UInt8], keepAlive: Bool)] = []
+    private var responseQueue: [(fd: CInt, response: HTTPResponse)] = []
     private var responseLock = pthread_mutex_t()
 
     private var stopped = false
@@ -363,13 +363,31 @@ final class IOUringLoop: @unchecked Sendable {
         processNextOrRecv(conn: conn)
     }
 
+    /// Spawn an async handler on the cooperative pool. Non-blocking —
+    /// the loop continues processing other connections.
+    ///
+    /// Thread safety: while the Task runs, the connection has no
+    /// pending SQE (RECV was consumed, SEND not yet submitted). No CQE
+    /// arrives for this fd, so the loop doesn't touch the codec.
+    /// The codec is @unchecked Sendable — sequential access is
+    /// guaranteed by the eventfd + response queue synchronization.
+    private func dispatchAsyncAndEnqueue(conn: IOConnection) {
+        let codec = conn.codec
+        let fd = conn.fd
+        Task { [self] in
+            let response = await codec.dispatchAsync()
+            self.enqueueResponse(fd: fd, response: response)
+            self.wakeup()
+        }
+    }
+
     // MARK: - Request dispatch (shared by handleRecv and handleSend)
 
     /// Try to parse and dispatch one request from the codec's accumulator.
     /// - .response → submit SEND (pipelining: next request processed
     ///   after SEND completes to preserve response ordering).
     /// - .incomplete → submit RECV to wait for more data.
-    /// - .needsAsync → return 500 (Phase 2: eventfd + Task).
+    /// - .needsAsync → spawn Task, don't block the loop.
     private func processNextOrRecv(conn: IOConnection) {
         let result = conn.codec.tryParseSync()
 
@@ -381,11 +399,7 @@ final class IOUringLoop: @unchecked Sendable {
             submitSend(conn: conn, response: response)
 
         case .needsAsync:
-            let r = HTTPResponse.plaintext(
-                "500 Async handlers require NIO backend\n",
-                status: .internalServerError, keepAlive: false)
-            conn.codec.afterDispatch()
-            submitSend(conn: conn, response: r)
+            dispatchAsyncAndEnqueue(conn: conn)
         }
     }
 
@@ -461,9 +475,9 @@ final class IOUringLoop: @unchecked Sendable {
 
     // MARK: - Async response queue
 
-    func enqueueResponse(fd: CInt, data: [UInt8], keepAlive: Bool) {
+    func enqueueResponse(fd: CInt, response: HTTPResponse) {
         pthread_mutex_lock(&responseLock)
-        responseQueue.append((fd, data, keepAlive))
+        responseQueue.append((fd, response))
         pthread_mutex_unlock(&responseLock)
     }
 
@@ -488,11 +502,13 @@ final class IOUringLoop: @unchecked Sendable {
                 pthread_mutex_unlock(&responseLock)
                 return
             }
-            conn.pendingSendData = item.data
-            conn.pendingResponse = nil
-            conn.sendLen = item.data.count
+            // Store HTTPResponse directly — zero-copy via pendingResponse.
+            conn.pendingResponse = item.response
+            conn.pendingSendData = nil
+            conn.sendLen = item.response.headerBuffer.readableBytes
+                          + (item.response.bodyBuffer?.readableBytes ?? 0)
             conn.sendOffset = 0
-            conn.keepAlive = item.keepAlive
+            conn.keepAlive = item.response.keepAlive
             conn.fillSendSQE(sqe, offset: 0)
             sl_sqe_set_data(sqe, packUserData(fd: item.fd, op: .send))
         }

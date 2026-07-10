@@ -220,6 +220,10 @@ func makeBenchmarkRouter() -> Router {
         let id = ctx.params["id"] ?? "?"
         return HTTPResponse.plaintext("user \(id)\n")
     }
+    // Async route — exercises the io_uring async dispatch path.
+    router.get("/async") { ctx async in
+        return HTTPResponse.plaintext("async ok\n")
+    }
     return router
 }
 
