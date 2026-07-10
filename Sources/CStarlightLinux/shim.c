@@ -16,6 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#define _GNU_SOURCE
 #ifdef __linux__
 
 #include "CStarlightLinux.h"
@@ -312,6 +313,12 @@ int sl_listen(const char *host, int port, int backlog) {
     }
 
     return fd;
+}
+
+/* ── accept4 wrapper ──────────────────────────────────────────────────── */
+
+int sl_accept4(int fd) {
+    return accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
 }
 
 #endif /* __linux__ */

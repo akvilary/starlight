@@ -117,34 +117,10 @@ struct io_uring_params {
 
 #endif /* __has_include(<linux/io_uring.h>) */
 
-/* Constants that may be missing from some environments */
-#ifndef IORING_OP_ACCEPT
-#define IORING_OP_ACCEPT 11
-#endif
-#ifndef IORING_OP_RECV
-#define IORING_OP_RECV 13
-#endif
-#ifndef IORING_OP_SEND
-#define IORING_OP_SEND 14
-#endif
-#ifndef IORING_ENTER_GETEVENTS
-#define IORING_ENTER_GETEVENTS (1U << 0)
-#endif
-#ifndef IORING_OFF_SQ_RING
-#define IORING_OFF_SQ_RING 0ULL
-#endif
-#ifndef IORING_OFF_CQ_RING
-#define IORING_OFF_CQ_RING 0x8000000ULL
-#endif
-#ifndef IORING_OFF_SQES
-#define IORING_OFF_SQES 0x10000000ULL
-#endif
-#ifndef IORING_FEAT_SINGLE_MMAP
-#define IORING_FEAT_SINGLE_MMAP (1U << 0)
-#endif
-
+/* ── Socket + system headers ──────────────────────────────────────────── */
 #include <sys/socket.h>
 #include <sys/mman.h>
+#include <sys/eventfd.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <unistd.h>
@@ -262,17 +238,17 @@ static inline void sl_sqe_set_data(struct io_uring_sqe *sqe,
 /* ── SQE prep helpers (inline, zero overhead) ─────────────────────────── */
 
 static inline void sl_prep_accept(struct io_uring_sqe *sqe, int fd) {
-    sqe->opcode = IORING_OP_ACCEPT;
+    /* POLL_ADD on listener fd (like NIO). When it fires, the loop
+     * calls sl_accept4() directly. Avoids EINVAL issues with
+     * IORING_OP_ACCEPT on some kernel configs. */
+    memset(sqe, 0, sizeof(*sqe));
+    sqe->opcode = IORING_OP_POLL_ADD;
     sqe->fd = fd;
-    sqe->addr = 0;    /* no sockaddr */
-    sqe->off = 0;     /* no addrlen ptr */
-    /* accept flags: SOCK_NONBLOCK | SOCK_CLOEXEC */
-#ifdef SOCK_NONBLOCK
-    sqe->rw_flags = SOCK_NONBLOCK | SOCK_CLOEXEC;
-#else
-    sqe->rw_flags = 04000 | 02000000;
-#endif
+    sqe->rw_flags = 0x001;  /* POLLIN */
 }
+
+/// Direct accept4 syscall — declared in shim.c (requires _GNU_SOURCE).
+int sl_accept4(int fd);
 
 static inline void sl_prep_recv(struct io_uring_sqe *sqe, int fd,
                                 void *buf, unsigned len) {
@@ -293,6 +269,17 @@ static inline void sl_prep_send(struct io_uring_sqe *sqe, int fd,
 #define MSG_NOSIGNAL 0x4000
 #endif
     sqe->rw_flags = MSG_NOSIGNAL;
+}
+
+static inline void sl_prep_poll_add(struct io_uring_sqe *sqe, int fd,
+                                    unsigned poll_mask, int multishot) {
+    sqe->opcode = IORING_OP_POLL_ADD;
+    sqe->fd = fd;
+    sqe->rw_flags = poll_mask & 0xFFFF;  /* poll_events is 16-bit */
+    if (multishot)
+        sqe->len = 1;  /* IORING_POLL_ADD_MULTI = (1U << 0) */
+    else
+        sqe->len = 0;
 }
 
 /* ── Socket helpers ───────────────────────────────────────────────────── */

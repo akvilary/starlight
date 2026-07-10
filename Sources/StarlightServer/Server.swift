@@ -3,46 +3,27 @@
 //  Server.swift
 //  StarlightServer
 //
-//  NIOAsyncChannel-based server with the H2O-style thread-per-core accept
-//  model: one listener per event loop with SO_REUSEPORT, kernel-balanced
-//  accepts, and **one Task per connection** (not per request).
+//  Platform dispatch:
 //
-//  Phase 4.1a refactor: replaces the ChannelHandler pipeline with
-//  NIOAsyncChannel's AsyncSequence API. This is the foundational step
-//  for zero-cost async handlers (Phase 4.1b) — handlers will be
-//  invoked inline in the connection Task via `await`, with no
-//  Task-per-request allocation.
+//    #if os(Linux)  → io_uring backend (IOUringLoop, raw syscalls)
+//    #else           → NIO backend (NIOAsyncChannel, existing code)
 //
-//  Every connection stays on the loop that accepted it for its entire
-//  lifetime — no cross-loop migration, no shared mutable state in the
-//  hot path.
+//  Both paths share the same public API (StarlightServer.start/shutdown)
+//  and the same HTTP layer (HTTP1Codec, Router, RequestContext, etc.).
 //
 //===----------------------------------------------------------------------===//
 
 import Foundation
 import NIOCore
-import NIOPosix
 import StarlightCore
 import StarlightHTTP
 import StarlightRouting
 
 #if canImport(Glibc)
 import Glibc
-#elseif canImport(Darwin)
-import Darwin
 #endif
 
-/// Cross-platform `SO_REUSEPORT` socket option value.
-@inlinable
-var SO_REUSEPORT: NIOBSDSocket.Option {
-    #if canImport(Glibc)
-    return NIOBSDSocket.Option(rawValue: Glibc.SO_REUSEPORT)
-    #elseif canImport(Darwin)
-    return NIOBSDSocket.Option(rawValue: Darwin.SO_REUSEPORT)
-    #else
-    return NIOBSDSocket.Option(rawValue: 15)
-    #endif
-}
+// MARK: - Shared types
 
 /// Connection counters for stats, padded to avoid false sharing.
 public final class ServerStats: @unchecked Sendable {
@@ -58,13 +39,85 @@ public enum Mode: Sendable {
     case http
 }
 
-/// A `StarlightServer` owns a `MultiThreadedEventLoopGroup` and one
-/// bound listener per event loop via `NIOAsyncChannel`.
-///
-/// Each listener uses `SO_REUSEPORT` so the kernel load-balances
-/// accepts across loops. Connections are handled by **one Task per
-/// connection** (amortized through keep-alive requests), with the
-/// handler invoked inline in the connection Task.
+// MARK: - Linux: io_uring backend
+
+#if os(Linux)
+
+import CStarlightLinux
+
+public final class StarlightServer: @unchecked Sendable {
+    public let stats = ServerStats()
+    public let loopCount: Int
+
+    private var ioUringLoops: [IOUringLoop] = []
+    private var shutdownContinuation: CheckedContinuation<Void, Never>?
+
+    public init(loopCount: Int = System.coreCount) {
+        self.loopCount = loopCount
+    }
+
+    // MARK: - Start / Shutdown
+
+    public func start(
+        host: String,
+        port: Int,
+        mode: Mode = .tcpEcho,
+        httpHandler: HTTPHandler? = nil,
+        router: Router? = nil
+    ) async throws {
+        precondition(mode != .http || httpHandler != nil || router != nil,
+                     "HTTP mode requires an httpHandler closure or a Router")
+        precondition(self.ioUringLoops.isEmpty, "StarlightServer already started")
+
+        router?.freeze()
+
+        // Create one IOUringLoop per CPU core with SO_REUSEPORT.
+        for _ in 0..<loopCount {
+            let loop = IOUringLoop(host: host, port: port,
+                                   handler: httpHandler, router: router,
+                                   stats: self.stats)
+            try loop.setup()
+            ioUringLoops.append(loop)
+
+            Thread.detachNewThread { [loop] in
+                do { try loop.run() }
+                catch { /* log */ }
+            }
+        }
+
+        // Suspend until shutdown() is called.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.shutdownContinuation = continuation
+        }
+    }
+
+    public func shutdown() {
+        for loop in ioUringLoops {
+            loop.shutdown()
+        }
+        ioUringLoops.removeAll()
+        shutdownContinuation?.resume()
+    }
+}
+
+// MARK: - Non-Linux: NIO backend
+
+#else
+
+import NIOPosix
+
+/// Cross-platform `SO_REUSEPORT` socket option value.
+@inlinable
+var SO_REUSEPORT: NIOBSDSocket.Option {
+    #if canImport(Glibc)
+    return NIOBSDSocket.Option(rawValue: Glibc.SO_REUSEPORT)
+    #elseif canImport(Darwin)
+    return NIOBSDSocket.Option(rawValue: Darwin.SO_REUSEPORT)
+    #else
+    return NIOBSDSocket.Option(rawValue: 15)
+    #endif
+}
+
 public final class StarlightServer: @unchecked Sendable {
     public let eventLoopGroup: MultiThreadedEventLoopGroup
     public let stats = ServerStats()
@@ -80,8 +133,6 @@ public final class StarlightServer: @unchecked Sendable {
 
     // MARK: - Start / Shutdown
 
-    /// Bind one listener per event loop on `(host, port)` and run the
-    /// accept loop until shutdown. This method blocks the calling task.
     public func start(
         host: String,
         port: Int,
@@ -93,14 +144,8 @@ public final class StarlightServer: @unchecked Sendable {
                      "HTTP mode requires an httpHandler closure or a Router")
         precondition(self.listeners.isEmpty, "StarlightServer already started")
 
-        // Freeze the router before any connection is accepted.
-        // This pre-composes middleware into each route's handler
-        // exactly once, on the start() caller's thread — eliminating
-        // the data race that occurred when multiple event loops
-        // called freeze() concurrently from handle().
         router?.freeze()
 
-        // Create per-loop listeners with SO_REUSEPORT.
         for eventLoop in self.eventLoopGroup.makeIterator() {
             let listener = try await ServerBootstrap(group: eventLoop)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -119,11 +164,6 @@ public final class StarlightServer: @unchecked Sendable {
             self.listeners.append(listener)
         }
 
-        // Run all listeners concurrently. Each listener owns its own
-        // discarding task group for connections — this avoids the
-        // "escaping closure captures inout parameter" error when
-        // trying to use a single outer group for both listeners and
-        // connections.
         try await withThrowingDiscardingTaskGroup { listenerGroup in
             for listener in self.listeners {
                 let stats = self.stats
@@ -152,7 +192,6 @@ public final class StarlightServer: @unchecked Sendable {
         }
     }
 
-    /// Close every listener. Causes `start()` to return.
     public func shutdown() {
         for listener in self.listeners {
             listener.channel.close(promise: nil)
@@ -160,10 +199,8 @@ public final class StarlightServer: @unchecked Sendable {
         self.listeners.removeAll()
     }
 
-    // MARK: - Per-connection handling
+    // MARK: - Per-connection handling (NIO)
 
-    /// Dispatch a single accepted connection to the appropriate
-    /// handler based on the server mode.
     private static func handleConnection(
         channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
         mode: Mode,
@@ -179,9 +216,6 @@ public final class StarlightServer: @unchecked Sendable {
         }
     }
 
-    /// TCP echo — bounce every received byte back. This is the
-    /// benchmark baseline that isolates NIOAsyncChannel overhead from
-    /// HTTP parsing.
     private static func handleEchoConnection(
         channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
         stats: ServerStats
@@ -195,14 +229,9 @@ public final class StarlightServer: @unchecked Sendable {
                     try await outbound.write(bytes)
                 }
             }
-        } catch {
-            // Connection error — the channel is already closed by
-            // executeThenClose.
-        }
+        } catch {}
     }
 
-    /// HTTP/1.1 connection handler. One `HTTP1Codec` instance per
-    /// connection, reused across all keep-alive requests.
     private static func handleHTTPConnection(
         channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
         stats: ServerStats,
@@ -240,8 +269,8 @@ public final class StarlightServer: @unchecked Sendable {
                     }
                 }
             }
-        } catch {
-            // Connection error — channel already closed.
-        }
+        } catch {}
     }
 }
+
+#endif // os(Linux)
