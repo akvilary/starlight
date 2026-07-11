@@ -353,6 +353,39 @@ struct RouterTests {
         #expect(body?.contains("denied") == true)
     }
 
+    @Test("Short-circuit in inner middleware still runs outer middleware's after")
+    func shortCircuitOuterAfterRuns() async {
+        let router = Router()
+        let log = Box<[String]>([])
+        // Outer middleware — its after MUST run even when inner short-circuits.
+        router.use(Middleware(
+            before: { _ in log.value.append("outer-before"); return .proceed },
+            after: { _, r in log.value.append("outer-after"); return r }
+        ))
+        // Inner middleware — short-circuits.
+        router.use(Middleware(
+            before: { ctx in
+                log.value.append("inner-before")
+                return .shortCircuit(HTTPResponse.plaintext("blocked"))
+            },
+            after: { _, r in log.value.append("inner-after"); return r }
+        ))
+        router.get("/x") { _ in
+            log.value.append("handler")
+            return HTTPResponse.plaintext("ok")
+        }
+        var ctx = RequestContext()
+        ctx.method = .GET
+        ctx.setPath("/x")
+        _ = await router.handle(&ctx)
+        // outer-before → inner-before → inner-after → outer-after
+        // Handler is skipped. Both after hooks run.
+        #expect(log.value == [
+            "outer-before", "inner-before",
+            "inner-after", "outer-after"
+        ])
+    }
+
     // MARK: - Pattern parsing edge cases
 
     @Test("Pattern with multiple consecutive slashes normalizes")

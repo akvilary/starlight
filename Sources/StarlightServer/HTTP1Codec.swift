@@ -191,6 +191,14 @@ final class HTTP1Codec: @unchecked Sendable {
     internal func afterDispatch() {
         self.ctx.reset()
         self.parser.reset()
+        // Compact the accumulator: move unread bytes (pipelined
+        // requests) to the front and reclaim consumed-byte space.
+        // Safe to do here because ctx.reset() already released all
+        // COW slices (path, body) — the accumulator is uniquely
+        // referenced, so discardReadBytes() compacts in-place with
+        // zero allocation. For the common case (all bytes consumed,
+        // no pipelining) this is a no-op.
+        self.accumulator.discardReadBytes()
     }
 
     /// Try to parse and dispatch one complete request from the
