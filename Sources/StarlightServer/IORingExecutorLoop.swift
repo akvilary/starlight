@@ -313,9 +313,11 @@ final class IORingExecutorLoop: @unchecked Sendable {
         // Arm wakeup — Phase 2a of the first iteration will submit it.
         armWakeup()
 
-        // Start accept thread (same CPU — mostly idle in poll).
+        // Start accept thread — NOT pinned to loop's CPU. The accept
+        // thread is mostly idle (blocked in poll) and handles infrequent
+        // new-connection events. Pinning it to the same core as the loop
+        // thread causes needless context switches during accept bursts.
         Thread.detachNewThread { [self] in
-            sl_pin_to_cpu(self.cpuIndex)
             self.acceptThreadMain()
         }
 
