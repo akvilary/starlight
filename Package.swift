@@ -2,10 +2,11 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 import PackageDescription
 
-// Starlight — high-performance, zero-allocation HTTP framework for Swift 6.2+
+// Starlight — high-performance HTTP framework for Swift 6.2+
 // Built on SystemPackage.IORing (Linux) / SwiftNIO (macOS),
-// thread-per-core model inspired by H2O, with the ownership discipline of
-// Rust/Tokio and the per-request reuse pattern of fasthttp.
+// thread-per-core model inspired by H2O, with the ownership discipline
+// of Rust/Tokio and COW ByteBuffer reuse for zero-alloc-per-request
+// header / body / response handling.
 
 let package = Package(
     name: "Starlight",
@@ -45,7 +46,7 @@ let package = Package(
             publicHeadersPath: "include"
         ),
 
-        // ── Core: zero-allocation primitives ─────────────────────────────────
+        // ── Core: synchronization primitives ─────────────────────────────────
         .target(
             name: "StarlightCore",
             dependencies: [
@@ -54,18 +55,17 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── HTTP/1.1 codec (SIMD parser, headers, request, response) ─────────
+        // ── HTTP/1.1 codec (SWAR parser, headers, request, response) ─────────
         .target(
             name: "StarlightHTTP",
             dependencies: [
                 .product(name: "NIOCore", package: "swift-nio"),
-                // `HTTPResponse` uses `ByteBufferAllocator`/`ByteBuffer` from NIOPosix.
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── Radix-trie router with zero-copy path params ─────────────────────
+        // ── HTTP router with zero-copy path params ───────────────────────────
         .target(
             name: "StarlightRouting",
             dependencies: [
@@ -81,7 +81,7 @@ let package = Package(
             dependencies: serverDependencies,
             swiftSettings: baseSwiftSettings
         ),
-        // ── Public umbrella (result-builder DSL, app entry) ──────────────────
+        // ── Public umbrella (app entry point) ────────────────────────────────
         .target(
             name: "Starlight",
             dependencies: [
@@ -93,7 +93,7 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── Benchmark executable (Phase 0: TCP echo) ─────────────────────────
+        // ── Benchmark executable (TCP echo + HTTP + router) ──────────────────
         .executableTarget(
             name: "StarlightBenchmark",
             dependencies: [
@@ -139,17 +139,16 @@ let package = Package(
 //  - NonisolatedNonsendingByDefault (SE-0466 upcoming): nonisolated `async`
 //    functions run on the caller's executor by default instead of hopping to
 //    the global concurrent pool. This is what makes thread-per-core actually
-//    work — without it every `await` on a `Connection`-actor pinned to an
+//    work — without it every `await` on a connection handler pinned to an
 //    IORing loop would defeat the pinning.
 //
 //  - Lifetimes (experimental): required by SystemPackage.IORing
 //    (`#if compiler(>=6.2) && $Lifetimes`). Enables `@_lifetime` annotations
-//    and Span/MutableSpan (SE-0447/0467). Also planned for zero-copy body
-//    views in Phase 3.
+//    and Span/MutableSpan (SE-0447/0467).
 //
 //  - StrictMemorySafety (experimental): surfaces unsafe constructs as errors
 //    in the hot path. We lean on raw pointers and `~Copyable` types
-//    throughout (arena allocator, io_uring SQE/CQE, zero-copy header views);
+//    throughout (io_uring SQE/CQE, zero-copy header views, COW ByteBuffer);
 //    this flag keeps that surface audited.
 //
 // SPM applies `swiftSettings` only to our own targets, not to dependencies,

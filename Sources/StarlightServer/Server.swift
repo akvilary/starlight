@@ -88,7 +88,7 @@ public final class StarlightServer: @unchecked Sendable {
     public func start(
         host: String,
         port: Int,
-        mode: Mode = .tcpEcho,
+        mode: Mode = .http,
         httpHandler: HTTPHandler? = nil,
         router: Router? = nil
     ) async throws {

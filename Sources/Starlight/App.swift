@@ -9,7 +9,6 @@
 //===----------------------------------------------------------------------===//
 
 import NIOCore
-import NIOPosix
 import StarlightCore
 import StarlightHTTP
 import StarlightRouting
@@ -22,24 +21,22 @@ import StarlightServer
 
 /// A configured but not-yet-started Starlight server.
 ///
-/// `start()` is async and **blocks until shutdown** — the NIOAsyncChannel
-/// accept loop runs inside a discarding task group. To shut down,
-/// call `shutdown()` (typically from a signal handler).
-public final class StarlightApp: @unchecked Sendable {
+/// `start()` is async and **blocks until shutdown**. On Linux the
+/// io_uring accept loop runs inside a discarding task group; on macOS
+/// NIOAsyncChannel is used. To shut down, call `shutdown()`.
+public final class StarlightApp: Sendable {
     public let server: StarlightServer
 
-    @inlinable
     public init(loopCount: Int = System.coreCount) {
         self.server = StarlightServer(loopCount: loopCount)
     }
 
     /// Bind on `(host, port)` and run the accept loop until shutdown.
     /// This method blocks the calling task.
-    @inlinable
     public func start(
         host: String = "0.0.0.0",
         port: Int = 8080,
-        mode: Mode = .tcpEcho,
+        mode: Mode = .http,
         httpHandler: HTTPHandler? = nil,
         router: Router? = nil
     ) async throws {
@@ -50,7 +47,6 @@ public final class StarlightApp: @unchecked Sendable {
     }
 
     /// Shut down every listener. Causes `start()` to return.
-    @inlinable
     public func shutdown() {
         self.server.shutdown()
     }
