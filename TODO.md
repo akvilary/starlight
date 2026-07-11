@@ -6,23 +6,23 @@
 
 ---
 
-## Блок 0 — Критичные баги (краши / corruption / security)
+## Блок 0 — Критичные баги (краши / corruption / security) — ✅ ЗАКРЫТ
 
-- [ ] **0-1. HTTP Request Smuggling: `Transfer-Encoding: chunked` игнорируется** — `HTTP1Parser.swift:61-63,311-331`. `chunkedNotSupported` объявлен в enum ошибок, но никогда не throw-ится. Парсер проверяет только `Content-Length`. Запрос с `Transfer-Encoding: chunked` (без CL) трактуется как bodyless → тело интерпретируется как следующий запрос. RFC 7230 §3.3.3 violation. Реализовать reject или chunked-парсер; при TE+CL — отбрасывать CL.
+- [x] **0-1. HTTP Request Smuggling: `Transfer-Encoding: chunked` игнорируется** — Reject any TE header per RFC 7230 §3.3.3. Per-line detection (zero end-of-headers scans).
 
-- [ ] **0-2. Дублирующиеся / конфликтующие `Content-Length` принимаются молча** — `HTTP1Parser.swift:316-325`. Берётся первое значение. RFC 7230 §3.3.2 требует 400 при различии. Считать вхождения, reject при расхождении.
+- [x] **0-2. Дублирующиеся / конфликтующие `Content-Length` принимаются молча** — Per-line count tracking. Fast path (0-1 CL) via subscript, full `values(for:)` only for >1.
 
-- [ ] **0-3. `parseContentLength` — неполная проверка overflow** — `HTTP1Parser.swift:486-498`. `result = result &* 10 &+ Int(byte - 0x30)` — wrapping arithmetic; ~половина overflow-пространства даёт положительный результат, проходит `if result < 0`. Проверять `> (Int.max - 9) / 10` до умножения.
+- [x] **0-3. `parseContentLength` — неполная проверка overflow** — Pre-multiply check `> (Int.max - 9) / 10` replaces wrapping `&*`.
 
-- [ ] **0-4. `maxRequestBytes` и `maxHeaderCount` объявлены, но не enforced** — `HTTP1Parser.swift:104-110`. DoS-защита — ложь. Добавить проверки в `stepRequestLine`/`stepHeaders`.
+- [x] **0-4. `maxRequestBytes` и `maxHeaderCount` не enforced** — Checks in `stepRequestLine` + `stepHeaders`. `headerCount` counter per request.
 
-- [ ] **0-5. fd-recycling → CQE приписывается чужому соединению** — `IORingExecutorLoop.swift:63-75`. `user_data` пакует только `(fd, op)`, нет connection-id. Ввести монотонный 64-бит connection-id; перед `close` — `IORING_OP_ASYNC_CANCEL`.
+- [x] **0-5. fd-recycling → CQE приписывается чужому соединению** — Monotonic `connId: UInt32` replaces fd in `user_data`. readWaiters/writeWaiters keyed by connId. fd still used for I/O ops only.
 
-- [ ] **0-6. `stopped` и `loopThreadId` — неатомарные data races** — `IORingExecutorLoop.swift:244,238`. Под `StrictMemorySafety` — нарушение. `Atomic<Bool>` / atomic load.
+- [x] **0-6. `stopped` и `loopThreadId` — неатомарные data races** — `Atomic<Bool>` + `Atomic<UInt>` with `.acquiring`/`.releasing` ordering.
 
-- [ ] **0-7. Соединения не закрываются при shutdown** — `IORingExecutorLoop.swift`. `shutdown()` ставит `stopped = true`, но никто не итерирует `connections` для close. Все fd утекают → EMFILE. Добавить `drainConnections()`.
+- [x] **0-7. Соединения не закрываются при shutdown** — `drainConnections()` called after loop exit. `closeConnection` fixed underflow (only decrement if removeValue succeeded).
 
-- [ ] **0-8. NIO backend: `eventLoopGroup` никогда не shutdown-ится** — `Server.swift:79,202`. `shutdown()` закрывает listener channels, но не вызывает `eventLoopGroup.shutdownGracefully()`. NIO thread pool остаётся жить.
+- [x] **0-8. NIO backend: `eventLoopGroup` никогда не shutdown-ится** — `syncShutdownGracefully()` in `shutdown()` force-closes all channels.
 
 ---
 
@@ -138,7 +138,7 @@
 
 | Блок | Пунктов | Критичных |
 |---|---|---|
-| 0 — Краши/corruption/security | 8 | 8 |
+| 0 — Краши/corruption/security | 8 | ✅ закрыт |
 | A — Архитектура | 13 | — |
 | B — Логические баги | 12 | — |
 | C — Performance/zero-alloc | 13 | — |

@@ -93,6 +93,17 @@ public struct HTTP1Parser: ~Copyable {
     /// Offset into the input buffer where the header section begins.
     private var headerBlockStart: Int = 0
 
+    /// Number of header lines parsed so far. Reset by `reset()`.
+    private var headerCount: Int = 0
+
+    /// True if a Transfer-Encoding header was seen. Set during
+    /// per-line parsing so end-of-headers needs no block scan.
+    private var transferEncodingSeen: Bool = false
+
+    /// Number of Content-Length headers seen. 0 = none, 1 = normal,
+    /// >1 = potential smuggling — must verify all values match.
+    private var contentLengthCount: Int = 0
+
     /// Offset into the input buffer where the body section begins
     /// (i.e. immediately after the empty line that terminates headers).
     /// Used by the codec to create a zero-copy `ByteBuffer` slice for
@@ -129,6 +140,9 @@ public struct HTTP1Parser: ~Copyable {
         self.state = .requestLine
         self.consumedBytes = 0
         self.headerBlockStart = 0
+        self.headerCount = 0
+        self.transferEncodingSeen = false
+        self.contentLengthCount = 0
         self.bodyStart = 0
         self.pathStart = 0
         self.pathLength = 0
@@ -205,6 +219,12 @@ public struct HTTP1Parser: ~Copyable {
         guard let nl = findByte(0x0A, in: buffer, from: consumedBytes, to: count)
         else { return }  // incomplete — wait for more bytes
 
+        // DoS defence: reject oversized request lines early.
+        if nl + 1 > maxRequestBytes {
+            state = .error
+            throw HTTP1ParseError.requestTooLarge
+        }
+
         let lineEnd = nl
         // Line excludes optional trailing '\r'.
         let lineContentEnd = (lineEnd > consumedBytes && buffer[lineEnd - 1] == 0x0D)
@@ -266,6 +286,12 @@ public struct HTTP1Parser: ~Copyable {
         guard let nl = findByte(0x0A, in: buffer, from: consumedBytes, to: count)
         else { return }  // incomplete
 
+        // DoS defence: reject oversized requests.
+        if nl + 1 > maxRequestBytes {
+            state = .error
+            throw HTTP1ParseError.requestTooLarge
+        }
+
         let lineEnd = nl
         let lineContentEnd = (lineEnd > consumedBytes && buffer[lineEnd - 1] == 0x0D)
             ? lineEnd - 1
@@ -297,23 +323,52 @@ public struct HTTP1Parser: ~Copyable {
                 )
             }
             consumedBytes = blockEnd
-            // Record where body starts (right after the empty line).
             bodyStart = consumedBytes
 
-            // Check Content-Length to determine if there's a body.
-            // The headers are now in ctx.headers (lazy HeaderView).
-            // RFC 7230 §3.3.2: an invalid Content-Length MUST be
-            // rejected with 400. We validate strictly — only
-            // non-negative decimal integers are accepted.
+            // RFC 7230 §3.3.3: Transfer-Encoding takes precedence over
+            // Content-Length. Reject any TE — Phase 2 only supports
+            // Content-Length-bounded bodies. `transferEncodingSeen`
+            // was set during per-line parsing (zero block scans here).
+            if transferEncodingSeen {
+                state = .error
+                throw HTTP1ParseError.chunkedNotSupported
+            }
+
+            // Check Content-Length (RFC 7230 §3.3.2). `contentLengthCount`
+            // was tracked during per-line parsing.
             let contentLength: Int?
-            if let clStr = ctx.headers["Content-Length"] {
-                guard let cl = Self.parseContentLength(clStr) else {
+            if contentLengthCount == 0 {
+                contentLength = nil
+            } else if contentLengthCount == 1 {
+                // Fast path: single CL — subscript stops at first match.
+                guard let clStr = ctx.headers["Content-Length"],
+                      let cl = Self.parseContentLength(clStr) else {
                     state = .error
                     throw HTTP1ParseError.invalidContentLength
                 }
                 contentLength = cl
             } else {
-                contentLength = nil
+                // Multiple CL headers — verify all values are identical.
+                let clValues = ctx.headers.values(for: "Content-Length")
+                guard let first = clValues.first else {
+                    contentLength = nil
+                    // Skip to body determination below
+                    if let cl = contentLength, cl > 0 {
+                        state = .body(remaining: cl)
+                    } else {
+                        state = .complete
+                    }
+                    return
+                }
+                guard clValues.dropFirst().allSatisfy({ $0 == first }) else {
+                    state = .error
+                    throw HTTP1ParseError.invalidContentLength
+                }
+                guard let cl = Self.parseContentLength(first) else {
+                    state = .error
+                    throw HTTP1ParseError.invalidContentLength
+                }
+                contentLength = cl
             }
 
             if let cl = contentLength, cl > 0 {
@@ -325,11 +380,30 @@ public struct HTTP1Parser: ~Copyable {
         }
 
         // Validate that the line has a `:` separating name from value.
-        // We do NOT copy the name/value into the arena here — the
-        // entire block copy above handles that. We only validate so
-        // malformed requests trigger a 400.
         guard findByte(0x3A, in: buffer, from: lineStart, to: lineContentEnd) != nil
         else { state = .error; throw HTTP1ParseError.malformedHeader }
+
+        // DoS defence: reject header-bomb requests.
+        headerCount &+= 1
+        if headerCount > maxHeaderCount {
+            state = .error
+            throw HTTP1ParseError.requestTooLarge
+        }
+
+        // Track Transfer-Encoding and Content-Length during parsing so
+        // end-of-headers needs zero block scans. Fast path: one byte
+        // comparison per header line — only headers starting with 'T'
+        // or 'C' pay the full name check.
+        if lineContentEnd &- lineStart >= 15 {
+            let firstByte = buffer[lineStart]
+            if (firstByte == 0x54 || firstByte == 0x74)  // 'T' or 't'
+                && Self.isTransferEncoding(buffer, lineStart, lineContentEnd) {
+                transferEncodingSeen = true
+            } else if (firstByte == 0x43 || firstByte == 0x63)  // 'C' or 'c'
+                && Self.isContentLength(buffer, lineStart, lineContentEnd) {
+                contentLengthCount &+= 1
+            }
+        }
 
         consumedBytes = lineEnd + 1
         // Stay in `.headers` for the next line.
@@ -479,13 +553,75 @@ public struct HTTP1Parser: ~Copyable {
         guard !str.isEmpty else { return nil }
         var result = 0
         for byte in str.utf8 {
-            // Only ASCII digits 0x30–0x39 are valid.
             if byte < 0x30 || byte > 0x39 { return nil }
-            result = result &* 10 &+ Int(byte - 0x30)
-            // Overflow check: if result went negative, the value
-            // exceeded Int.max on this platform.
-            if result < 0 { return nil }
+            // Overflow check BEFORE multiply. If result > (Int.max - 9) / 10,
+            // then result * 10 + digit would overflow.
+            if result > (Int.max - 9) / 10 { return nil }
+            result = result * 10 + Int(byte - 0x30)
         }
         return result
+    }
+
+    // MARK: - Inline header-name matchers
+
+    /// Case-insensitive check for `Content-Length:` (14 name bytes + colon).
+    @usableFromInline
+    @inline(__always)
+    static func isContentLength(
+        _ buffer: UnsafeBufferPointer<UInt8>, _ s: Int, _ e: Int
+    ) -> Bool {
+        guard e &- s >= 15 else { return false }
+        let b = buffer.baseAddress!
+        func ci(_ i: Int, _ upper: UInt8) -> Bool {
+            let v = b[i]
+            return v == upper || v == (upper | 0x20)
+        }
+        return ci(s, 0x43)       // C
+            && ci(s &+ 1, 0x4F)  // O
+            && ci(s &+ 2, 0x4E)  // N
+            && ci(s &+ 3, 0x54)  // T
+            && ci(s &+ 4, 0x45)  // E
+            && ci(s &+ 5, 0x4E)  // N
+            && ci(s &+ 6, 0x54)  // T
+            && b[s &+ 7] == 0x2D // -
+            && ci(s &+ 8, 0x4C)  // L
+            && ci(s &+ 9, 0x45)  // E
+            && ci(s &+ 10, 0x4E) // N
+            && ci(s &+ 11, 0x47) // G
+            && ci(s &+ 12, 0x54) // T
+            && ci(s &+ 13, 0x48) // H
+            && b[s &+ 14] == 0x3A// :
+    }
+
+    /// Case-insensitive check for `Transfer-Encoding:` (17 name bytes + colon).
+    @usableFromInline
+    @inline(__always)
+    static func isTransferEncoding(
+        _ buffer: UnsafeBufferPointer<UInt8>, _ s: Int, _ e: Int
+    ) -> Bool {
+        guard e &- s >= 18 else { return false }
+        let b = buffer.baseAddress!
+        func ci(_ i: Int, _ upper: UInt8) -> Bool {
+            let v = b[i]
+            return v == upper || v == (upper | 0x20)
+        }
+        return ci(s, 0x54)        // T
+            && ci(s &+ 1, 0x52)   // R
+            && ci(s &+ 2, 0x41)   // A
+            && ci(s &+ 3, 0x4E)   // N
+            && ci(s &+ 4, 0x53)   // S
+            && ci(s &+ 5, 0x46)   // F
+            && ci(s &+ 6, 0x45)   // E
+            && ci(s &+ 7, 0x52)   // R
+            && b[s &+ 8] == 0x2D  // -
+            && ci(s &+ 9, 0x45)   // E
+            && ci(s &+ 10, 0x4E)  // N
+            && ci(s &+ 11, 0x43)  // C
+            && ci(s &+ 12, 0x4F)  // O
+            && ci(s &+ 13, 0x44)  // D
+            && ci(s &+ 14, 0x49)  // I
+            && ci(s &+ 15, 0x4E)  // N
+            && ci(s &+ 16, 0x47)  // G
+            && b[s &+ 17] == 0x3A // :
     }
 }

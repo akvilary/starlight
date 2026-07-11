@@ -263,6 +263,145 @@ struct HTTP1ParserTests {
         }
     }
 
+    @Test("Transfer-Encoding: chunked is rejected (anti-smuggling)")
+    func chunkedTransferEncodingRejected() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Transfer-Encoding: chunked\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    @Test("Transfer-Encoding with Content-Length is rejected (anti-smuggling)")
+    func teWithContentLengthRejected() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Transfer-Encoding: chunked\r
+        Content-Length: 5\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    @Test("Duplicate Content-Length with same value is accepted")
+    func duplicateContentLengthSameValue() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Content-Length: 5\r
+        Content-Length: 5\r
+        \r
+        hello
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+            try parser.feed(ptr, into: &ctx)
+        }
+        #expect(complete)
+        #expect(parser.bodyLength == 5)
+    }
+
+    @Test("Conflicting Content-Length values are rejected")
+    func conflictingContentLengthRejected() throws {
+        let raw = """
+        POST /api HTTP/1.1\r
+        Content-Length: 5\r
+        Content-Length: 100\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    @Test("Overflow Content-Length is rejected")
+    func overflowContentLength() throws {
+        // Value that would overflow Int on 64-bit if not checked.
+        // 99999999999999999999 (20 digits) exceeds Int.max (~9.2e18).
+        let raw = """
+        POST /api HTTP/1.1\r
+        Content-Length: 99999999999999999999\r
+        \r
+
+        """
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    // MARK: - DoS limits
+
+    @Test("Oversized request line is rejected")
+    func oversizedRequestLine() throws {
+        // Create a request line longer than maxRequestBytes (default 64KiB).
+        let longPath = String(repeating: "A", count: 70_000)
+        let raw = "GET /\(longPath) HTTP/1.1\r\n\r\n"
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    @Test("Too many headers is rejected")
+    func tooManyHeaders() throws {
+        // maxHeaderCount default = 100. Send 101 headers.
+        var raw = "GET / HTTP/1.1\r\n"
+        for i in 0..<101 {
+            raw += "X-Header-\(i): value\r\n"
+        }
+        raw += "\r\n"
+        var parser = HTTP1Parser()
+        var ctx = RequestContext()
+        #expect(throws: HTTP1ParseError.self) {
+            try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+                try parser.feed(ptr, into: &ctx)
+            }
+        }
+    }
+
+    @Test("99 headers is accepted (just under the limit)")
+    func justUnderHeaderLimit() throws {
+        var raw = "GET / HTTP/1.1\r\n"
+        for i in 0..<99 {
+            raw += "X-Header-\(i): value\r\n"
+        }
+        raw += "\r\n"
+        var parser = HTTP1Parser(maxHeaderCount: 100)
+        var ctx = RequestContext()
+        let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
+            try parser.feed(ptr, into: &ctx)
+        }
+        #expect(complete)
+    }
+
     // MARK: - Partial reads (streaming)
 
     @Test("Request split across two feeds parses correctly")

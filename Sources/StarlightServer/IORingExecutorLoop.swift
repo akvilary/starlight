@@ -43,6 +43,7 @@ import Foundation
 import SystemPackage
 import CLinuxExt
 import NIOCore
+import Synchronization
 import StarlightCore
 import StarlightHTTP
 import StarlightRouting
@@ -60,13 +61,13 @@ internal enum IouringOp: UInt64 {
 }
 
 @inline(__always)
-internal func packUserData(fd: CInt, op: IouringOp) -> UInt64 {
-    UInt64(UInt32(bitPattern: fd)) | (op.rawValue << 32)
+internal func packUserData(connId: UInt32, op: IouringOp) -> UInt64 {
+    UInt64(connId) | (op.rawValue << 32)
 }
 
 @inline(__always)
-internal func unpackFD(_ data: UInt64) -> CInt {
-    CInt(bitPattern: UInt32(truncatingIfNeeded: data))
+internal func unpackConnId(_ data: UInt64) -> UInt32 {
+    UInt32(truncatingIfNeeded: data)
 }
 
 @inline(__always)
@@ -89,6 +90,7 @@ final class IORingBox: @unchecked Sendable {
 // MARK: - ExecutorConnection
 
 final class ExecutorConnection: @unchecked Sendable {
+    let connId: UInt32
     let fd: CInt
     let readBuffer: UnsafeMutablePointer<UInt8>
     let readBufferSize: Int
@@ -98,8 +100,9 @@ final class ExecutorConnection: @unchecked Sendable {
     var sendOffset: Int = 0
     var keepAlive: Bool = true
 
-    init(fd: CInt, readBufferSize: Int, isEchoMode: Bool,
+    init(connId: UInt32, fd: CInt, readBufferSize: Int, isEchoMode: Bool,
          router: Router?, handler: HTTPHandler?) {
+        self.connId = connId
         self.fd = fd
         self.readBufferSize = readBufferSize
         self.readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
@@ -222,10 +225,11 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // Connection state (loop thread only)
     private var connections: [CInt: ExecutorConnection] = [:]
     private var connectionCount: Int = 0
+    private var nextConnId: UInt32 = 1  // 0 reserved for wakeup
 
     // Continuation bridges (loop thread only)
-    private var readWaiters: [CInt: CheckedContinuation<Int, Never>] = [:]
-    private var writeWaiters: [CInt: CheckedContinuation<Int, Never>] = [:]
+    private var readWaiters: [UInt32: CheckedContinuation<Int, Never>] = [:]
+    private var writeWaiters: [UInt32: CheckedContinuation<Int, Never>] = [:]
 
     // New connection queue (accept thread → loop thread, spinlock)
     private var newConnQueue: [CInt] = []
@@ -235,13 +239,13 @@ final class IORingExecutorLoop: @unchecked Sendable {
     private var loopJobs: [UnownedJob] = []
     private var poolJobs: [UnownedJob] = []
     private var jobLock = pthread_spinlock_t()
-    private var loopThreadId: pthread_t? = nil
+    private let loopThreadId = Atomic<UInt>(0)  // 0 = not set
 
     // Wakeup eventfd read buffer (pre-allocated, reused)
     private let wakeupBuffer: UnsafeMutableRawPointer =
         .allocate(byteCount: 8, alignment: 8)
 
-    private var stopped = false
+    private let stopped = Atomic<Bool>(false)
 
     // True when ringBox!.ring.prepare() succeeded since last submitPreparedRequests().
     private var needsSubmit = false
@@ -301,8 +305,8 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // MARK: Event loop (creates ring on THIS thread for SINGLE_ISSUER)
 
     func run() throws {
-        loopThreadId = pthread_self()
-        defer { loopThreadId = nil }
+        loopThreadId.store(pthread_self(), ordering: .releasing)
+        defer { loopThreadId.store(0, ordering: .releasing) }
 
         // Create ring on the loop thread — SINGLE_ISSUER requires this.
         self.ringBox = try IORingBox(
@@ -321,7 +325,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
             self.acceptThreadMain()
         }
 
-        while !stopped {
+        while !stopped.load(ordering: .acquiring) {
             // Phase 1: Drain CQEs from mmap memory (0 syscalls).
             var drainedAny = false
             while let cqe = ringBox!.ring.tryConsumeCompletion() {
@@ -350,6 +354,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
             // iteration, not the next.
             drainJobs()
         }
+
+        // Shutdown: close all connections and release fds.
+        drainConnections()
     }
 
     // MARK: CQE processing
@@ -364,9 +371,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
         case .wakeup:
             handleWakeup()
         case .recv:
-            resumeRead(fd: unpackFD(ctx), bytesRead: res)
+            resumeRead(connId: unpackConnId(ctx), bytesRead: res)
         case .send:
-            resumeWrite(fd: unpackFD(ctx), bytesWritten: res)
+            resumeWrite(connId: unpackConnId(ctx), bytesWritten: res)
         }
     }
 
@@ -392,7 +399,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
         let ok = ringBox!.ring.prepare(request: .read(
             FileDescriptor(rawValue: eventFd),
             into: UnsafeMutableRawBufferPointer(start: wakeupBuffer, count: 8),
-            context: packUserData(fd: eventFd, op: .wakeup)
+            context: packUserData(connId: 0, op: .wakeup)
         ))
         if ok { needsSubmit = true }
     }
@@ -400,7 +407,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // MARK: Accept thread
 
     private func acceptThreadMain() {
-        while !stopped {
+        while !stopped.load(ordering: .acquiring) {
             var pfd = pollfd(fd: listenerFd, events: LinuxSocketConst.POLLIN, revents: 0)
             let ret = Glibc.poll(&pfd, 1, 1000)
             if ret <= 0 { continue }
@@ -438,7 +445,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
         _ = loopStats.connectionsAccepted.increment()
         connectionCount += 1
 
-        let conn = ExecutorConnection(fd: fd, readBufferSize: readBufferSize,
+        let connId = nextConnId
+        nextConnId &+= 1
+        let conn = ExecutorConnection(connId: connId, fd: fd, readBufferSize: readBufferSize,
                                        isEchoMode: isEchoMode,
                                        router: router, handler: handler)
         connections[fd] = conn
@@ -474,10 +483,10 @@ final class IORingExecutorLoop: @unchecked Sendable {
             if ringBox!.ring.prepare(request: .read(
                 FileDescriptor(rawValue: fd),
                 into: buf,
-                context: packUserData(fd: fd, op: .recv)
+                context: packUserData(connId: conn.connId, op: .recv)
             )) {
                 needsSubmit = true
-                readWaiters[fd] = cont
+                readWaiters[conn.connId] = cont
             } else {
                 cont.resume(returning: 0)
             }
@@ -485,11 +494,11 @@ final class IORingExecutorLoop: @unchecked Sendable {
     }
 
     @inline(__always)
-    private func resumeRead(fd: CInt, bytesRead: CInt) {
+    private func resumeRead(connId: UInt32, bytesRead: CInt) {
         if bytesRead > 0 {
             _ = loopStats.bytesReceived.add(Int64(bytesRead))
         }
-        if let cont = readWaiters.removeValue(forKey: fd) {
+        if let cont = readWaiters.removeValue(forKey: connId) {
             cont.resume(returning: Int(bytesRead))
         }
     }
@@ -511,9 +520,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 let ok = ringBox!.ring.prepare(request: .write(
                     UnsafeMutableRawBufferPointer(start: ptr, count: len),
                     into: FileDescriptor(rawValue: fd),
-                    context: packUserData(fd: fd, op: .send)
+                    context: packUserData(connId: conn.connId, op: .send)
                 ))
-                if ok { needsSubmit = true; writeWaiters[fd] = cont }
+                if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
                 else { cont.resume(returning: -1) }
             }
             if written < 0 { break }
@@ -569,9 +578,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 let ok = ringBox!.ring.prepare(request: .write(
                     UnsafeMutableRawBufferPointer(start: ptr, count: len),
                     into: FileDescriptor(rawValue: fd),
-                    context: packUserData(fd: fd, op: .send)
+                    context: packUserData(connId: conn.connId, op: .send)
                 ))
-                if ok { needsSubmit = true; writeWaiters[fd] = cont }
+                if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
                 else { cont.resume(returning: -1) }
             }
         } else if let bodyBuf = response.bodyBuffer {
@@ -583,9 +592,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 let ok = ringBox!.ring.prepare(request: .write(
                     UnsafeMutableRawBufferPointer(start: ptr, count: len),
                     into: FileDescriptor(rawValue: fd),
-                    context: packUserData(fd: fd, op: .send)
+                    context: packUserData(connId: conn.connId, op: .send)
                 ))
-                if ok { needsSubmit = true; writeWaiters[fd] = cont }
+                if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
                 else { cont.resume(returning: -1) }
             }
         } else {
@@ -594,8 +603,8 @@ final class IORingExecutorLoop: @unchecked Sendable {
     }
 
     @inline(__always)
-    private func resumeWrite(fd: CInt, bytesWritten: CInt) {
-        if let cont = writeWaiters.removeValue(forKey: fd) {
+    private func resumeWrite(connId: UInt32, bytesWritten: CInt) {
+        if let cont = writeWaiters.removeValue(forKey: connId) {
             cont.resume(returning: Int(bytesWritten))
         }
     }
@@ -603,11 +612,23 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // MARK: Connection cleanup
 
     func closeConnection(fd: CInt) {
-        connections.removeValue(forKey: fd)
-        readWaiters.removeValue(forKey: fd)?.resume(returning: 0)
-        writeWaiters.removeValue(forKey: fd)?.resume(returning: -1)
+        if let conn = connections.removeValue(forKey: fd) {
+            connectionCount -= 1
+            readWaiters.removeValue(forKey: conn.connId)?.resume(returning: 0)
+            writeWaiters.removeValue(forKey: conn.connId)?.resume(returning: -1)
+        }
         Glibc.close(fd)
-        connectionCount -= 1
+    }
+
+    /// Close all active connections. Called when the loop is shutting down.
+    private func drainConnections() {
+        for (_, conn) in connections {
+            readWaiters.removeValue(forKey: conn.connId)?.resume(returning: 0)
+            writeWaiters.removeValue(forKey: conn.connId)?.resume(returning: -1)
+            Glibc.close(conn.fd)
+        }
+        connections.removeAll()
+        connectionCount = 0
     }
 
     // MARK: Job queue management
@@ -629,12 +650,13 @@ final class IORingExecutorLoop: @unchecked Sendable {
     }
 
     func enqueueJob(_ job: UnownedJob) {
-        if pthread_self() == loopThreadId {
+        let tid = loopThreadId.load(ordering: .acquiring)
+        if pthread_self() == tid {
             loopJobs.append(job)
         } else {
             pthread_spin_lock(&jobLock)
             poolJobs.append(job)
-            let needWake = loopThreadId != nil
+            let needWake = tid != 0
             pthread_spin_unlock(&jobLock)
             if needWake { wakeup() }
         }
@@ -650,7 +672,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
     }
 
     func shutdown() {
-        stopped = true
+        stopped.store(true, ordering: .releasing)
         wakeup()
     }
 }

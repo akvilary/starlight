@@ -129,11 +129,19 @@ public final class StarlightServer: @unchecked Sendable {
         }
         #endif
 
-        // NIO shutdown
+        // NIO shutdown — close listeners and shut down the event loop
+        // group. syncShutdownGracefully force-closes all connection
+        // channels, which lets the discarding task group in startWithNIO
+        // return. Must NOT be called from an event loop thread.
         for listener in nioListeners {
             listener.channel.close(promise: nil)
         }
         nioListeners.removeAll()
+
+        if let elg = self.eventLoopGroup {
+            try? elg.syncShutdownGracefully()
+            self.eventLoopGroup = nil
+        }
     }
 
     deinit {
