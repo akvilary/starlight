@@ -1,6 +1,6 @@
 # Starlight — Roadmap
 
-## Текущее состояние (commit `957c765`)
+## Текущее состояние (commit `efecd28`)
 
 ### Что готово
 
@@ -14,14 +14,18 @@
 - **Body parsing**: Content-Length detection, body collection в arena
 - **Security**: 6 fixes (dangling pointers, DoS, race prevention, docs)
 - **Pipelining**: feed/tryParse split — корректная обработка multiple requests per TCP packet
+- **Package cleanup**: 5 лишних зависимостей удалено (NIOSSL, NIOExtras, NIOHTTP1, swift-collections, swift-atomics). Осталась только **swift-nio**. 2 no-op Swift-фичи убраны (Lifetimes, ExistentialAny) — оставлены NonisolatedNonsendingByDefault и StrictMemorySafety
 
 ### Реальный throughput (12-core, loopback, wrk)
 
+Замерено `wrk -t12 -c100 -d10s` (commit `efecd28`, kernel 6.17):
+
 | Endpoint | req/s | per core |
 |---|---|---|
-| http / | 260K | ~22K |
-| router / | 244K | ~20K |
-| router /users/42 | 239K | ~20K |
+| router /users/42 | ~275K | ~23K |
+
+> Предыдущие замеры (commit `4b8053c`): http /=260K, router /=244K, /users/42=239K.
+> Рост с 239K→275K обусловлен split job queue (commit `957c765`).
 
 ### Сравнение с конкурентами (loopback, hello-world)
 
@@ -33,7 +37,7 @@
 | Rust axum | ~400-500K | below |
 | C H2O | ~700-900K | below |
 
-### Тесты: 78/78 (+ 1 flaky EventLoopExecutor)
+### Тесты: 100/100
 
 ---
 
@@ -179,6 +183,19 @@ let router = Router {
 - [ ] Если > 15% — implement SIMD path
 - [ ] Benchmark SWAR vs SIMD на реальных headers
 
+#### 5.6 — Investigated io_uring optimizations (отклонено)
+
+> Результаты экспериментов зафиксированы, чтобы не повторять.
+
+| Оптимизация | Замер | Вердикт | Причина |
+|---|---|---|---|
+| **Native IORING_OP_ACCEPT** | -28% | ❌ отклонено | POLL_ADD+`while{accept4}` drain'ит весь backlog за 1 CQE; native ACCEPT = 1 соединение за CQE → в 100× больше io_uring_enter циклов при бёрсте |
+| **Batched CQE advance** | -14% | ❌ отклонено | на x86 (TSO) `__ATOMIC_RELEASE` store = обычный `mov` (zero cost). Батчинг добавляет array/function overhead, не давая ничего взамен |
+| **SQPOLL** | не реализовано | ⏸ отложено | требует `CAP_SYS_RAWIO` (root) или registered files. В Docker без `--cap-add SYS_RAWIO --ulimit memlock=-1:-1` не работает. Несовместимо с контейнерным деплоем по умолчанию |
+| **Registered buffers** | не реализовано | ❌ отклонено | ~192MB pinned memory (4092 bufs × 12 loops × 4KB). `get_user_pages()` на hot 4KB-страницах дёшев — выигрыш не окупает memory-cost |
+
+**Вывод**: текущий io_uring-shim **уже хорошо оптимизирован**. ~275K req/s = 1.7× Hummingbird 2, parity с Go net/http. Микро-оптимизации C-слоя не дают gains (проверено эмпирически). Путь к большему throughput — response buffer pooling (5.3), SIMD parser (5.5), radix trie router (5.4).
+
 ---
 
 ### Phase 6 — Feature completeness
@@ -242,6 +259,13 @@ let response = try await app.test(.GET, "/users/42")
 - Kubernetes health checks
 - systemd unit file
 
+> **Контейнерная совместимость io_uring:**
+> io_uring работает в Docker/Podman ≥20.10 (seccomp allowlist включает io_uring
+> syscalls). На старых runtime или в залоченных sandbox'ах (gVisor) io_uring
+> может быть недоступен — тогда нужен fallback на NIO (пока не реализовано,
+> см. архитектурный долг #6).
+> Для SQPOLL (если будет добавлен опционально): `--cap-add SYS_RAWIO --ulimit memlock=-1:-1`.
+
 ---
 
 ## Архитектурные решения (зафиксированные)
@@ -255,11 +279,13 @@ let response = try await app.test(.GET, "/users/42")
 7. **Per-loop SO_REUSEPORT** — kernel-balanced accept (H2O pattern)
 8. **Response staging** — fresh ByteBuffer per response (no COW on shared storage)
 9. **Custom io_uring `SerialExecutor` (Linux)** — raw syscalls без liburing, `ConnectionActor` пиннится к io_uring-треду через `nonisolated unownedExecutor`
+10. **POLL_ADD + accept4-drain** — лучше, чем native IORING_OP_ACCEPT для HTTP (drain'ит весь backlog за 1 CQE). Single-shot ACCEPT в 100× медленнее при бёрсте соединений
 
 ## Архитектурные долги
 
 1. **EventLoopExecutorCache** — global static, не очищается. Решить в Phase 5 (per-group cache)
 2. **Middleware + async** — middleware bypass для async handlers. Решить в Phase 6.1
-3. **Chunked encoding** — не детектится. Решить в Phase 6.2
+3. **Chunked encoding** — не детектируется. Решить в Phase 6.2
 4. **Handler throw** — handler signature не `throws`, developer должен `do/catch`. Документировать
 5. **Partial-read testing** — partial-read fix добавлен, но не протестирован на real multi-packet requests
+6. **NIO fallback на Linux** — если io_uring недоступен (gVisor, старый Docker, ядро <5.1), сервер падает вместо fallback на NIO/epoll. NIO-код уже написан (macOS path), нужно обернуть `sl_ring_init` в try-catch и перейти на NIO-путь при ошибке
