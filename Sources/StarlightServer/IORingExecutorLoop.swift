@@ -187,9 +187,6 @@ final actor ConnectionActor {
 
             case .needsAsync:
                 let response = await codec.dispatchAsync()
-                _ = loop.loopStats.bytesSent.add(Int64(
-                    response.headerBuffer.readableBytes
-                    + (response.bodyBuffer?.readableBytes ?? 0)))
                 await loop.writeAsync(fd, conn: conn, response: response)
                 if !response.keepAlive {
                     loop.closeConnection(fd: fd)
@@ -313,31 +310,30 @@ final class IORingExecutorLoop: @unchecked Sendable {
             flags: [.singleSubmissionThread]
         )
 
-        // Arm wakeup + initial submit.
+        // Arm wakeup — Phase 2a of the first iteration will submit it.
         armWakeup()
-        try submitPending()
 
-        // Start accept thread (same CPU).
+        // Start accept thread (same CPU — mostly idle in poll).
         Thread.detachNewThread { [self] in
             sl_pin_to_cpu(self.cpuIndex)
             self.acceptThreadMain()
         }
 
         while !stopped {
-            // Phase 1: drain CQEs from mmap memory (0 syscalls).
+            // Phase 1: Drain CQEs from mmap memory (0 syscalls).
             var drainedAny = false
             while let cqe = ringBox!.ring.tryConsumeCompletion() {
                 processCQE(cqe)
                 drainedAny = true
             }
 
-            // Phase 2a: submit pending SQEs if any (1 syscall only when needed).
+            // Phase 2a: Submit pending SQEs (1 syscall only when needed).
             if needsSubmit {
                 try submitPending()
                 needsSubmit = false
             }
 
-            // Phase 2b: if no CQEs were found in memory, block for the next.
+            // Phase 2b: Block only if nothing drained (0-1 syscalls).
             if !drainedAny {
                 do {
                     let cqe = try ringBox!.ring.blockingConsumeCompletion()
@@ -347,7 +343,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 }
             }
 
-            // Phase 3: drain jobs (continuation resumes, new Tasks).
+            // Phase 3: Drain jobs — CRITICAL: runs AFTER CQE processing
+            // so jobs from blockingConsumeCompletion are handled in THIS
+            // iteration, not the next.
             drainJobs()
         }
     }
@@ -402,7 +400,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
     private func acceptThreadMain() {
         while !stopped {
             var pfd = pollfd(fd: listenerFd, events: LinuxSocketConst.POLLIN, revents: 0)
-            let ret = Glibc.poll(&pfd, 1, 100)
+            let ret = Glibc.poll(&pfd, 1, 1000)
             if ret <= 0 { continue }
             if (pfd.revents & LinuxSocketConst.POLLIN) == 0 { continue }
 
@@ -431,6 +429,10 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // MARK: New connection setup
 
     private func setupNewConnection(_ fd: CInt) {
+        guard connectionCount < maxConnectionsPerLoop else {
+            Glibc.close(fd)
+            return
+        }
         _ = loopStats.connectionsAccepted.increment()
         connectionCount += 1
 
