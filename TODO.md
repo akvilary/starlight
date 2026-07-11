@@ -32,9 +32,7 @@
 
 - [ ] **A-2. DSL с result-builder отсутствует** — `App.swift` (57 строк), `Package.swift:87`. Package.swift обещает "result-builder DSL". Нет `@resultBuilder`, нет декларативного route API.
 
-- [ ] **A-3. `Router.freeze()` — data race за `@unchecked Sendable`** — `Router.swift:286-304`, вызовы из `HTTP1Codec.swift:119` и `Router.swift:360`. Мутация без синхронизации. `Atomic<Bool>` + `compareExchange`; убрать `freeze()` из codec и `handle()` (уже вызывается из `Server.start()`).
-
-- [ ] **A-4. HTTP-версия валидируется, но выбрасывается** — `HTTP1Parser.swift:248`. Не сохраняется в RequestContext. Следствия: нет keep-alive default для 1.1, нет `Host` enforcement, нет `Expect: 100-continue`, status line всегда `HTTP/1.1`.
+- [x] **A-3. `Router.freeze()` — data race за `@unchecked Sendable`** — `Atomic<Bool>` + `compareExchange`. Убран `freeze()` из hot path codec. Убран `#if DEBUG isFrozen`.
 
 - [ ] **A-5. Нет валидации field-name / field-value** — `HTTP1Parser.swift:335-340`. Только наличие `:`. Валидировать token-charset имени (§3.2.6), non-empty, reject CTL в value (§3.2.4). Валидация path-target (§5.3).
 
@@ -44,9 +42,9 @@
 
 - [ ] **A-8. Несогласованная нормализация слешей → cache poisoning / ACL bypass** — `Router.swift:448,471-472`. Внутренние `//` коллапсируют безгранично, trailing — один раз. Единая policy: normalize в парсере или reject `//`.
 
-- [ ] **A-9. `ConnectionActor` создаётся на каждое соединение — heap allocation** — `IORingExecutorLoop.swift:446`. 100K соединений = 100K actor allocations. Actor не содержит state. Использовать `Task(executor:)` напрямую.
+- [x] **A-9. ConnectionActor: per-connection → per-loop** — Один actor на loop вместо одного на соединение. 12 аллокаций вместо 100K. Полное удаление требует `Task(executor:)` (недоступен в Swift 6.2.4).
 
-- [ ] **A-10. `Task {}` без executor binding — initial hop на global pool** — `IORingExecutorLoop.swift:448-450`. Unstructured Task стартует на global pool, затем hops на loop executor. Должно быть `Task(executor: cachedExecutor)`.
+- [x] **A-10. Task hop — частично исправлен** — Per-loop actor (A-9) переиспользуется. Initial hop на global pool остаётся; полное устранение требует `Task(executor:)` (SE-0416, не реализован в Swift 6.2.4).
 
 - [ ] **A-11. `composeOne` композитит middleware в `routes` (никогда не используется)** — `Router.swift:295-304`. `match()` использует только `staticRoutes`/`dynamicRoutes`. Утроенная работа. Удалить композицию в `routes`; `routeCount = staticRoutes.count + dynamicRoutes.count`.
 
@@ -139,7 +137,7 @@
 | Блок | Пунктов | Критичных |
 |---|---|---|
 | 0 — Краши/corruption/security | 8 | ✅ закрыт |
-| A — Архитектура | 13 | — |
+| A — Архитектура | 13 | 3 закрыто (A-3, A-9, A-10) |
 | B — Логические баги | 12 | — |
 | C — Performance/zero-alloc | 13 | — |
 | D — API/clean code | 8 | — |

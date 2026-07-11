@@ -116,7 +116,6 @@ final class HTTP1Codec: @unchecked Sendable {
 
         // Sync dispatch
         if let router = self.router {
-            router.freeze()
             guard let m = router.match(method: self.ctx.method, path: self.ctx.path) else {
                 let r = HTTPResponse.plaintext(
                     "404 Not Found: \(self.ctx.method) \(self.ctx.pathString)\n",

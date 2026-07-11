@@ -29,6 +29,7 @@
 //===----------------------------------------------------------------------===//
 
 import NIOCore
+import Synchronization
 import StarlightHTTP
 
 /// A single path segment of a route pattern.
@@ -185,13 +186,10 @@ public final class Router: @unchecked Sendable {
     /// folded into the handler closure.
     private var middlewares: [Middleware] = []
 
-    #if DEBUG
-    /// Set to `true` on the first `handle(_:)` call. Subsequent
-    /// `add(...)` / `use(...)` calls will trap with a
-    /// "router-frozen-after-start" message rather than silently
-    /// racing with concurrent dispatch.
-    private var isFrozen: Bool = false
-    #endif
+    /// Atomically tracks whether `freeze()` has been called.
+    /// `compareExchange` in `freeze()` ensures only one thread
+    /// performs middleware composition.
+    private let isFrozen = Atomic<Bool>(false)
 
     public init() {}
 
@@ -243,11 +241,9 @@ public final class Router: @unchecked Sendable {
 
     /// Register a handler for an arbitrary method + pattern.
     public func add(_ method: HTTPMethod, _ pattern: String, _ kind: HandlerKind) {
-        #if DEBUG
-        precondition(!isFrozen,
+        precondition(!isFrozen.load(ordering: .acquiring),
             "Router.add called after the router has been attached to a server. " +
             "Register all routes before calling StarlightServer.start(...).")
-        #endif
         let segments = Self.parsePattern(pattern)
         let route = Route(method: method, pattern: pattern, segments: segments, handler: kind)
         let isAllStatic = segments.allSatisfy {
@@ -268,11 +264,9 @@ public final class Router: @unchecked Sendable {
     ///   to a server. Debug builds trap if called after the first
     ///   `handle(_:)` invocation.
     public func use(_ middleware: Middleware) {
-        #if DEBUG
-        precondition(!isFrozen,
+        precondition(!isFrozen.load(ordering: .acquiring),
             "Router.use called after the router has been attached to a server. " +
             "Register all middleware before calling StarlightServer.start(...).")
-        #endif
         self.middlewares.append(middleware)
     }
 
@@ -280,25 +274,20 @@ public final class Router: @unchecked Sendable {
 
     /// Pre-compose middleware into each route's handler. Called once
     /// from `StarlightServer.start()` before any connection is
-    /// accepted, so per-request dispatch pays zero closure-allocation
-    /// cost. Must not be called concurrently from multiple event loops.
-    private var isComposed = false
-
+    /// accepted. Thread-safe via `Atomic<Bool>` compareExchange —
+    /// if multiple event loops call this concurrently, only one
+    /// performs the composition.
     public func freeze() {
-        guard !isComposed else { return }
-        isComposed = true
-        #if DEBUG
-        isFrozen = true
-        #endif
+        let (exchanged, _) = isFrozen.compareExchange(
+            expected: false, desired: true, ordering: .acquiringAndReleasing
+        )
+        guard exchanged else { return }
         guard !middlewares.isEmpty else { return }
         for i in staticRoutes.indices {
             staticRoutes[i].handler = composeOne(staticRoutes[i].handler)
         }
         for i in dynamicRoutes.indices {
             dynamicRoutes[i].handler = composeOne(dynamicRoutes[i].handler)
-        }
-        for i in routes.indices {
-            routes[i].handler = composeOne(routes[i].handler)
         }
     }
 

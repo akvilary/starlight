@@ -124,13 +124,14 @@ final class ExecutorConnection: @unchecked Sendable {
     }
 }
 
-// MARK: - ConnectionActor
+// MARK: - ConnectionActor (one per loop, shared by all connections)
 
-/// Runs the connection handler on the loop's executor.
-/// The actor's `unownedExecutor` returns the loop's executor,
-/// so all methods run on the io_uring thread.
+/// Thin executor-binding actor. Created once per loop and shared by
+/// all connections — avoids per-connection heap allocation. The actor
+/// is reentrant: async methods release the actor at each `await`,
+/// so connections interleave correctly on the single-threaded loop.
 final actor ConnectionActor {
-    private nonisolated let _executor: UnownedSerialExecutor
+    nonisolated let _executor: UnownedSerialExecutor
 
     init(_ executor: UnownedSerialExecutor) {
         self._executor = executor
@@ -143,59 +144,9 @@ final actor ConnectionActor {
     func handle(fd: CInt, conn: ExecutorConnection,
                 loop: IORingExecutorLoop) async {
         if conn.codec == nil {
-            await echoLoop(fd: fd, conn: conn, loop: loop)
+            await loop.echoLoop(fd: fd, conn: conn)
         } else {
-            await httpLoop(fd: fd, conn: conn, loop: loop)
-        }
-    }
-
-    // TCP echo — no codec, no parsing, just bounce bytes.
-    private func echoLoop(fd: CInt, conn: ExecutorConnection,
-                          loop: IORingExecutorLoop) async {
-        while true {
-            let bytesRead = await loop.readAsync(fd, conn: conn)
-            guard bytesRead > 0 else {
-                loop.closeConnection(fd: fd)
-                return
-            }
-            await loop.echoAsync(fd, conn: conn, bytesRead: bytesRead)
-        }
-    }
-
-    // HTTP/1.1 — feed codec, parse, dispatch.
-    private func httpLoop(fd: CInt, conn: ExecutorConnection,
-                          loop: IORingExecutorLoop) async {
-        let codec = conn.codec!
-        while true {
-            let bytesRead = await loop.readAsync(fd, conn: conn)
-            guard bytesRead > 0 else {
-                loop.closeConnection(fd: fd)
-                return
-            }
-
-            codec.feed(UnsafeBufferPointer(
-                start: conn.readBuffer, count: bytesRead))
-
-            let result = codec.tryParseSync()
-            switch result {
-            case .incomplete:
-                continue
-
-            case .response(let response):
-                await loop.writeAsync(fd, conn: conn, response: response)
-                if !response.keepAlive {
-                    loop.closeConnection(fd: fd)
-                    return
-                }
-
-            case .needsAsync:
-                let response = await codec.dispatchAsync()
-                await loop.writeAsync(fd, conn: conn, response: response)
-                if !response.keepAlive {
-                    loop.closeConnection(fd: fd)
-                    return
-                }
-            }
+            await loop.httpLoop(fd: fd, conn: conn)
         }
     }
 }
@@ -258,6 +209,10 @@ final class IORingExecutorLoop: @unchecked Sendable {
         _cachedExecutor = ce
         return ce
     }
+
+    // One actor for all connections on this loop — avoids per-connection
+    // allocation. Created lazily on first connection.
+    private var connActor: ConnectionActor? = nil
 
     // MARK: Init (no ring creation — deferred to run())
 
@@ -452,10 +407,11 @@ final class IORingExecutorLoop: @unchecked Sendable {
                                        router: router, handler: handler)
         connections[fd] = conn
 
-        let actor = ConnectionActor(cachedExecutor)
-        let loop = self
+        if connActor == nil {
+            connActor = ConnectionActor(cachedExecutor)
+        }
         Task {
-            await actor.handle(fd: fd, conn: conn, loop: loop)
+            await connActor!.handle(fd: fd, conn: conn, loop: self)
         }
     }
 
@@ -659,6 +615,56 @@ final class IORingExecutorLoop: @unchecked Sendable {
             let needWake = tid != 0
             pthread_spin_unlock(&jobLock)
             if needWake { wakeup() }
+        }
+    }
+
+    // MARK: Connection loops (called from ConnectionActor on loop's executor)
+
+    // TCP echo — no codec, no parsing, just bounce bytes.
+    func echoLoop(fd: CInt, conn: ExecutorConnection) async {
+        while true {
+            let bytesRead = await readAsync(fd, conn: conn)
+            guard bytesRead > 0 else {
+                closeConnection(fd: fd)
+                return
+            }
+            await echoAsync(fd, conn: conn, bytesRead: bytesRead)
+        }
+    }
+
+    // HTTP/1.1 — feed codec, parse, dispatch.
+    func httpLoop(fd: CInt, conn: ExecutorConnection) async {
+        let codec = conn.codec!
+        while true {
+            let bytesRead = await readAsync(fd, conn: conn)
+            guard bytesRead > 0 else {
+                closeConnection(fd: fd)
+                return
+            }
+
+            codec.feed(UnsafeBufferPointer(
+                start: conn.readBuffer, count: bytesRead))
+
+            let result = codec.tryParseSync()
+            switch result {
+            case .incomplete:
+                continue
+
+            case .response(let response):
+                await writeAsync(fd, conn: conn, response: response)
+                if !response.keepAlive {
+                    closeConnection(fd: fd)
+                    return
+                }
+
+            case .needsAsync:
+                let response = await codec.dispatchAsync()
+                await writeAsync(fd, conn: conn, response: response)
+                if !response.keepAlive {
+                    closeConnection(fd: fd)
+                    return
+                }
+            }
         }
     }
 
