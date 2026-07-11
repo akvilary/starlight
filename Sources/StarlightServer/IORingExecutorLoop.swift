@@ -95,10 +95,6 @@ final class ExecutorConnection: @unchecked Sendable {
     let readBuffer: UnsafeMutablePointer<UInt8>
     let readBufferSize: Int
     let codec: HTTP1Codec?
-    var pendingResponse: HTTPResponse?
-    var sendLen: Int = 0
-    var sendOffset: Int = 0
-    var keepAlive: Bool = true
 
     init(connId: UInt32, fd: CInt, readBufferSize: Int, isEchoMode: Bool,
          router: Router?, handler: HTTPHandler?) {
@@ -116,12 +112,6 @@ final class ExecutorConnection: @unchecked Sendable {
     }
 
     deinit { readBuffer.deallocate() }
-
-    func clearSend() {
-        pendingResponse = nil
-        sendLen = 0
-        sendOffset = 0
-    }
 }
 
 // MARK: - ConnectionActor (one per loop, shared by all connections)
@@ -465,14 +455,13 @@ final class IORingExecutorLoop: @unchecked Sendable {
     /// no codec — bounce bytes directly from readBuffer.
     func echoAsync(_ fd: CInt, conn: ExecutorConnection, bytesRead: Int) async {
         _ = loopStats.bytesSent.add(Int64(bytesRead))
-        conn.sendLen = bytesRead
-        conn.sendOffset = 0
 
-        while conn.sendOffset < bytesRead {
+        var offset = 0
+        while offset < bytesRead {
             let written: Int = await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
                 let ptr = UnsafeMutableRawPointer(conn.readBuffer)
-                    .advanced(by: conn.sendOffset)
-                let len = bytesRead - conn.sendOffset
+                    .advanced(by: offset)
+                let len = bytesRead - offset
                 let ok = ringBox!.ring.prepare(request: .write(
                     UnsafeMutableRawBufferPointer(start: ptr, count: len),
                     into: FileDescriptor(rawValue: fd),
@@ -482,17 +471,16 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 else { cont.resume(returning: -1) }
             }
             if written < 0 { break }
-            conn.sendOffset += written
+            offset += written
         }
     }
 
     // MARK: Async HTTP write bridge
 
     /// Suspend until full response is sent (handles partial writes).
-    /// C-12 note: conn.pendingResponse keeps the HTTPResponse (and its
-    /// ByteBuffers) alive until the write CQE arrives. The ByteBuffer
-    /// backing store is heap-allocated and stable (does not move while
-    /// the buffer is alive), so the pointer passed to the SQE is valid.
+    /// The `response` parameter keeps the HTTPResponse (and its
+    /// ByteBuffers) alive in the coroutine frame for the duration of
+    /// the write — no need for a separate `pendingResponse` field.
     func writeAsync(_ fd: CInt, conn: ExecutorConnection,
                     response: HTTPResponse) async {
         let headerLen = response.headerBuffer.readableBytes
@@ -500,61 +488,43 @@ final class IORingExecutorLoop: @unchecked Sendable {
         let totalLen = headerLen + bodyLen
         _ = loopStats.bytesSent.add(Int64(totalLen))
 
-        conn.pendingResponse = response
-        conn.sendLen = totalLen
-        conn.sendOffset = 0
-        conn.keepAlive = response.keepAlive
-
-        while conn.sendOffset < conn.sendLen {
+        var offset = 0
+        while offset < totalLen {
+            let remaining = totalLen - offset
             let written: Int = await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
-                prepareWriteSQE(fd: fd, conn: conn, cont: cont)
+                if offset < headerLen {
+                    response.headerBuffer.withUnsafeReadableBytes { rawBuf in
+                        let len = min(rawBuf.count - offset, remaining)
+                        let ptr = UnsafeMutableRawPointer(mutating: rawBuf.baseAddress!)
+                            .advanced(by: offset)
+                        let ok = ringBox!.ring.prepare(request: .write(
+                            UnsafeMutableRawBufferPointer(start: ptr, count: len),
+                            into: FileDescriptor(rawValue: fd),
+                            context: packUserData(connId: conn.connId, op: .send)
+                        ))
+                        if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
+                        else { cont.resume(returning: -1) }
+                    }
+                } else if let bodyBuf = response.bodyBuffer {
+                    let bodyOffset = offset - headerLen
+                    bodyBuf.withUnsafeReadableBytes { rawBuf in
+                        let len = min(rawBuf.count - bodyOffset, remaining)
+                        let ptr = UnsafeMutableRawPointer(mutating: rawBuf.baseAddress!)
+                            .advanced(by: bodyOffset)
+                        let ok = ringBox!.ring.prepare(request: .write(
+                            UnsafeMutableRawBufferPointer(start: ptr, count: len),
+                            into: FileDescriptor(rawValue: fd),
+                            context: packUserData(connId: conn.connId, op: .send)
+                        ))
+                        if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
+                        else { cont.resume(returning: -1) }
+                    }
+                } else {
+                    cont.resume(returning: -1)
+                }
             }
             if written < 0 { break }
-            conn.sendOffset += written
-        }
-
-        conn.clearSend()
-    }
-
-    private func prepareWriteSQE(fd: CInt, conn: ExecutorConnection,
-                                  cont: CheckedContinuation<Int, Never>) {
-        guard let response = conn.pendingResponse else {
-            cont.resume(returning: -1)
-            return
-        }
-        let headerLen = response.headerBuffer.readableBytes
-        let remaining = conn.sendLen - conn.sendOffset
-
-        if conn.sendOffset < headerLen {
-            let offset = conn.sendOffset
-            response.headerBuffer.withUnsafeReadableBytes { rawBuf in
-                let len = min(rawBuf.count - offset, remaining)
-                let ptr = UnsafeMutableRawPointer(mutating: rawBuf.baseAddress!)
-                    .advanced(by: offset)
-                let ok = ringBox!.ring.prepare(request: .write(
-                    UnsafeMutableRawBufferPointer(start: ptr, count: len),
-                    into: FileDescriptor(rawValue: fd),
-                    context: packUserData(connId: conn.connId, op: .send)
-                ))
-                if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
-                else { cont.resume(returning: -1) }
-            }
-        } else if let bodyBuf = response.bodyBuffer {
-            let bodyOffset = conn.sendOffset - headerLen
-            bodyBuf.withUnsafeReadableBytes { rawBuf in
-                let len = min(rawBuf.count - bodyOffset, remaining)
-                let ptr = UnsafeMutableRawPointer(mutating: rawBuf.baseAddress!)
-                    .advanced(by: bodyOffset)
-                let ok = ringBox!.ring.prepare(request: .write(
-                    UnsafeMutableRawBufferPointer(start: ptr, count: len),
-                    into: FileDescriptor(rawValue: fd),
-                    context: packUserData(connId: conn.connId, op: .send)
-                ))
-                if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
-                else { cont.resume(returning: -1) }
-            }
-        } else {
-            cont.resume(returning: -1)
+            offset += written
         }
     }
 
@@ -635,7 +605,39 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // HTTP/1.1 — feed codec, parse, dispatch.
     func httpLoop(fd: CInt, conn: ExecutorConnection) async {
         let codec = conn.codec!
+        var needsRead = true
         while true {
+            // Drain all pipelined requests from the accumulator before
+            // reading more data. This avoids a read syscall per
+            // pipelined request — multiple requests in one TCP segment
+            // are processed in a tight loop.
+            parseLoop: while true {
+                let result = codec.tryParseSync()
+                switch result {
+                case .incomplete:
+                    needsRead = true
+                    break parseLoop
+
+                case .response(let response):
+                    await writeAsync(fd, conn: conn, response: response)
+                    if !response.keepAlive {
+                        closeConnection(fd: fd)
+                        return
+                    }
+                    continue parseLoop
+
+                case .needsAsync:
+                    let response = await codec.dispatchAsync()
+                    await writeAsync(fd, conn: conn, response: response)
+                    if !response.keepAlive {
+                        closeConnection(fd: fd)
+                        return
+                    }
+                    continue parseLoop
+                }
+            }
+
+            guard needsRead else { continue }
             let bytesRead = await readAsync(fd, conn: conn)
             guard bytesRead > 0 else {
                 closeConnection(fd: fd)
@@ -644,27 +646,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
             codec.feed(UnsafeBufferPointer(
                 start: conn.readBuffer, count: bytesRead))
-
-            let result = codec.tryParseSync()
-            switch result {
-            case .incomplete:
-                continue
-
-            case .response(let response):
-                await writeAsync(fd, conn: conn, response: response)
-                if !response.keepAlive {
-                    closeConnection(fd: fd)
-                    return
-                }
-
-            case .needsAsync:
-                let response = await codec.dispatchAsync()
-                await writeAsync(fd, conn: conn, response: response)
-                if !response.keepAlive {
-                    closeConnection(fd: fd)
-                    return
-                }
-            }
+            needsRead = false
         }
     }
 
