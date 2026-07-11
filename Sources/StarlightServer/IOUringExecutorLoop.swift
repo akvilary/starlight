@@ -413,12 +413,16 @@ final class IOUringExecutorLoop: @unchecked Sendable {
     /// (on loop's executor). Ring access is safe — same thread.
     func readAsync(_ fd: CInt, conn: ExecutorConnection) async -> Int {
         return await withCheckedContinuation { cont in
-            readWaiters[fd] = cont
             if let sqe = ensureSQE() {
+                // Register ONLY when an SQE was obtained, so that
+                // closeConnection/resumeRead can never resume a cont
+                // we already resumed on the ring-full path below.
+                readWaiters[fd] = cont
                 sl_prep_recv(sqe, fd, conn.readBuffer, UInt32(readBufferSize))
                 sl_sqe_set_data(sqe, packUserData(fd: fd, op: .recv))
             } else {
-                // Ring full — resume immediately with error
+                // Ring full — resume immediately. Not registered in
+                // readWaiters, so a later closeConnection is a no-op.
                 cont.resume(returning: 0)
             }
         }
@@ -450,8 +454,9 @@ final class IOUringExecutorLoop: @unchecked Sendable {
 
         while conn.sendOffset < conn.sendLen {
             let written: CInt = await withCheckedContinuation { cont in
-                writeWaiters[fd] = cont
                 if let sqe = ensureSQE() {
+                    // Register ONLY when an SQE was obtained (see readAsync).
+                    writeWaiters[fd] = cont
                     conn.fillSendSQE(sqe, offset: conn.sendOffset)
                     sl_sqe_set_data(sqe, packUserData(fd: fd, op: .send))
                 } else {
