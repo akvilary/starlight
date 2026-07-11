@@ -5,8 +5,10 @@
 //
 //  Platform dispatch:
 //
-//    #if os(Linux)  → io_uring backend (IOUringLoop, raw syscalls)
-//    #else           → NIO backend (NIOAsyncChannel, existing code)
+//    #if os(Linux) && $Lifetimes
+//        try IORing → catch → NIO fallback
+//    #endif
+//    NIO backend (always available — primary on macOS, fallback on Linux)
 //
 //  Both paths share the same public API (StarlightServer.start/shutdown)
 //  and the same HTTP layer (HTTP1Codec, Router, RequestContext, etc.).
@@ -15,6 +17,7 @@
 
 import Foundation
 import NIOCore
+import NIOPosix
 import StarlightCore
 import StarlightHTTP
 import StarlightRouting
@@ -39,18 +42,42 @@ public enum Mode: Sendable {
     case http
 }
 
-// MARK: - Linux: io_uring backend
+// MARK: - io_uring backend (Linux + Lifetimes only)
 
-#if os(Linux)
+#if os(Linux) && compiler(>=6.2) && $Lifetimes
 
-import CStarlightLinux
+import SystemPackage
+import CLinuxExt
+
+/// Check if SystemPackage.IORing is available at runtime.
+/// Creates a throwaway ring — if kernel/seccomp blocks io_uring, returns false.
+private func ioUringAvailable() -> Bool {
+    do {
+        _ = try IORing(queueDepth: 1, flags: [.singleSubmissionThread])
+        return true
+    } catch {
+        return false
+    }
+}
+
+#endif
+
+// MARK: - StarlightServer (unified, all platforms)
 
 public final class StarlightServer: @unchecked Sendable {
     public let stats = ServerStats()
     public let loopCount: Int
 
-    private var ioUringLoops: [IOUringExecutorLoop] = []
+    // io_uring state (Linux only)
+    #if os(Linux) && compiler(>=6.2) && $Lifetimes
+    private var ioRingLoops: [IORingExecutorLoop] = []
     private var shutdownContinuation: CheckedContinuation<Void, Never>?
+    private var usingIORing = false
+    #endif
+
+    // NIO state (all platforms — primary on macOS, fallback on Linux)
+    private var eventLoopGroup: MultiThreadedEventLoopGroup?
+    private var nioListeners: [NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>] = []
 
     public init(loopCount: Int = System.coreCount) {
         self.loopCount = loopCount
@@ -67,91 +94,118 @@ public final class StarlightServer: @unchecked Sendable {
     ) async throws {
         precondition(mode != .http || httpHandler != nil || router != nil,
                      "HTTP mode requires an httpHandler closure or a Router")
-        precondition(self.ioUringLoops.isEmpty, "StarlightServer already started")
 
         router?.freeze()
 
-        // Create one IOUringExecutorLoop per CPU core with SO_REUSEPORT.
-        for cpuIndex in 0..<loopCount {
-            let loop = IOUringExecutorLoop(host: host, port: port,
-                                           handler: httpHandler, router: router,
-                                           stats: self.stats)
-            try loop.setup()
-            ioUringLoops.append(loop)
-
-            let cpu = CInt(cpuIndex)
-            Thread.detachNewThread { [loop] in
-                sl_pin_to_cpu(cpu)
-                do { try loop.run() }
-                catch { /* log */ }
+        #if os(Linux) && compiler(>=6.2) && $Lifetimes
+        // Try io_uring backend first — runtime detection for container compat.
+        if ioUringAvailable() {
+            do {
+                try await startWithIORing(host: host, port: port, mode: mode,
+                                          httpHandler: httpHandler, router: router)
+                return
+            } catch {
+                // IORing init or setup failed — fall through to NIO.
             }
         }
+        #endif
+
+        // NIO backend (primary on macOS, fallback on Linux).
+        try await startWithNIO(host: host, port: port, mode: mode,
+                               httpHandler: httpHandler, router: router)
+    }
+
+    public func shutdown() {
+        #if os(Linux) && compiler(>=6.2) && $Lifetimes
+        if usingIORing {
+            for loop in ioRingLoops {
+                loop.shutdown()
+            }
+            ioRingLoops.removeAll()
+            shutdownContinuation?.resume()
+            shutdownContinuation = nil
+            usingIORing = false
+            return
+        }
+        #endif
+
+        // NIO shutdown
+        for listener in nioListeners {
+            listener.channel.close(promise: nil)
+        }
+        nioListeners.removeAll()
+    }
+
+    deinit {
+        #if os(Linux) && compiler(>=6.2) && $Lifetimes
+        // io_uring loops clean up their own fds in deinit.
+        #endif
+    }
+}
+
+// MARK: - io_uring backend
+
+#if os(Linux) && compiler(>=6.2) && $Lifetimes
+
+extension StarlightServer {
+    private func startWithIORing(
+        host: String, port: Int, mode: Mode,
+        httpHandler: HTTPHandler?, router: Router?
+    ) async throws {
+        precondition(self.ioRingLoops.isEmpty, "StarlightServer already started")
+
+        var created: [IORingExecutorLoop] = []
+        do {
+            for cpuIndex in 0..<loopCount {
+                let loop = try IORingExecutorLoop(
+                    host: host, port: port,
+                    handler: httpHandler, router: router,
+                    stats: self.stats, cpuIndex: CInt(cpuIndex)
+                )
+                try loop.setup()
+                created.append(loop)
+
+                let cpu = CInt(cpuIndex)
+                Thread.detachNewThread { [loop] in
+                    sl_pin_to_cpu(cpu)
+                    do { try loop.run() }
+                    catch { /* log */ }
+                }
+            }
+        } catch {
+            // Cleanup partial creation — fall through to NIO.
+            for loop in created { loop.shutdown() }
+            throw error
+        }
+
+        ioRingLoops = created
+        usingIORing = true
 
         // Suspend until shutdown() is called.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.shutdownContinuation = continuation
         }
     }
-
-    public func shutdown() {
-        for loop in ioUringLoops {
-            loop.shutdown()
-        }
-        ioUringLoops.removeAll()
-        shutdownContinuation?.resume()
-    }
 }
 
-// MARK: - Non-Linux: NIO backend
+#endif
 
-#else
+// MARK: - NIO backend (all platforms)
 
-import NIOPosix
-
-/// Cross-platform `SO_REUSEPORT` socket option value.
-@inlinable
-var SO_REUSEPORT: NIOBSDSocket.Option {
-    #if canImport(Glibc)
-    return NIOBSDSocket.Option(rawValue: Glibc.SO_REUSEPORT)
-    #elseif canImport(Darwin)
-    return NIOBSDSocket.Option(rawValue: Darwin.SO_REUSEPORT)
-    #else
-    return NIOBSDSocket.Option(rawValue: 15)
-    #endif
-}
-
-public final class StarlightServer: @unchecked Sendable {
-    public let eventLoopGroup: MultiThreadedEventLoopGroup
-    public let stats = ServerStats()
-    public let loopCount: Int
-
-    /// Bound listeners. Populated by `start()`, closed by `shutdown()`.
-    private var listeners: [NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>] = []
-
-    public init(loopCount: Int = System.coreCount) {
-        self.loopCount = loopCount
-        self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: loopCount)
-    }
-
-    // MARK: - Start / Shutdown
-
-    public func start(
-        host: String,
-        port: Int,
-        mode: Mode = .tcpEcho,
-        httpHandler: HTTPHandler? = nil,
-        router: Router? = nil
+extension StarlightServer {
+    private func startWithNIO(
+        host: String, port: Int, mode: Mode,
+        httpHandler: HTTPHandler?, router: Router?
     ) async throws {
-        precondition(mode != .http || httpHandler != nil || router != nil,
-                     "HTTP mode requires an httpHandler closure or a Router")
-        precondition(self.listeners.isEmpty, "StarlightServer already started")
+        precondition(self.nioListeners.isEmpty, "StarlightServer already started")
 
-        router?.freeze()
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: loopCount)
+        self.eventLoopGroup = eventLoopGroup
 
-        for eventLoop in self.eventLoopGroup.makeIterator() {
+        for eventLoop in eventLoopGroup.makeIterator() {
             let listener = try await ServerBootstrap(group: eventLoop)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .serverChannelOption(ChannelOptions.socketOption(SO_REUSEPORT), value: 1)
+                .serverChannelOption(ChannelOptions.socketOption(Self.soReusePort), value: 1)
                 .bind(host: host, port: port) { channel in
                     channel.eventLoop.makeCompletedFuture {
                         try NIOAsyncChannel(
@@ -163,11 +217,11 @@ public final class StarlightServer: @unchecked Sendable {
                         )
                     }
                 }
-            self.listeners.append(listener)
+            nioListeners.append(listener)
         }
 
         try await withThrowingDiscardingTaskGroup { listenerGroup in
-            for listener in self.listeners {
+            for listener in self.nioListeners {
                 let stats = self.stats
                 let mode = mode
                 let handler = httpHandler
@@ -194,11 +248,16 @@ public final class StarlightServer: @unchecked Sendable {
         }
     }
 
-    public func shutdown() {
-        for listener in self.listeners {
-            listener.channel.close(promise: nil)
-        }
-        self.listeners.removeAll()
+    /// Cross-platform `SO_REUSEPORT` socket option value.
+    @inlinable
+    static var soReusePort: NIOBSDSocket.Option {
+        #if canImport(Glibc)
+        return NIOBSDSocket.Option(rawValue: Glibc.SO_REUSEPORT)
+        #elseif canImport(Darwin)
+        return NIOBSDSocket.Option(rawValue: Darwin.SO_REUSEPORT)
+        #else
+        return NIOBSDSocket.Option(rawValue: 15)
+        #endif
     }
 
     // MARK: - Per-connection handling (NIO)
@@ -274,5 +333,3 @@ public final class StarlightServer: @unchecked Sendable {
         } catch {}
     }
 }
-
-#endif // os(Linux)

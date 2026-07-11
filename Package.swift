@@ -3,8 +3,9 @@
 import PackageDescription
 
 // Starlight — high-performance, zero-allocation HTTP framework for Swift 6.2+
-// Built on SwiftNIO + thread-per-core model inspired by H2O, with the ownership
-// discipline of Rust/Tokio and the per-request reuse pattern of fasthttp.
+// Built on SystemPackage.IORing (Linux) / SwiftNIO (macOS),
+// thread-per-core model inspired by H2O, with the ownership discipline of
+// Rust/Tokio and the per-request reuse pattern of fasthttp.
 
 let package = Package(
     name: "Starlight",
@@ -29,16 +30,18 @@ let package = Package(
         .executable(name: "starlight-benchmark", targets: ["StarlightBenchmark"]),
     ],
     dependencies: [
-        // I/O substrate — epoll on Linux, kqueue on Darwin.
-        // Atomic counters use stdlib `Synchronization.Atomic` (SE-0433, Swift 6.2),
-        // so swift-atomics / swift-collections are not needed.
+        // I/O substrate — io_uring on Linux (via SystemPackage.IORing),
+        // epoll/kqueue fallback via SwiftNIO on all platforms.
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.79.0"),
+        // Apple SystemPackage — provides IORing (~Copyable ring management),
+        // FileDescriptor, Errno. IORing requires main branch (unreleased).
+        .package(url: "https://github.com/apple/swift-system.git", branch: "main"),
     ],
     targets: [
-        // ── C shim for io_uring + Linux socket constants ─────────────────────
+        // ── C wrappers for GNU-extension syscalls (accept4, eventfd, …) ────
         .target(
-            name: "CStarlightLinux",
-            path: "Sources/CStarlightLinux",
+            name: "CLinuxExt",
+            path: "Sources/CLinuxExt",
             publicHeadersPath: "include"
         ),
 
@@ -74,7 +77,7 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── Server bootstrap: SO_REUSEPORT per-loop, NIOSSL ──────────────────
+        // ── Server bootstrap: SO_REUSEPORT per-loop, IORing/NIO ──────────────
         .target(
             name: "StarlightServer",
             dependencies: serverDependencies,
@@ -138,57 +141,48 @@ let package = Package(
             ],
             swiftSettings: baseSwiftSettings
         ),
-
-        // ── io_uring C shim tests ─────────────────────────────────────────
-        // All test code is guarded by #if os(Linux) inside the file.
-        .testTarget(
-            name: "CStarlightLinuxTests",
-            dependencies: ["CStarlightLinux"]
-        ),
     ]
 )
 
 // Swift 6.2 settings shared by every Starlight target.
 //
-// These two flags are the *core* of the framework's performance promise —
+// These flags are the *core* of the framework's performance promise —
 // each one is a load-bearing architectural decision, not a stylistic preference:
 //
 //  - NonisolatedNonsendingByDefault (SE-0466 upcoming): nonisolated `async`
 //    functions run on the caller's executor by default instead of hopping to
 //    the global concurrent pool. This is what makes thread-per-core actually
 //    work — without it every `await` on a `Connection`-actor pinned to an
-//    NIO `EventLoop` would defeat the pinning.
+//    IORing loop would defeat the pinning.
+//
+//  - Lifetimes (experimental): required by SystemPackage.IORing
+//    (`#if compiler(>=6.2) && $Lifetimes`). Enables `@_lifetime` annotations
+//    and Span/MutableSpan (SE-0447/0467). Also planned for zero-copy body
+//    views in Phase 3.
 //
 //  - StrictMemorySafety (experimental): surfaces unsafe constructs as errors
 //    in the hot path. We lean on raw pointers and `~Copyable` types
 //    throughout (arena allocator, io_uring SQE/CQE, zero-copy header views);
 //    this flag keeps that surface audited.
 //
-// Removed (kept commented for future reference):
-//  - Lifetimes (experimental): intended for `Span`/`MutableSpan`-returning
-//    zero-copy APIs (SE-0447/0467). Currently unused in `Sources/` — the code
-//    relies on `~Copyable` + `borrowing` (SE-0390/0377), which needs no flag.
-//    Re-enable in Phase 3 once a `Span<UInt8>` body view lands.
-//  - ExistentialAny (upcoming): would force `any P` spelling. Currently a
-//    no-op — `Sources/` declares zero protocols and zero existentials.
-//    Re-enable when the middleware chain protocol (Phase 6.1) is introduced.
-//
 // SPM applies `swiftSettings` only to our own targets, not to dependencies,
-// so NIO keeps its own settings — the flags police *our* code only.
+// so NIO / swift-system keep their own settings — the flags police *our* code
+// only. swift-system already enables Lifetimes in its own Package.swift.
 var baseSwiftSettings: [SwiftSetting] {
     [
         .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+        .enableExperimentalFeature("Lifetimes"),
         .enableExperimentalFeature("StrictMemorySafety"),
     ]
 }
 
 // ── Platform-conditional dependencies ────────────────────────────────────
 //
-// On Linux we use io_uring (via CStarlightLinux) as the primary I/O
-// backend. NIO (NIOPosix) is kept as a fallback and for macOS.
-// The #if os(Linux) split happens in Swift source code,
-// not here — both sets of dependencies are available on all platforms
-// so the code compiles, but only the relevant path is executed.
+// On Linux we use SystemPackage.IORing as the primary I/O backend, with
+// NIO as a runtime fallback (gVisor, old Docker, kernel <5.7).
+// On macOS NIO is the only backend.
+// Both sets of dependencies are available on all platforms so the code
+// compiles, but only the relevant path is executed.
 
 #if os(Linux)
 var serverDependencies: [Target.Dependency] {
@@ -196,9 +190,10 @@ var serverDependencies: [Target.Dependency] {
         "StarlightCore",
         "StarlightHTTP",
         "StarlightRouting",
-        "CStarlightLinux",
+        "CLinuxExt",
+        .product(name: "SystemPackage", package: "swift-system"),
         .product(name: "NIOCore", package: "swift-nio"),
-        // NIO kept for fallback / tests on Linux:
+        // NIO kept for runtime fallback / tests on Linux:
         .product(name: "NIOPosix", package: "swift-nio"),
     ]
 }
