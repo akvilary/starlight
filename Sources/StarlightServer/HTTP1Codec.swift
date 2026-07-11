@@ -132,7 +132,7 @@ final class HTTP1Codec: @unchecked Sendable {
                 let r = fn(self.ctx)
                 self.afterDispatch()
                 return .response(r)
-            case .async(let fn):
+            case .async:
                 // Cache the match so dispatchAsync() doesn't re-match.
                 self.pendingMatch = (m.handler, m.params)
                 return .needsAsync

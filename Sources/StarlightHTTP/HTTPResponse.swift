@@ -95,13 +95,10 @@ public struct HTTPResponse: Sendable {
     }
 }
 
-/// Convenience helpers for the common Phase 2 cases (plaintext, JSON,
-/// "hello world"). The real DSL lands in Phase 4.
+/// Convenience helpers for the common cases (plaintext, JSON,
+/// "hello world").
 extension HTTPResponse {
-    /// Shared allocator — `ByteBufferAllocator` is a stateless thread-safe
-    /// factory, so one instance serves all responses. Eliminates the
-    /// per-call `ByteBufferAllocator()` class allocation that the old
-    /// default-parameter pattern caused.
+    /// Shared allocator — one instance serves all responses.
     @usableFromInline
     internal static let sharedAllocator = ByteBufferAllocator()
 
