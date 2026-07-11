@@ -5,14 +5,18 @@
 //
 //  Self-contained io_uring C shim — zero external dependencies.
 //
-//  Uses the kernel UAPI header <linux/io_uring.h> when available
-//  (standard on virtually all Linux systems). Falls back to inline
-//  struct definitions for minimal Docker images that lack
-//  linux-headers. The io_uring UAPI is a stable kernel ABI —
-//  struct layouts never change (new fields are appended, never
-//  reordered or removed).
+// Uses the kernel UAPI header <linux/io_uring.h> when available
+// (standard on virtually all Linux systems). Falls back to inline
+// struct definitions for minimal Docker images that lack
+// linux-headers. The size and offset of every field used by
+// Starlight are stable since kernel 5.1; trailing bytes of the SQE
+// are a version-dependent union and are not touched here.
 //
-//  Reference: liburing 2.7 src/setup.c, src/queue.c
+// The fallback definitions below are guarded by _Static_assert
+// (after the #endif) so any drift from the kernel ABI is caught at
+// compile time on both paths.
+//
+// Reference: liburing 2.7 src/setup.c, src/queue.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,8 +35,9 @@
 #else
 /*
  * Fallback definitions for images without linux-headers.
- * These match the kernel UAPI exactly (linux/io_uring.h).
- * Verified against kernel 6.x source.
+ * These match the kernel UAPI exactly (linux/io_uring.h),
+ * verified against /usr/include/linux/io_uring.h (kernel 6.17).
+ * Field order is the kernel ABI — see _Static_assert below.
  */
 
 #include <stdint.h>
@@ -66,9 +71,9 @@ struct io_uring_sqe {
 
 /* CQE — completion queue entry (16 bytes) */
 struct io_uring_cqe {
-    __s32 res;          /*  0: result (bytes, or -errno)    */
-    __u32 flags;        /*  4: IORING_CQE_F_*               */
-    __u64 user_data;    /*  8: tag from SQE                 */
+    __u64 user_data;   /*  0: tag from SQE                 */
+    __s32 res;         /*  8: result (bytes, or -errno)    */
+    __u32 flags;       /* 12: IORING_CQE_F_*               */
 };
 
 struct io_sqring_offsets {
@@ -128,6 +133,25 @@ struct io_uring_params {
 #define __NR_io_uring_register 427
 
 #endif /* __has_include(<linux/io_uring.h>) */
+
+/* ── ABI sanity checks ─────────────────────────────────────────────────
+ * Validate the active io_uring_sqe/io_uring_cqe definition (kernel
+ * header or fallback) against the stable kernel ABI. Catches any drift
+ * in either path at compile time. offsetof requires <stddef.h>.
+ */
+#include <stddef.h>
+_Static_assert(offsetof(struct io_uring_sqe, opcode)   == 0,  "SQE opcode offset");
+_Static_assert(offsetof(struct io_uring_sqe, fd)       == 4,  "SQE fd offset");
+_Static_assert(offsetof(struct io_uring_sqe, off)      == 8,  "SQE off offset");
+_Static_assert(offsetof(struct io_uring_sqe, addr)     == 16, "SQE addr offset");
+_Static_assert(offsetof(struct io_uring_sqe, len)      == 24, "SQE len offset");
+_Static_assert(offsetof(struct io_uring_sqe, user_data) == 32, "SQE user_data offset");
+_Static_assert(sizeof(struct io_uring_sqe)             == 64, "SQE size");
+
+_Static_assert(offsetof(struct io_uring_cqe, user_data) == 0,  "CQE user_data offset");
+_Static_assert(offsetof(struct io_uring_cqe, res)       == 8,  "CQE res offset");
+_Static_assert(offsetof(struct io_uring_cqe, flags)     == 12, "CQE flags offset");
+_Static_assert(sizeof(struct io_uring_cqe)              == 16, "CQE size");
 
 /* ── Socket + system headers ──────────────────────────────────────────── */
 #include <sys/socket.h>
