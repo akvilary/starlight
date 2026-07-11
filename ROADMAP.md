@@ -1,10 +1,11 @@
 # Starlight — Roadmap
 
-## Текущее состояние (commit `4b8053c`)
+## Текущее состояние (commit `957c765`)
 
 ### Что готово
 
-- **Архитектура**: NIOAsyncChannel, one Task per connection, per-loop SO_REUSEPORT (H2O pattern)
+- **Архитектура**: thread-per-core, one Task per connection, per-loop SO_REUSEPORT (H2O pattern)
+- **I/O backend**: на Linux — **custom io_uring reactor** (`CStarlightLinux` raw-syscall C-шим + `IOUringExecutorLoop` — собственный `SerialExecutor` на SQE/CQE, без liburing); на macOS — `NIOAsyncChannel`
 - **HTTP/1.1 parser**: SWAR byte search, state machine, request line + headers + body
 - **Arena allocator**: bump + exponential growth + bulk reset (3.2× faster than heap)
 - **RequestContext (~Copyable)**: arena, method, path, params, headers (lazy HeaderView), body
@@ -40,11 +41,15 @@
 
 ### Phase 4 (продолжение) — Production readiness
 
-#### 4.2 — TLS via NIOSSL
+#### 4.2 — TLS
 
-**Статус**: не начато
+**Статус**: не начато (зависимость `swift-nio-ssl` удалена из Package.swift — не использовалась)
 **Сложность**: Low
 **Время**: ~2 часа
+
+> Примечание: `NIOSSL` ранее числился в зависимостях «про запас», но ни одного
+> `import NIOSSL` в `Sources/` не было. Удалён в рамках очистки. Когда TLS
+> понадобится — вернуть `swift-nio-ssl` обратно и реализовать по плану ниже.
 
 ```swift
 // TLSConfig struct
@@ -120,15 +125,32 @@ let router = Router {
 - [ ] Проверить: NIO overhead, ARC traffic, allocator contention
 - [ ] Сравнить profile с fasthttp/axum
 
-#### 5.2 — Custom io_uring reactor (Linux)
+#### 5.2 — Custom io_uring reactor (Linux) ✅ Готово
 
-**Цель**: убрать NIO overhead, direct epoll/io_uring access
+**Статус**: реализовано, primary backend на Linux
+
+Реализовано без liburing — через raw syscalls (`__NR_io_uring_setup=425` и др.)
+с корректными acquire/release барьерами, зеркалирующими liburing 2.7:
+
+- `Sources/CStarlightLinux/` (~672 LOC C): UAPI-заголовок io_uring + `shim.c`
+  с `sl_ring_init` (mmap SQ/CQ/SQEs, `IORING_FEAT_SINGLE_MMAP`), `sl_get_sqe`,
+  `sl_submit`, `sl_peek_cqe`, `sl_wait_cqe`, сокет-хелперы (`sl_listen` с
+  SO_REUSEPORT, `sl_accept4`, `sl_pin_to_cpu`).
+- `Sources/StarlightServer/IOUringExecutorLoop.swift` (~541 LOC Swift):
+  собственный `SerialExecutor` (SE-0392) поверх SQE/CQE, `ConnectionActor` с
+  `nonisolated unownedExecutor` (пиннинг к io_uring-треду), async `readAsync`/
+  `writeAsync` через continuation'ы + wakeup через `eventfd`. Опкоды:
+  accept / recv / send / poll.
+
+**Что заработало благодаря этому:**
+- thread-per-core без хопов в global concurrent pool (флаг
+  `NonisolatedNonsendingByDefault` теперь реально нагружен).
+- backendName = `"io_uring"` на Linux (`StarlightBenchmark/main.swift`).
 
 **Задачи**:
-- [ ] Исследовать Swift io_uring bindings (liburing через C interop)
-- [ ] Prototype: custom EventLoop на io_uring
-- [ ] Benchmark vs NIOAsyncChannel
-- [ ] Если win > 20% — заменить NIO
+- [x] Исследовать Swift io_uring bindings (выбран raw syscall вместо liburing)
+- [x] Prototype: custom EventLoop на io_uring
+- [ ] Benchmark vs NIOAsyncChannel (сравнительных цифр пока нет — оставить на Phase 5.1)
 
 #### 5.3 — Per-connection response buffer pool
 
@@ -224,7 +246,7 @@ let response = try await app.test(.GET, "/users/42")
 
 ## Архитектурные решения (зафиксированные)
 
-1. **NIOAsyncChannel** — один Task на connection, async handlers inline (не Task-per-request)
+1. **One Task per connection** — async handlers inline (не Task-per-request); на Linux executor — io_uring, на macOS — NIOAsyncChannel
 2. **Conditional sync/async** — sync handler = zero overhead, async handler = `await` inline
 3. **Arena allocator** — per-request bump, bulk reset между keep-alive requests
 4. **HeaderView lazy** — один arena allocation для header block, subscript scans on demand
@@ -232,6 +254,7 @@ let response = try await app.test(.GET, "/users/42")
 6. **Feed/tryParse split** — bytes добавляются один раз, парсинг в loop для pipelining
 7. **Per-loop SO_REUSEPORT** — kernel-balanced accept (H2O pattern)
 8. **Response staging** — fresh ByteBuffer per response (no COW on shared storage)
+9. **Custom io_uring `SerialExecutor` (Linux)** — raw syscalls без liburing, `ConnectionActor` пиннится к io_uring-треду через `nonisolated unownedExecutor`
 
 ## Архитектурные долги
 

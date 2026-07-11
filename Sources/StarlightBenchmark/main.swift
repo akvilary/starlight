@@ -21,7 +21,6 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import Atomics
 import NIOCore
 import NIOPosix
 import StarlightCore
