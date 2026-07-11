@@ -127,16 +127,16 @@ struct HTTP1ParserTests {
 
         """
         var parser = HTTP1Parser()
-        var ctx = RequestContext(initialArenaSize: 1024)
+        var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
             try parser.feed(ptr, into: &ctx)
         }
         #expect(complete)
         #expect(ctx.method == .GET)
-        // Each header line copies name + value into the arena: 3 headers
-        // × (name + value bytes). Total arena usage > 0 confirms
-        // headers were consumed.
-        #expect(ctx.arenaUsedBytes > 0)
+        // Headers were parsed — confirm they are readable via HeaderView.
+        #expect(ctx.headers["Host"] == "example.com")
+        #expect(ctx.headers["User-Agent"] == "starlight-test/1.0")
+        #expect(ctx.headers["Accept"] == "*/*")
     }
 
     @Test("Header value with leading spaces is trimmed")
@@ -153,9 +153,8 @@ struct HTTP1ParserTests {
             try parser.feed(ptr, into: &ctx)
         }
         #expect(complete)
-        // 7 chars of name + 12 chars of value ("padded value") = 19 bytes
-        // minimum in arena.
-        #expect(ctx.arenaUsedBytes >= 19)
+        // Leading whitespace is stripped by HeaderView.
+        #expect(ctx.headers["X-Custom"] == "padded value")
     }
 
     @Test("Header without colon rejected")

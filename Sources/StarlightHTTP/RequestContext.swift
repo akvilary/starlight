@@ -18,25 +18,12 @@
 //    - It is passed to handlers as `borrowing RequestContext` — the
 //      handler cannot escape it, cannot store it, cannot keep it alive
 //      past its scope.
-//    - Between requests the owner calls `reset()`, which bulk-frees the
-//      arena and zeros the parsed fields in one O(1) pass.
-//
-//  This is exactly the safety-vs-speed trade fasthttp cannot give us.
-//
-//  ─── Why not `~Escapable` (yet) ────────────────────────────────────────
-//
-//  `~Escapable` would let us tie the context's lifetime to the
-//  connection's receive buffer via Swift's experimental lifetime-
-//  dependencies feature, which would prevent even borrowed views into
-//  the context from escaping (think: a captured `Span<UInt8>` view of
-//  the path that outlives the request). We will adopt `~Escapable` in
-//  a later phase once the lifetime-dependencies feature is no longer
-//  experimental; for now `~Copyable` + `borrowing` is the right shape.
+//    - Between requests the owner calls `reset()`, which bulk-clears
+//      the parsed fields in one O(1) pass.
 //
 //===----------------------------------------------------------------------===//
 
 import NIOCore
-import StarlightCore
 
 /// Per-request state owned by a single connection's task.
 ///
@@ -48,18 +35,12 @@ import StarlightCore
 /// call. This is the compile-time-enforced equivalent of fasthttp's
 /// runtime-only "don't keep references" invariant.
 public struct RequestContext: ~Copyable {
-    /// Per-request bump allocator. All request-scoped allocations
-    /// (header copies, parsed path, etc.) come from here. Bulk-freed by
-    /// `reset()`.
-    @usableFromInline var arena: ArenaAllocator
-
-    /// HTTP method. Populated by the SIMD parser in Phase 2.
+    /// HTTP method. Populated by the SIMD parser.
     public var method: HTTPMethod
 
     /// HTTP status code that the handler will emit. Defaults to 200 OK;
     /// handlers can mutate it (e.g., set to 404 for not-found). The
-    /// response writer in Phase 2 reads this when serializing the
-    /// status line.
+    /// response writer reads this when serializing the status line.
     public var status: HTTPStatus
 
     /// Request path (e.g. `/users/42`). Stored as a COW `ByteBuffer`
@@ -77,7 +58,9 @@ public struct RequestContext: ~Copyable {
     public var params: Params
 
     /// Captured request headers. Populated by the HTTP/1 parser after
-    /// the entire header block has been parsed.
+    /// the entire header block has been parsed. Backed by a reusable
+    /// `ByteBuffer` — zero per-request allocation after the first
+    /// request on a keep-alive connection.
     public var headers: HeaderView
 
     /// Request body bytes (for POST/PUT/PATCH). Stored as a COW
@@ -99,17 +82,8 @@ public struct RequestContext: ~Copyable {
     /// (as the benchmark does).
     public var responseBuffer: ByteBuffer
 
-    // ── Phase 3 will add: ───────────────────────────────────────────────
-    //   - body: Span<UInt8>          (zero-copy for in-buffer bodies,
-    //                                  arena-backed for streamed bodies)
-
-    /// Construct an empty context with a fresh arena.
-    ///
-    /// - Parameter initialArenaSize: starting chunk size for the arena.
-    ///   Default 4 KiB — fits typical HTTP/1.1 request headers + URL on
-    ///   one page.
-    public init(initialArenaSize: Int = 4 * 1024) {
-        self.arena = ArenaAllocator(initialChunkSize: initialArenaSize)
+    /// Construct an empty context.
+    public init() {
         self.method = .other
         self.status = .ok
         self.path = ByteBufferAllocator().buffer(capacity: 0)
@@ -121,60 +95,25 @@ public struct RequestContext: ~Copyable {
 
     /// Reset the context between keep-alive requests on the same connection.
     ///
-    /// Bulk-frees the arena (no `malloc` for the next request's
-    /// allocations as long as they fit in the existing chunks) and
-    /// restores `method`, `status`, `path`, `params` to their defaults.
+    /// Restores `method`, `status`, `path`, `params`, `headers`, `body`
+    /// to their defaults. ByteBuffer storage is retained (COW) so the
+    /// next request reuses it without allocation.
     ///
-    /// - Complexity: O(chunks). Independent of the number of allocations
-    ///   made by the previous request.
+    /// - Complexity: O(params.count + headers.count). Independent of
+    ///   request size.
     public mutating func reset() {
-        self.arena.reset()
         self.method = .other
         self.status = .ok
         self.path.clear()
-        // params is replaced wholesale on the next request — clearing
-        // it costs O(n) in the number of params from the previous
-        // request. We could leave it dirty and overwrite, but the
-        // arena-reset frees the underlying string storage anyway.
         self.params.removeAll()
         self.headers.removeAll()
         self.body = nil
+        // Note: responseBuffer is intentionally NOT cleared here.
+        // It is cleared by HTTPResponse.plaintext(_:into:) when the
+        // next response is written. If no response writes into it,
+        // stale data is harmless because the handler always produces
+        // a fresh HTTPResponse.
     }
-
-    /// Release all arena memory back to the system allocator. Use this
-    /// when a connection is closing and the context will not be reused.
-    public mutating func releaseAll() {
-        self.arena.releaseAll()
-    }
-
-    /// Allocate `bytes` from the per-request arena. Memory is valid
-    /// until the next `reset()` or `releaseAll()`.
-    ///
-    /// This is the primary allocation path for handler scratch space
-    /// (JSON building, response body construction, etc.). It avoids
-    /// per-allocation ARC traffic and bulk-frees with the request.
-    @inlinable
-    public mutating func allocate(
-        bytes: Int,
-        alignment: Int = MemoryLayout<Int>.alignment
-    ) -> UnsafeMutableRawBufferPointer {
-        self.arena.allocate(bytes: bytes, alignment: alignment)
-    }
-
-    /// Allocate and initialize a single `T` in the arena.
-    @inlinable
-    public mutating func allocate<T>(_ value: T) -> UnsafeMutablePointer<T> {
-        self.arena.allocate(value)
-    }
-
-    /// Bytes reserved by arena chunks across the connection's lifetime.
-    /// Useful for stats.
-    @inlinable
-    public var arenaReservedBytes: Int { self.arena.reservedBytes }
-
-    /// Bytes currently in use by the arena.
-    @inlinable
-    public var arenaUsedBytes: Int { self.arena.usedBytes }
 
     /// Decode the path to a `String` on demand. Allocates a heap
     /// `String` for paths > 15 bytes — use sparingly (the router

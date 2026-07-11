@@ -5,8 +5,8 @@
 //
 //  Verifies that the lazy HeaderView correctly exposes the headers
 //  captured by the HTTP/1 parser. The parser copies the entire header
-//  block into the arena as a single contiguous allocation; HeaderView
-//  walks that block on demand when subscript is called.
+//  block into a reusable ByteBuffer; HeaderView walks that block on
+//  demand when subscript is called.
 //
 //===----------------------------------------------------------------------===//
 

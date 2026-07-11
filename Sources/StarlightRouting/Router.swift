@@ -29,7 +29,6 @@
 //===----------------------------------------------------------------------===//
 
 import NIOCore
-import StarlightCore
 import StarlightHTTP
 
 /// A single path segment of a route pattern.

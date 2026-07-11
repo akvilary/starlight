@@ -12,7 +12,6 @@
 import Testing
 import NIOCore
 import StarlightHTTP
-import StarlightCore
 import StarlightRouting
 @testable import StarlightServer
 

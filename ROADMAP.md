@@ -1,31 +1,31 @@
 # Starlight — Roadmap
 
-## Текущее состояние (commit `efecd28`)
+## Текущее состояние (commit `3b7dc71` + ArenaAllocator removal)
 
 ### Что готово
 
 - **Архитектура**: thread-per-core, one Task per connection, per-loop SO_REUSEPORT (H2O pattern)
-- **I/O backend**: на Linux — **custom io_uring reactor** (`CStarlightLinux` raw-syscall C-шим + `IOUringExecutorLoop` — собственный `SerialExecutor` на SQE/CQE, без liburing); на macOS — `NIOAsyncChannel`
+- **I/O backend**: на Linux — **SystemPackage.IORing** (~Copyable ring management, SINGLE_ISSUER); на macOS — `NIOAsyncChannel`
 - **HTTP/1.1 parser**: SWAR byte search, state machine, request line + headers + body
-- **Arena allocator**: bump + exponential growth + bulk reset (3.2× faster than heap)
-- **RequestContext (~Copyable)**: arena, method, path, params, headers (lazy HeaderView), body
-- **Router**: sync + async dispatch, path params, middleware (sync-only)
+- **RequestContext (~Copyable)**: method, path, params, headers (lazy HeaderView на COW ByteBuffer), body
+- **Router**: sync + async dispatch, path params, middleware (sync + async)
 - **HandlerKind**: conditional sync/async — sync = direct call, async = `await` inline
-- **Body parsing**: Content-Length detection, body collection в arena
-- **Security**: 6 fixes (dangling pointers, DoS, race prevention, docs)
+- **Body parsing**: Content-Length detection, zero-copy ByteBuffer slice from accumulator
 - **Pipelining**: feed/tryParse split — корректная обработка multiple requests per TCP packet
-- **Package cleanup**: 5 лишних зависимостей удалено (NIOSSL, NIOExtras, NIOHTTP1, swift-collections, swift-atomics). Осталась только **swift-nio**. 2 no-op Swift-фичи убраны (Lifetimes, ExistentialAny) — оставлены NonisolatedNonsendingByDefault и StrictMemorySafety
+- **ArenaAllocator удалён**: header block хранится в COW ByteBuffer (reusable через clear+writeBytes, zero alloc после первого запроса). StarlightHTTP больше не зависит от StarlightCore
+- **Package cleanup**: 5 лишних зависимостей удалено (NIOSSL, NIOExtras, NIOHTTP1, swift-collections, swift-atomics). Осталась только **swift-nio**.
 
-### Реальный throughput (12-core, loopback, wrk)
+### Реальный throughput (12-core, loopback, wrk -t12 -c256 -d10s)
 
-Замерено `wrk -t12 -c100 -d10s` (commit `efecd28`, kernel 6.17):
+Замерено после удаления ArenaAllocator (kernel 6.17):
 
 | Endpoint | req/s | per core |
 |---|---|---|
-| router /users/42 | ~275K | ~23K |
+| router / (static, pre-cached) | ~264K | ~22K |
+| router /users/42 (dynamic) | ~223K | ~19K |
 
-> Предыдущие замеры (commit `4b8053c`): http /=260K, router /=244K, /users/42=239K.
-> Рост с 239K→275K обусловлен split job queue (commit `957c765`).
+> До удаления арены (commit `3b7dc71`): /users/42 ~190K. Рост +17% обусловлен
+> устранением ARC traffic на ArenaChunk (final class) и linked-list overhead.
 
 ### Сравнение с конкурентами (loopback, hello-world)
 
@@ -37,7 +37,7 @@
 | Rust axum | ~400-500K | below |
 | C H2O | ~700-900K | below |
 
-### Тесты: 100/100
+### Тесты: 76/76 passed
 
 ---
 

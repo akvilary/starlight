@@ -10,7 +10,6 @@
 //===----------------------------------------------------------------------===//
 
 import Testing
-import StarlightCore
 import StarlightHTTP
 @testable import StarlightRouting
 

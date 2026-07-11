@@ -23,7 +23,6 @@
 import Foundation
 import NIOCore
 import NIOPosix
-import StarlightCore
 import StarlightHTTP
 import StarlightRouting
 import StarlightServer

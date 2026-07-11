@@ -58,7 +58,6 @@ let package = Package(
         .target(
             name: "StarlightHTTP",
             dependencies: [
-                "StarlightCore",
                 .product(name: "NIOCore", package: "swift-nio"),
                 // `HTTPResponse` uses `ByteBufferAllocator`/`ByteBuffer` from NIOPosix.
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -70,7 +69,6 @@ let package = Package(
         .target(
             name: "StarlightRouting",
             dependencies: [
-                "StarlightCore",
                 "StarlightHTTP",
                 .product(name: "NIOCore", package: "swift-nio"),
             ],
@@ -101,7 +99,6 @@ let package = Package(
             dependencies: [
                 "Starlight",
                 "StarlightServer",
-                "StarlightCore",
                 "StarlightHTTP",
                 "StarlightRouting",
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -111,15 +108,6 @@ let package = Package(
         ),
 
         // ── Tests ────────────────────────────────────────────────────────────
-        .testTarget(
-            name: "StarlightCoreTests",
-            dependencies: [
-                "StarlightCore",
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-            ],
-            swiftSettings: baseSwiftSettings
-        ),
         .testTarget(
             name: "StarlightHTTPTests",
             dependencies: ["StarlightHTTP"],
@@ -135,7 +123,6 @@ let package = Package(
             dependencies: [
                 "StarlightServer",
                 "StarlightHTTP",
-                "StarlightCore",
                 "StarlightRouting",
                 .product(name: "NIOCore", package: "swift-nio"),
             ],

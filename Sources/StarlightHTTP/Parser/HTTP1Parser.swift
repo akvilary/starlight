@@ -32,8 +32,6 @@ import Glibc
 import Darwin
 #endif
 
-import StarlightCore
-
 /// Parser state.
 public enum HTTP1ParserState: Sendable, Equatable {
     /// Reading the request line: `METHOD SP PATH SP HTTP/1.1 CRLF`.
@@ -278,13 +276,13 @@ public struct HTTP1Parser: ~Copyable {
         if lineContentEnd == lineStart {
             // We've reached the end of the header section. Copy the
             // entire header block (from `headerBlockStart` through
-            // the end of this empty line, inclusive) into the arena
-            // as a single contiguous allocation, and hand HeaderView
-            // a (pointer, length) pair over it.
+            // the end of this empty line, inclusive) into HeaderView's
+            // reusable ByteBuffer via `copyBlock`.
             //
-            // This is the only per-request allocation we do for
-            // headers — one memcpy of the block, no per-header
-            // allocations, no String construction on the hot path.
+            // This is one memcpy of the block into a COW ByteBuffer
+            // that is reused across keep-alive requests — no per-header
+            // allocations, no String construction on the hot path,
+            // and no arena required.
             let blockEnd = lineEnd + 1  // include the empty line's LF
             let blockStart = headerBlockStart
             let blockLen = blockEnd - blockStart
@@ -294,14 +292,8 @@ public struct HTTP1Parser: ~Copyable {
             // would make `headers.isEmpty` return false. Skip the
             // copy for blocks that are just the terminator.
             if blockLen > 2 {
-                let blockBuf = ctx.allocate(bytes: blockLen, alignment: 1)
-                blockBuf.baseAddress!.copyMemory(
-                    from: UnsafeRawPointer(buffer.baseAddress!).advanced(by: blockStart),
-                    byteCount: blockLen
-                )
-                ctx.headers.setBlock(
-                    blockBuf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                    blockLen
+                ctx.headers.copyBlock(
+                    from: buffer, offset: blockStart, count: blockLen
                 )
             }
             consumedBytes = blockEnd

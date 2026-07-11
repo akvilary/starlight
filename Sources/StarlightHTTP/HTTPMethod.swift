@@ -8,8 +8,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-import StarlightCore
-
 /// HTTP request method.
 ///
 /// Stored as an enum case for routing; the parser will provide an
