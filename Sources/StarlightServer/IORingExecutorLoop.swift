@@ -19,9 +19,14 @@
 //        drainJobs()         ← run connection handler continuations
 //    }
 //
+//  ─── SINGLE_ISSUER ───────────────────────────────────────────────────
+//
+//  The ring is created inside run() on the loop thread, enabling
+//  IORING_SETUP_SINGLE_ISSUER for kernel-side optimizations.
+//
 //  ─── Wakeup ──────────────────────────────────────────────────────────
 //
-//  eventfd is armed via Request.read through the ring. Accept thread
+//  eventfd is armed via Request.read through the ringBox!.ring. Accept thread
 //  and pool threads write to eventfd → CQE fires → loop wakes.
 //  No POLL_ADD needed — Request.read on eventfd replaces it.
 //
@@ -29,12 +34,6 @@
 //
 //  Dedicated accept thread: poll(listener) → drain accept4 → signal.
 //  Same CPU as loop thread (thread-per-core).
-//
-//  ─── Thread safety ───────────────────────────────────────────────────
-//
-//  Ring, connections, continuations: loop thread only (no locks).
-//  newConnQueue: spinlock (accept thread → loop thread).
-//  poolJobs: spinlock (pool threads → loop thread).
 //
 //===----------------------------------------------------------------------===//
 
@@ -75,23 +74,38 @@ internal func unpackOp(_ data: UInt64) -> IouringOp {
     IouringOp(rawValue: data >> 32) ?? .wakeup
 }
 
+// MARK: - IORingBox (class wrapper for ~Copyable IORing)
+
+/// Wraps the ~Copyable IORing in a Copyable class so it can be stored
+/// as an Optional and created lazily on the loop thread (SINGLE_ISSUER).
+final class IORingBox: @unchecked Sendable {
+    var ring: IORing
+
+    init(queueDepth: UInt32, flags: IORing.SetupFlags) throws {
+        self.ring = try IORing(queueDepth: queueDepth, flags: flags)
+    }
+}
+
 // MARK: - ExecutorConnection
 
 final class ExecutorConnection: @unchecked Sendable {
     let fd: CInt
     let readBuffer: UnsafeMutablePointer<UInt8>
     let readBufferSize: Int
-    let codec: HTTP1Codec
+    let codec: HTTP1Codec?
     var pendingResponse: HTTPResponse?
     var sendLen: Int = 0
     var sendOffset: Int = 0
     var keepAlive: Bool = true
 
-    init(fd: CInt, readBufferSize: Int, router: Router?, handler: HTTPHandler?) {
+    init(fd: CInt, readBufferSize: Int, isEchoMode: Bool,
+         router: Router?, handler: HTTPHandler?) {
         self.fd = fd
         self.readBufferSize = readBufferSize
         self.readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
-        if let router = router {
+        if isEchoMode {
+            self.codec = nil
+        } else if let router = router {
             self.codec = HTTP1Codec(router: router)
         } else {
             self.codec = HTTP1Codec(handler: handler!)
@@ -125,6 +139,30 @@ final actor ConnectionActor {
 
     func handle(fd: CInt, conn: ExecutorConnection,
                 loop: IORingExecutorLoop) async {
+        if conn.codec == nil {
+            await echoLoop(fd: fd, conn: conn, loop: loop)
+        } else {
+            await httpLoop(fd: fd, conn: conn, loop: loop)
+        }
+    }
+
+    // TCP echo — no codec, no parsing, just bounce bytes.
+    private func echoLoop(fd: CInt, conn: ExecutorConnection,
+                          loop: IORingExecutorLoop) async {
+        while true {
+            let bytesRead = await loop.readAsync(fd, conn: conn)
+            guard bytesRead > 0 else {
+                loop.closeConnection(fd: fd)
+                return
+            }
+            await loop.echoAsync(fd, conn: conn, bytesRead: bytesRead)
+        }
+    }
+
+    // HTTP/1.1 — feed codec, parse, dispatch.
+    private func httpLoop(fd: CInt, conn: ExecutorConnection,
+                          loop: IORingExecutorLoop) async {
+        let codec = conn.codec!
         while true {
             let bytesRead = await loop.readAsync(fd, conn: conn)
             guard bytesRead > 0 else {
@@ -132,10 +170,10 @@ final actor ConnectionActor {
                 return
             }
 
-            conn.codec.feed(UnsafeBufferPointer(
+            codec.feed(UnsafeBufferPointer(
                 start: conn.readBuffer, count: bytesRead))
 
-            let result = conn.codec.tryParseSync()
+            let result = codec.tryParseSync()
             switch result {
             case .incomplete:
                 continue
@@ -148,7 +186,7 @@ final actor ConnectionActor {
                 }
 
             case .needsAsync:
-                let response = await conn.codec.dispatchAsync()
+                let response = await codec.dispatchAsync()
                 _ = loop.loopStats.bytesSent.add(Int64(
                     response.headerBuffer.readableBytes
                     + (response.bodyBuffer?.readableBytes ?? 0)))
@@ -166,8 +204,9 @@ final actor ConnectionActor {
 
 final class IORingExecutorLoop: @unchecked Sendable {
 
-    // IORing (~Copyable, owned by this class — deinit'd automatically)
-    private var ring: IORing
+    // IORing wrapped in a class for Optional storage.
+    // Created in run() on the loop thread for SINGLE_ISSUER.
+    private var ringBox: IORingBox?
 
     private var listenerFd: CInt = -1
     private var eventFd: CInt = -1
@@ -176,6 +215,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
     private let port: Int
     private let handler: HTTPHandler?
     private let router: Router?
+    private let isEchoMode: Bool
     private let queueDepth: UInt32 = 4096
     private let readBufferSize: Int = 4096
     private let maxConnectionsPerLoop: Int
@@ -194,7 +234,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
     private var newConnQueue: [CInt] = []
     private var newConnLock = pthread_spinlock_t()
 
-    // Job queues — split by source thread (same pattern as original)
+    // Job queues — split by source thread
     private var loopJobs: [UnownedJob] = []
     private var poolJobs: [UnownedJob] = []
     private var jobLock = pthread_spinlock_t()
@@ -206,11 +246,10 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
     private var stopped = false
 
-    // True when ring.prepare() succeeded since last submitPreparedRequests().
-    // Avoids no-op io_uring_enter syscalls on idle iterations.
+    // True when ringBox!.ring.prepare() succeeded since last submitPreparedRequests().
     private var needsSubmit = false
 
-    // Cached executor (created lazily on first access from loop thread)
+    // Cached executor
     private var _cachedExecutor: UnownedSerialExecutor? = nil
     var cachedExecutor: UnownedSerialExecutor {
         if let ce = _cachedExecutor { return ce }
@@ -219,12 +258,14 @@ final class IORingExecutorLoop: @unchecked Sendable {
         return ce
     }
 
-    // MARK: Init
+    // MARK: Init (no ring creation — deferred to run())
 
-    init(host: String, port: Int, handler: HTTPHandler?, router: Router?,
-         stats: ServerStats, cpuIndex: CInt) throws {
+    init(host: String, port: Int, mode: Mode,
+         handler: HTTPHandler?, router: Router?,
+         stats: ServerStats, cpuIndex: CInt) {
         self.host = host
         self.port = port
+        self.isEchoMode = (mode == .tcpEcho)
         self.handler = handler
         self.router = router
         self.loopStats = stats
@@ -233,19 +274,10 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
         pthread_spin_init(&newConnLock, 0)
         pthread_spin_init(&jobLock, 0)
-
-        // Ring init last — if this throws, init fails (no partial object).
-        // NOTE: SINGLE_ISSUER is not used because the ring is created in init
-        // (main thread) but submitted from run() (loop thread). To enable
-        // SINGLE_ISSUER, ring creation must move to run().
-        self.ring = try IORing(
-            queueDepth: queueDepth,
-            flags: []
-        )
     }
 
     deinit {
-        // ring's deinit runs automatically (munmap + close).
+        // ringBox?.ring's deinit runs automatically (munmap + close).
         if listenerFd >= 0 { Glibc.close(listenerFd) }
         if eventFd >= 0 { Glibc.close(eventFd) }
         wakeupBuffer.deallocate()
@@ -253,36 +285,37 @@ final class IORingExecutorLoop: @unchecked Sendable {
         pthread_spin_destroy(&jobLock)
     }
 
-    // MARK: Setup
+    // MARK: Setup (listener + eventfd — no ring)
 
     func setup() throws {
-        // Create listener (non-blocking, SO_REUSEPORT).
         let lfd = linuxCreateListener(host: host, port: port)
         guard lfd >= 0 else {
             throw StarlightIOError(code: Int32(-lfd), function: "linuxCreateListener")
         }
         listenerFd = lfd
 
-        // Create eventfd for wakeup.
         let efd = sl_eventfd(0, LinuxSocketConst.EFD_NONBLOCK | LinuxSocketConst.EFD_CLOEXEC)
         guard efd >= 0 else {
             throw StarlightIOError(code: Int32(errno), function: "eventfd")
         }
         eventFd = efd
-
-        // Arm wakeup read on ring. When accept thread / pool thread writes
-        // to eventfd, this read completes → CQE wakes the loop.
-        armWakeup()
-
-        // Submit initial requests.
-        try submitPending()
     }
 
-    // MARK: Event loop
+    // MARK: Event loop (creates ring on THIS thread for SINGLE_ISSUER)
 
     func run() throws {
         loopThreadId = pthread_self()
         defer { loopThreadId = nil }
+
+        // Create ring on the loop thread — SINGLE_ISSUER requires this.
+        self.ringBox = try IORingBox(
+            queueDepth: queueDepth,
+            flags: [.singleSubmissionThread]
+        )
+
+        // Arm wakeup + initial submit.
+        armWakeup()
+        try submitPending()
 
         // Start accept thread (same CPU).
         Thread.detachNewThread { [self] in
@@ -293,7 +326,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
         while !stopped {
             // Phase 1: drain CQEs from mmap memory (0 syscalls).
             var drainedAny = false
-            while let cqe = ring.tryConsumeCompletion() {
+            while let cqe = ringBox!.ring.tryConsumeCompletion() {
                 processCQE(cqe)
                 drainedAny = true
             }
@@ -307,7 +340,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
             // Phase 2b: if no CQEs were found in memory, block for the next.
             if !drainedAny {
                 do {
-                    let cqe = try ring.blockingConsumeCompletion()
+                    let cqe = try ringBox!.ring.blockingConsumeCompletion()
                     processCQE(cqe)
                 } catch {
                     // Spurious wakeup or signal — just loop.
@@ -356,7 +389,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
     @inline(__always)
     private func armWakeup() {
-        let ok = ring.prepare(request: .read(
+        let ok = ringBox!.ring.prepare(request: .read(
             FileDescriptor(rawValue: eventFd),
             into: UnsafeMutableRawBufferPointer(start: wakeupBuffer, count: 8),
             context: packUserData(fd: eventFd, op: .wakeup)
@@ -402,6 +435,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
         connectionCount += 1
 
         let conn = ExecutorConnection(fd: fd, readBufferSize: readBufferSize,
+                                       isEchoMode: isEchoMode,
                                        router: router, handler: handler)
         connections[fd] = conn
 
@@ -417,7 +451,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
     @inline(__always)
     private func submitPending() throws {
         do {
-            try ring.submitPreparedRequests()
+            try ringBox!.ring.submitPreparedRequests()
         } catch {
             // Non-fatal — ring will retry on next iteration.
         }
@@ -425,13 +459,15 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
     // MARK: Async read bridge
 
+    /// Suspend until RECV CQE arrives. Called from ConnectionActor
+    /// (on loop's executor). Ring access is safe — same thread.
     func readAsync(_ fd: CInt, conn: ExecutorConnection) async -> Int {
         return await withCheckedContinuation { cont in
             let buf = UnsafeMutableRawBufferPointer(
                 start: UnsafeMutableRawPointer(conn.readBuffer),
                 count: conn.readBufferSize
             )
-            if ring.prepare(request: .read(
+            if ringBox!.ring.prepare(request: .read(
                 FileDescriptor(rawValue: fd),
                 into: buf,
                 context: packUserData(fd: fd, op: .recv)
@@ -454,8 +490,40 @@ final class IORingExecutorLoop: @unchecked Sendable {
         }
     }
 
-    // MARK: Async write bridge
+    // MARK: Async echo write (TCP echo mode)
 
+    /// Write back exactly the bytes that were just read. No HTTP,
+    /// no codec — bounce bytes directly from readBuffer.
+    func echoAsync(_ fd: CInt, conn: ExecutorConnection, bytesRead: Int) async {
+        _ = loopStats.bytesSent.add(Int64(bytesRead))
+        conn.sendLen = bytesRead
+        conn.sendOffset = 0
+
+        while conn.sendOffset < bytesRead {
+            let written: Int = await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
+                let ptr = UnsafeMutableRawPointer(conn.readBuffer)
+                    .advanced(by: conn.sendOffset)
+                let len = bytesRead - conn.sendOffset
+                let ok = ringBox!.ring.prepare(request: .write(
+                    UnsafeMutableRawBufferPointer(start: ptr, count: len),
+                    into: FileDescriptor(rawValue: fd),
+                    context: packUserData(fd: fd, op: .send)
+                ))
+                if ok { needsSubmit = true; writeWaiters[fd] = cont }
+                else { cont.resume(returning: -1) }
+            }
+            if written < 0 { break }
+            conn.sendOffset += written
+        }
+    }
+
+    // MARK: Async HTTP write bridge
+
+    /// Suspend until full response is sent (handles partial writes).
+    /// C-12 note: conn.pendingResponse keeps the HTTPResponse (and its
+    /// ByteBuffers) alive until the write CQE arrives. The ByteBuffer
+    /// backing store is heap-allocated and stable (does not move while
+    /// the buffer is alive), so the pointer passed to the SQE is valid.
     func writeAsync(_ fd: CInt, conn: ExecutorConnection,
                     response: HTTPResponse) async {
         let headerLen = response.headerBuffer.readableBytes
@@ -494,7 +562,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 let len = min(rawBuf.count - offset, remaining)
                 let ptr = UnsafeMutableRawPointer(mutating: rawBuf.baseAddress!)
                     .advanced(by: offset)
-                let ok = ring.prepare(request: .write(
+                let ok = ringBox!.ring.prepare(request: .write(
                     UnsafeMutableRawBufferPointer(start: ptr, count: len),
                     into: FileDescriptor(rawValue: fd),
                     context: packUserData(fd: fd, op: .send)
@@ -508,7 +576,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 let len = min(rawBuf.count - bodyOffset, remaining)
                 let ptr = UnsafeMutableRawPointer(mutating: rawBuf.baseAddress!)
                     .advanced(by: bodyOffset)
-                let ok = ring.prepare(request: .write(
+                let ok = ringBox!.ring.prepare(request: .write(
                     UnsafeMutableRawBufferPointer(start: ptr, count: len),
                     into: FileDescriptor(rawValue: fd),
                     context: packUserData(fd: fd, op: .send)

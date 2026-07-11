@@ -157,8 +157,8 @@ extension StarlightServer {
         var created: [IORingExecutorLoop] = []
         do {
             for cpuIndex in 0..<loopCount {
-                let loop = try IORingExecutorLoop(
-                    host: host, port: port,
+                let loop = IORingExecutorLoop(
+                    host: host, port: port, mode: mode,
                     handler: httpHandler, router: router,
                     stats: self.stats, cpuIndex: CInt(cpuIndex)
                 )
