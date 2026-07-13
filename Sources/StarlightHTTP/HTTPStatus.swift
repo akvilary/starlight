@@ -18,6 +18,16 @@ public struct HTTPStatus: Sendable, Hashable {
         self.reasonPhrase = reasonPhrase ?? HTTPStatus.defaultReason(for: code)
     }
 
+    // Hashable/Equatable by code only — two statuses with the same code
+    // are equal regardless of reasonPhrase spelling differences.
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(code)
+    }
+
+    public static func == (lhs: HTTPStatus, rhs: HTTPStatus) -> Bool {
+        lhs.code == rhs.code
+    }
+
     public static let ok = HTTPStatus(200)
     public static let notFound = HTTPStatus(404)
     public static let internalServerError = HTTPStatus(500)
