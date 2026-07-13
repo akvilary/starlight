@@ -40,10 +40,12 @@ public struct CacheLinePadding {
     @inlinable public init() {}
 }
 
-/// An `Atomic<Int64>` flanked by two cache-line paddings — occupies three
-/// full cache lines, with the atomic in the middle line, so neither the
-/// preceding nor following field in the owning struct can pull this line into
-/// a remote core's cache.
+/// An `Atomic<Int64>` flanked by two cache-line paddings — 264 bytes
+/// total (128 + 8 + 128). This isolates the atomic across both 64-byte
+/// cache line architectures (x86_64, arm64 — 5 lines) and 128-byte
+/// (Apple Silicon — 3 lines), so neither the preceding nor following
+/// field in the owning struct can pull this counter into a remote
+/// core's cache.
 ///
 /// Use this for any cross-loop counter (active connections, request count,
 /// bytes transferred). Per-loop counters that are only touched from one
@@ -59,27 +61,23 @@ public struct PaddedAtomicInt64: ~Copyable, Sendable {
     /// `Atomic<T>` is `~Copyable` and `@_staticExclusiveOnly`: it must be a
     /// `let`. Its mutator operations are `nonmutating`, so this still allows
     /// incrementing via an immutable binding.
-    public let _value = Atomic<Int64>(0)
-    /// See `_leading`.
+    private let _value = Atomic<Int64>(0)
     internal var _trailing = CacheLinePadding()
 
     @inlinable public init() {}
 
     /// Relaxed load — fine for stats; we don't need ordering against
     /// non-atomic memory.
-    @inlinable
     public func load() -> Int64 {
         return self._value.load(ordering: .relaxed)
     }
 
     /// Relaxed add — returns the *previous* value.
-    @inlinable
     public func add(_ delta: Int64) -> Int64 {
         return self._value.wrappingAdd(delta, ordering: .relaxed).oldValue
     }
 
     /// Relaxed increment — convenience for `add(1)`.
-    @inlinable
     public func increment() -> Int64 {
         return self.add(1)
     }
