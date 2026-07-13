@@ -49,9 +49,7 @@ let package = Package(
         // ── Core: synchronization primitives ─────────────────────────────────
         .target(
             name: "StarlightCore",
-            dependencies: [
-                .product(name: "NIOCore", package: "swift-nio"),
-            ],
+            dependencies: [],
             swiftSettings: baseSwiftSettings
         ),
 

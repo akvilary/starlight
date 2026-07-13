@@ -5,7 +5,7 @@
 
 ---
 
-## Блок 0 — Критичные баги (краши / corruption / security) — ✅ ЗАКРЫТ
+## Блок 0 — Критичные баги (краши / corruption / security)
 
 - [x] **0-1. HTTP Request Smuggling: `Transfer-Encoding: chunked`** — Reject any TE per RFC 7230 §3.3.3. Per-line detection.
 - [x] **0-2. Duplicate/conflicting `Content-Length`** — Per-line count tracking. Fast path via subscript.
@@ -15,6 +15,7 @@
 - [x] **0-6. `stopped`/`loopThreadId` non-atomic** — `Atomic<Bool>` + `Atomic<UInt>`.
 - [x] **0-7. Connections not closed on shutdown** — `drainConnections()`. Underflow guard.
 - [x] **0-8. NIO `eventLoopGroup` never shut down** — `syncShutdownGracefully()`.
+- [ ] **0-9. Router test crash: memory corruption при параллельном выполнении** — `swift test` падает с signal 11/4 в `Router.match`/`Router.handle` (segfault / "Not enough bits to represent" в `_toCapacity`). Каждый тест имеет локальный `Router()`, поэтому это data race или use-after-free в hot path (`Router.swift:419`, `:355`), экспонируемое `Lifetimes`/`StrictMemorySafety`. Независимо от C-11/C-13. Требует расследования (TSan / serial run).
 
 ---
 
@@ -64,9 +65,9 @@
 - [ ] **C-8. Query-strip в роутере, не в парсере** — Перенести в stepRequestLine.
 - [ ] **C-9. SWAR дублирован** — ByteSearch.findByte и HeaderView.findByte.
 - [x] **C-10. ByteBufferAllocator comment** — Исправлен.
-- [ ] **C-11. StarlightCore неиспользуемая зависимость NIOCore** — Убрать.
+- [x] **C-11. StarlightCore неиспользуемая зависимость NIOCore** — Убрана: `StarlightCore` нигде не импортирует `NIOCore`.
 - [ ] **C-12. splitPath двойная аллокация** — Walk UTF-8 напрямую.
-- [ ] **C-13. findFirstOf2/findFirstOf dead code** — internal или удалить.
+- [x] **C-13. findFirstOf2/findFirstOf dead code** — Удалены (вместе с `ByteMatch`): не использовались ни в Sources, ни в Tests.
 
 ---
 
@@ -87,9 +88,9 @@
 
 | Блок | Пунктов | Закрыто |
 |---|---|---|
-| 0 — Краши/corruption/security | 8 | ✅ 8/8 |
+| 0 — Краши/corruption/security | 9 | 8 (0-1..0-8) |
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
 | B — Логические баги | 12 | ✅ 12/12 |
-| C — Performance/zero-alloc | 13 | 2 (C-3, C-10) |
+| C — Performance/zero-alloc | 13 | 4 (C-3, C-10, C-11, C-13) |
 | D — API/clean code | 8 | 6 (D-1..D-6) |
-| **Итого** | **53** | **35 закрыто, 18 осталось** |
+| **Итого** | **54** | **37 закрыто, 17 осталось** |

@@ -14,8 +14,7 @@
 //    its `consumedBytes` pointer and reports whether it has reached
 //    `.complete`. If not, the caller waits for more bytes from the
 //    socket and feeds again.
-//  - All parsing is done by SIMD-class byte-search (`findByte`,
-//    `findFirstOf2`) over the buffer. No per-byte virtual dispatch.
+//  - All parsing is done by SWAR byte-search (`SearchAlgorithm.findByte`)
 //  - Parsed fields are written into a caller-owned `RequestContext`:
 //      - `method` is decoded into a `HTTPMethod` enum (5–7 byte
 //        comparison, no allocation).
