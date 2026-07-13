@@ -38,14 +38,14 @@
 ## Блок B — Логические баги
 
 - [x] **B-1. Аккумулятор memory leak на keep-alive** — `discardReadBytes()` в `afterDispatch()`.
-- [x] **B-2. reset() не чистит responseBuffer** — Анализ: НЕ баг. `plaintext(_:into:)` всегда clear() перед записью. Добавлен regression test.
+- [x] **B-2. reset() не чистит responseBuffer** — Анализ: НЕ баг. `plaintext(_:into:)` всегда clear() перед записью. Regression test добавлен.
 - [x] **B-3. connectionCount underflow** — Декремент только если removeValue succeeded.
-- [x] **B-4. CQE errors silently swallowed** — Production error handling: inflight tracking, orphan recovery, wakeup re-arm, consecutive error threshold (32), cqOverflowEvents в stats. Audit пройден.
-- [ ] **B-5. HTTPMethod.other routable** — Запретить `add(.other, ...)`.
-- [ ] **B-6. Raw method bytes потеряны** — WebDAV методы теряются.
-- [ ] **B-7. HTTPStatus.Hashable включает reasonPhrase** — Hashable только по code.
-- [ ] **B-8. Status code не валидируется [100, 599]** — HTTPStatus(0) валидно.
-- [ ] **B-9. writeStatusLine расходится с defaultReason** — Единая таблица.
+- [x] **B-4. CQE errors silently swallowed** — Production error handling: inflight tracking, orphan recovery, wakeup re-arm, consecutive error threshold (32), cqOverflowEvents. Audit пройден.
+- [x] **B-5. HTTPMethod.other routable** — `if case .other = method` guard в `Router.add()`.
+- [x] **B-6. Raw method bytes потеряны** — `case other(raw: String)` сохраняет имя. decodeMethod — один fallback.
+- [x] **B-7. HTTPStatus.Hashable включает reasonPhrase** — Custom Hashable/Equatable только по code.
+- [x] **B-8. Status code не валидируется** — `precondition((100...599).contains(code))`.
+- [x] **B-9. writeStatusLine расходится с defaultReason** — Обе таблицы синхронизированы (21 код).
 - [x] **B-10. Middleware short-circuit outer after** — Анализ: НЕ баг. Regression test добавлен.
 - [ ] **B-11. soReusePort magic number fallback** — rawValue: 15 на других платформах.
 - [x] **B-12. Unused fn binding** — `case .async(let fn)` → `case .async`.
@@ -76,8 +76,8 @@
 - [x] **D-2. @inlinable на startup-методах** — Убраны.
 - [x] **D-3. @unchecked Sendable на StarlightApp** — Изменено на Sendable.
 - [ ] **D-4. Нет deinit cleanup у StarlightServer** — fd и threads утекают без shutdown().
-- [ ] **D-5. PaddedAtomicInt64 docs: «three cache lines»** — Реально 264 B = 5 cache lines.
-- [ ] **D-6. _value public** — private, forward API.
+- [x] **D-5. PaddedAtomicInt64 docs** — Исправлено: «264 bytes (128+8+128) — 5 lines на x86_64, 3 на Apple Silicon».
+- [x] **D-6. _value public** — Изменено на private. Убран @inlinable с load/add/increment.
 - [ ] **D-7. parsePattern без валидации** — Пустые param-имена, catch-all.
 - [ ] **D-8. Catch-all `*` нереализован** — Удалить из док или реализовать.
 
@@ -89,7 +89,7 @@
 |---|---|---|
 | 0 — Краши/corruption/security | 8 | ✅ 8/8 |
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
-| B — Логические баги | 12 | 7 (B-1..B-4, B-10, B-12) |
+| B — Логические баги | 12 | 11 (B-1..B-10, B-12) |
 | C — Performance/zero-alloc | 13 | 2 (C-3, C-10) |
-| D — API/clean code | 8 | 3 (D-1..D-3) |
-| **Итого** | **53** | **27 закрыто, 26 осталось** |
+| D — API/clean code | 8 | 5 (D-1..D-3, D-5, D-6) |
+| **Итого** | **53** | **33 закрыто, 20 осталось** |
