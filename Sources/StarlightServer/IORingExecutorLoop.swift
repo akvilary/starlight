@@ -196,6 +196,11 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // CQEs were lost to overflow.
     private var inflightSQEs: Int = 0
 
+    // True when a wakeup SQE (eventfd read) is in-flight. Prevents
+    // duplicate arming on persistent EINTR — without this, each
+    // catch-block armWakeup call leaks one more SQE into the ring.
+    private var wakeupInflight: Bool = false
+
     // Consecutive blockingConsumeCompletion failures (loop thread only).
     // Reset to 0 on any successful CQE. Fatal threshold = 32.
     private var consecutiveErrors: Int = 0
@@ -290,8 +295,13 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
             // Phase 2a: Submit pending SQEs (1 syscall only when needed).
             if needsSubmit {
-                try submitPending()
-                needsSubmit = false
+                do {
+                    try ringBox!.ring.submitPreparedRequests()
+                    needsSubmit = false
+                } catch {
+                    // Submit failed — SQEs remain in SQ ring.
+                    // needsSubmit stays true; will retry next iteration.
+                }
             }
 
             // Phase 2b: Block only if nothing drained (0-1 syscalls).
@@ -359,6 +369,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
     @inline(__always)
     private func handleWakeup() {
+        wakeupInflight = false
         _ = Glibc.read(eventFd, wakeupBuffer, 8)
         armWakeup()
 
@@ -374,12 +385,13 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
     @inline(__always)
     private func armWakeup() {
+        guard !wakeupInflight else { return }
         let ok = ringBox!.ring.prepare(request: .read(
             FileDescriptor(rawValue: eventFd),
             into: UnsafeMutableRawBufferPointer(start: wakeupBuffer, count: 8),
             context: packUserData(connId: 0, op: .wakeup)
         ))
-        if ok { needsSubmit = true; inflightSQEs += 1 }
+        if ok { needsSubmit = true; inflightSQEs += 1; wakeupInflight = true }
     }
 
     // MARK: Accept thread
@@ -435,17 +447,6 @@ final class IORingExecutorLoop: @unchecked Sendable {
         }
         Task {
             await connActor!.handle(fd: fd, conn: conn, loop: self)
-        }
-    }
-
-    // MARK: SQE submission
-
-    @inline(__always)
-    private func submitPending() throws {
-        do {
-            try ringBox!.ring.submitPreparedRequests()
-        } catch {
-            // Non-fatal — ring will retry on next iteration.
         }
     }
 
@@ -590,6 +591,8 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
         // Correct the inflight counter: these CQEs will never arrive.
         inflightSQEs -= (readCount + writeCount)
+        // The wakeup CQE may also have been lost — force re-arm.
+        wakeupInflight = false
 
         _ = loopStats.cqOverflowEvents.increment()
     }
