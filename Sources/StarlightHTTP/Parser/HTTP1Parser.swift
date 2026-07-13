@@ -216,7 +216,7 @@ public struct HTTP1Parser: ~Copyable {
         into ctx: inout RequestContext
     ) throws {
         // Find end of request line: '\n' (which may be preceded by '\r').
-        guard let nl = findByte(0x0A, in: buffer, from: consumedBytes, to: count)
+        guard let nl = SearchAlgorithm.findByte(0x0A, in: buffer, from: consumedBytes, to: count)
         else { return }  // incomplete — wait for more bytes
 
         // DoS defence: reject oversized request lines early.
@@ -233,11 +233,11 @@ public struct HTTP1Parser: ~Copyable {
         let lineStart = consumedBytes
 
         // Find first SP (separates METHOD from PATH).
-        guard let sp1 = findByte(0x20, in: buffer, from: lineStart, to: lineContentEnd)
+        guard let sp1 = SearchAlgorithm.findByte(0x20, in: buffer, from: lineStart, to: lineContentEnd)
         else { state = .error; throw HTTP1ParseError.malformedRequestLine }
 
         // Find second SP (separates PATH from VERSION).
-        guard let sp2 = findByte(0x20, in: buffer, from: sp1 + 1, to: lineContentEnd)
+        guard let sp2 = SearchAlgorithm.findByte(0x20, in: buffer, from: sp1 + 1, to: lineContentEnd)
         else { state = .error; throw HTTP1ParseError.malformedRequestLine }
 
         // METHOD = [lineStart, sp1)
@@ -283,7 +283,7 @@ public struct HTTP1Parser: ~Copyable {
         into ctx: inout RequestContext
     ) throws {
         // Find end of header line.
-        guard let nl = findByte(0x0A, in: buffer, from: consumedBytes, to: count)
+        guard let nl = SearchAlgorithm.findByte(0x0A, in: buffer, from: consumedBytes, to: count)
         else { return }  // incomplete
 
         // DoS defence: reject oversized requests.
@@ -380,7 +380,7 @@ public struct HTTP1Parser: ~Copyable {
         }
 
         // Validate that the line has a `:` separating name from value.
-        guard findByte(0x3A, in: buffer, from: lineStart, to: lineContentEnd) != nil
+        guard SearchAlgorithm.findByte(0x3A, in: buffer, from: lineStart, to: lineContentEnd) != nil
         else { state = .error; throw HTTP1ParseError.malformedHeader }
 
         // DoS defence: reject header-bomb requests.
