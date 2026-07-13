@@ -191,6 +191,15 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // True when ringBox!.ring.prepare() succeeded since last submitPreparedRequests().
     private var needsSubmit = false
 
+    // Number of SQEs submitted but not yet completed (loop thread only).
+    // Used for orphan detection: if > 0 but no CQEs are draining,
+    // CQEs were lost to overflow.
+    private var inflightSQEs: Int = 0
+
+    // Consecutive blockingConsumeCompletion failures (loop thread only).
+    // Reset to 0 on any successful CQE. Fatal threshold = 32.
+    private var consecutiveErrors: Int = 0
+
     // Cached executor
     private var _cachedExecutor: UnownedSerialExecutor? = nil
     var cachedExecutor: UnownedSerialExecutor {
@@ -276,6 +285,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
             while let cqe = ringBox!.ring.tryConsumeCompletion() {
                 processCQE(cqe)
                 drainedAny = true
+                consecutiveErrors = 0
             }
 
             // Phase 2a: Submit pending SQEs (1 syscall only when needed).
@@ -289,8 +299,30 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 do {
                     let cqe = try ringBox!.ring.blockingConsumeCompletion()
                     processCQE(cqe)
+                    consecutiveErrors = 0
                 } catch {
-                    // Spurious wakeup or signal — just loop.
+                    // io_uring_enter failed (EINTR, EOVERFLOW, EBADF, …).
+                    // Drain any CQEs that arrived in mmap despite the
+                    // syscall failure — the kernel may have completed
+                    // operations before the signal/error.
+                    while let cqe = ringBox!.ring.tryConsumeCompletion() {
+                        processCQE(cqe)
+                        consecutiveErrors = 0
+                    }
+                    // If ops are in-flight but nothing drained, CQEs
+                    // were lost to CQ overflow. Resume orphaned
+                    // continuations to prevent permanent hangs.
+                    if inflightSQEs > 0 {
+                        recoverOrphanedContinuations()
+                    }
+                    // Re-arm wakeup in case its CQE was among the lost.
+                    armWakeup()
+                    // Fatal threshold: too many consecutive errors
+                    // means the ring is dead. Exit the loop.
+                    consecutiveErrors += 1
+                    if consecutiveErrors > 32 {
+                        break
+                    }
                 }
             }
 
@@ -308,6 +340,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
 
     @inline(__always)
     private func processCQE(_ cqe: borrowing IORing.Completion) {
+        inflightSQEs -= 1
         let ctx = cqe.context
         let res = cqe.result
         let op = unpackOp(ctx)
@@ -346,7 +379,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
             into: UnsafeMutableRawBufferPointer(start: wakeupBuffer, count: 8),
             context: packUserData(connId: 0, op: .wakeup)
         ))
-        if ok { needsSubmit = true }
+        if ok { needsSubmit = true; inflightSQEs += 1 }
     }
 
     // MARK: Accept thread
@@ -431,7 +464,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 into: buf,
                 context: packUserData(connId: conn.connId, op: .recv)
             )) {
-                needsSubmit = true
+                needsSubmit = true; inflightSQEs += 1
                 readWaiters[conn.connId] = cont
             } else {
                 cont.resume(returning: 0)
@@ -467,7 +500,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                     into: FileDescriptor(rawValue: fd),
                     context: packUserData(connId: conn.connId, op: .send)
                 ))
-                if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
+                if ok { needsSubmit = true; inflightSQEs += 1; writeWaiters[conn.connId] = cont }
                 else { cont.resume(returning: -1) }
             }
             if written < 0 { break }
@@ -502,7 +535,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                             into: FileDescriptor(rawValue: fd),
                             context: packUserData(connId: conn.connId, op: .send)
                         ))
-                        if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
+                        if ok { needsSubmit = true; inflightSQEs += 1; writeWaiters[conn.connId] = cont }
                         else { cont.resume(returning: -1) }
                     }
                 } else if let bodyBuf = response.bodyBuffer {
@@ -516,7 +549,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                             into: FileDescriptor(rawValue: fd),
                             context: packUserData(connId: conn.connId, op: .send)
                         ))
-                        if ok { needsSubmit = true; writeWaiters[conn.connId] = cont }
+                        if ok { needsSubmit = true; inflightSQEs += 1; writeWaiters[conn.connId] = cont }
                         else { cont.resume(returning: -1) }
                     }
                 } else {
@@ -533,6 +566,32 @@ final class IORingExecutorLoop: @unchecked Sendable {
         if let cont = writeWaiters.removeValue(forKey: connId) {
             cont.resume(returning: Int(bytesWritten))
         }
+    }
+
+    // MARK: Orphan recovery
+
+    /// Resume all pending read/write continuations with errors.
+    /// Called when CQEs are lost to overflow — the corresponding
+    /// connections will close gracefully in the echo/http loop
+    /// (guard bytesRead > 0 → closeConnection).
+    private func recoverOrphanedContinuations() {
+        let readCount = readWaiters.count
+        let writeCount = writeWaiters.count
+        guard readCount > 0 || writeCount > 0 else { return }
+
+        for (_, cont) in readWaiters {
+            cont.resume(returning: -1)
+        }
+        readWaiters.removeAll()
+        for (_, cont) in writeWaiters {
+            cont.resume(returning: -1)
+        }
+        writeWaiters.removeAll()
+
+        // Correct the inflight counter: these CQEs will never arrive.
+        inflightSQEs -= (readCount + writeCount)
+
+        _ = loopStats.cqOverflowEvents.increment()
     }
 
     // MARK: Connection cleanup

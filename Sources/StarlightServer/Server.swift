@@ -33,6 +33,7 @@ public final class ServerStats: @unchecked Sendable {
     public let connectionsAccepted = PaddedAtomicInt64()
     public let bytesReceived = PaddedAtomicInt64()
     public let bytesSent = PaddedAtomicInt64()
+    public let cqOverflowEvents = PaddedAtomicInt64()
     @inlinable public init() {}
 }
 
