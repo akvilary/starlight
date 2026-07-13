@@ -186,11 +186,16 @@ extension HTTPResponse {
         case 403: buf.writeStaticString("HTTP/1.1 403 Forbidden\r\n")
         case 404: buf.writeStaticString("HTTP/1.1 404 Not Found\r\n")
         case 405: buf.writeStaticString("HTTP/1.1 405 Method Not Allowed\r\n")
+        case 408: buf.writeStaticString("HTTP/1.1 408 Request Timeout\r\n")
+        case 409: buf.writeStaticString("HTTP/1.1 409 Conflict\r\n")
         case 413: buf.writeStaticString("HTTP/1.1 413 Payload Too Large\r\n")
+        case 414: buf.writeStaticString("HTTP/1.1 414 URI Too Long\r\n")
         case 429: buf.writeStaticString("HTTP/1.1 429 Too Many Requests\r\n")
         case 500: buf.writeStaticString("HTTP/1.1 500 Internal Server Error\r\n")
+        case 501: buf.writeStaticString("HTTP/1.1 501 Not Implemented\r\n")
         case 502: buf.writeStaticString("HTTP/1.1 502 Bad Gateway\r\n")
         case 503: buf.writeStaticString("HTTP/1.1 503 Service Unavailable\r\n")
+        case 504: buf.writeStaticString("HTTP/1.1 504 Gateway Timeout\r\n")
         default:
             buf.writeString("HTTP/1.1 \(status.code) \(status.reasonPhrase)\r\n")
         }
