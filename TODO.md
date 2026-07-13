@@ -75,7 +75,7 @@
 - [x] **D-1. start() default = .tcpEcho** — Изменено на .http.
 - [x] **D-2. @inlinable на startup-методах** — Убраны.
 - [x] **D-3. @unchecked Sendable на StarlightApp** — Изменено на Sendable.
-- [ ] **D-4. Нет deinit cleanup у StarlightServer** — fd и threads утекают без shutdown().
+- [x] **D-4. Нет deinit cleanup у StarlightServer** — `shutdown()` в `deinit` как safety net. Idempotent — no-op если уже вызван.
 - [x] **D-5. PaddedAtomicInt64 docs** — Исправлено: «264 bytes (128+8+128) — 5 lines на x86_64, 3 на Apple Silicon».
 - [x] **D-6. _value public** — Изменено на private. Убран @inlinable с load/add/increment.
 - [ ] **D-7. parsePattern без валидации** — Пустые param-имена, catch-all.
@@ -91,5 +91,5 @@
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
 | B — Логические баги | 12 | ✅ 12/12 |
 | C — Performance/zero-alloc | 13 | 2 (C-3, C-10) |
-| D — API/clean code | 8 | 5 (D-1..D-3, D-5, D-6) |
-| **Итого** | **53** | **34 закрыто, 19 осталось** |
+| D — API/clean code | 8 | 6 (D-1..D-6) |
+| **Итого** | **53** | **35 закрыто, 18 осталось** |

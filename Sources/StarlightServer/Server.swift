@@ -146,9 +146,11 @@ public final class StarlightServer: @unchecked Sendable {
     }
 
     deinit {
-        #if os(Linux) && compiler(>=6.2) && $Lifetimes
-        // io_uring loops clean up their own fds in deinit.
-        #endif
+        // Safety net: if shutdown() wasn't called explicitly, clean up
+        // to prevent fd and thread leaks. shutdown() is idempotent —
+        // safe to call twice. At this point start() has either returned
+        // (fields already cleared) or was never called (fields empty).
+        shutdown()
     }
 }
 
