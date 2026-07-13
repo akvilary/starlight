@@ -258,14 +258,13 @@ extension StarlightServer {
     }
 
     /// Cross-platform `SO_REUSEPORT` socket option value.
-    @inlinable
     static var soReusePort: NIOBSDSocket.Option {
         #if canImport(Glibc)
         return NIOBSDSocket.Option(rawValue: Glibc.SO_REUSEPORT)
         #elseif canImport(Darwin)
         return NIOBSDSocket.Option(rawValue: Darwin.SO_REUSEPORT)
         #else
-        return NIOBSDSocket.Option(rawValue: 15)
+        #error("SO_REUSEPORT not available on this platform")
         #endif
     }
 
