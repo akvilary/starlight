@@ -18,7 +18,7 @@ struct RequestContextTests {
     @Test("Default init has safe defaults")
     func defaultInit() {
         var ctx = RequestContext()
-        #expect(ctx.method.isOther)
+        #expect(ctx.method == .other(raw: ""))
         #expect(ctx.status == .ok)
         #expect(ctx.headers.isEmpty)
         #expect(ctx.body == nil)
@@ -34,7 +34,7 @@ struct RequestContextTests {
 
         ctx.reset()
 
-        #expect(ctx.method.isOther)
+        #expect(ctx.method == .other(raw: ""))
         #expect(ctx.status == .ok)
         #expect(ctx.body == nil)
     }
@@ -47,7 +47,7 @@ struct RequestContextTests {
             ctx.status = .notFound
             ctx.reset()
         }
-        #expect(ctx.method.isOther)
+        #expect(ctx.method == .other(raw: ""))
         #expect(ctx.status == .ok)
     }
 

@@ -244,7 +244,7 @@ public final class Router: @unchecked Sendable {
         precondition(!isFrozen.load(ordering: .acquiring),
             "Router.add called after the router has been attached to a server. " +
             "Register all routes before calling StarlightServer.start(...).")
-        if method.isOther {
+        if case .other = method {
             preconditionFailure("Cannot register a route for .other — it would match every unknown method.")
         }
         let segments = Self.parsePattern(pattern)

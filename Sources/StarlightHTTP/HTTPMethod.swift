@@ -26,11 +26,6 @@ public enum HTTPMethod: Sendable, Hashable {
     case other(raw: String)
 
     @inlinable
-    public var isOther: Bool {
-        if case .other = self { return true } else { return false }
-    }
-
-    @inlinable
     public init() {
         self = .other(raw: "")
     }

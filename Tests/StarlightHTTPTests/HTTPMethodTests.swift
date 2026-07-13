@@ -11,7 +11,7 @@ import Testing
 @Suite("HTTPMethod")
 struct HTTPMethodTests {
     @Test func defaultInitIsOther() {
-        #expect(HTTPMethod().isOther)
+        #expect(HTTPMethod() == .other(raw: ""))
     }
 }
 
