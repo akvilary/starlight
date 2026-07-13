@@ -13,6 +13,10 @@
 
 #ifdef __linux__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /// Accept a connection, atomically setting SOCK_NONBLOCK | SOCK_CLOEXEC
 /// on the returned fd. Wrapper around accept4(2).
 int sl_accept4(int fd);
@@ -25,6 +29,10 @@ int sl_pipe2(int fds[2], int flags);
 
 /// Pin the calling thread to CPU `cpu`. Wrapper around sched_setaffinity(2).
 void sl_pin_to_cpu(int cpu);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __linux__ */
 #endif /* CLINUXEXT_H */

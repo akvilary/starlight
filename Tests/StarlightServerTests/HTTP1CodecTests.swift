@@ -207,4 +207,30 @@ struct HTTP1CodecTests {
         let body = response!.headerBuffer.getString(at: 0, length: response!.headerBuffer.readableBytes)
         #expect(body?.contains("user 42") == true)
     }
+
+    // MARK: - responseBuffer stale data (B-2 regression)
+
+    @Test("Error response does not contain stale data from previous request")
+    func noStaleDataInErrorResponse() async {
+        let router = Router()
+        router.get("/ok") { _ in HTTPResponse.plaintext("ok-data") }
+        let codec = HTTP1Codec(router: router)
+
+        // Request 1: valid → handler writes "ok-data" (new buffer).
+        var bytes1 = ByteBufferAllocator().buffer(capacity: 64)
+        bytes1.writeString("GET /ok HTTP/1.1\r\nHost: x\r\n\r\n")
+        codec.feed(bytes1)
+        let r1 = await codec.tryParse()
+        #expect(r1 != nil)
+
+        // Request 2: malformed → 400 Bad Request.
+        var bytes2 = ByteBufferAllocator().buffer(capacity: 64)
+        bytes2.writeString("GARBAGE\r\n\r\n")
+        codec.feed(bytes2)
+        let r2 = await codec.tryParse()
+        #expect(r2 != nil)
+        let body2 = r2!.headerBuffer.getString(at: 0, length: r2!.headerBuffer.readableBytes) ?? ""
+        #expect(body2.contains("400 Bad Request"))
+        #expect(!body2.contains("ok-data"))
+    }
 }

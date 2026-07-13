@@ -41,6 +41,8 @@ internal enum LinuxSocketConst {
 @inlinable
 @discardableResult
 internal func linuxCreateListener(host: String, port: Int, backlog: Int = 1024) -> CInt {
+    guard let port16 = UInt16(exactly: port) else { return -22 } // EINVAL
+
     let fd = Glibc.socket(
         AF_INET,
         LinuxSocketConst.SOCK_STREAM | LinuxSocketConst.SOCK_NONBLOCK | LinuxSocketConst.SOCK_CLOEXEC,
@@ -56,11 +58,15 @@ internal func linuxCreateListener(host: String, port: Int, backlog: Int = 1024) 
 
     var addr = sockaddr_in()
     addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = UInt16(port).bigEndian
-    host.withCString { cstr in
+    addr.sin_port = port16.bigEndian
+    let ptonResult = host.withCString { cstr -> CInt in
         withUnsafeMutablePointer(to: &addr.sin_addr) { addrPtr in
-            _ = Glibc.inet_pton(AF_INET, cstr, addrPtr)
+            Glibc.inet_pton(AF_INET, cstr, addrPtr)
         }
+    }
+    if ptonResult != 1 {
+        Glibc.close(fd)
+        return -22 // EINVAL — invalid address
     }
 
     let bindResult = withUnsafePointer(to: &addr) { addrPtr in
