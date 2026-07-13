@@ -74,7 +74,10 @@ struct HTTP1ParserTests {
             try parser.feed(ptr, into: &ctx)
         }
         #expect(complete)
-        #expect(ctx.method == .other)
+        #expect(ctx.method.isOther)
+        if case .other(let rawMethod) = ctx.method {
+            #expect(rawMethod == "BREW")
+        }
     }
 
     // MARK: - Versions

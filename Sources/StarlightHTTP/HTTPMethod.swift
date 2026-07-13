@@ -23,12 +23,15 @@ public enum HTTPMethod: Sendable, Hashable {
     case OPTIONS
     case CONNECT
     case TRACE
-    case other
+    case other(raw: String)
+
+    @inlinable
+    public var isOther: Bool {
+        if case .other = self { return true } else { return false }
+    }
 
     @inlinable
     public init() {
-        // Phase 0 default — Phase 2's SIMD parser will populate this from
-        // the request line byte view.
-        self = .other
+        self = .other(raw: "")
     }
 }

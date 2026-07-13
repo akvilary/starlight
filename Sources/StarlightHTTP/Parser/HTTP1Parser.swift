@@ -418,90 +418,46 @@ public struct HTTP1Parser: ~Copyable {
         offset: Int,
         length: Int
     ) -> HTTPMethod {
-        // Fast-path common cases by length + first byte. Avoids a
-        // generic byte-by-byte compare.
         let base = buffer.baseAddress!
         switch length {
         case 3:
-            // GET, PUT
-            if base[offset] == 0x47  // 'G'
-                && base[offset + 1] == 0x45  // 'E'
-                && base[offset + 2] == 0x54 { // 'T'
+            if base[offset] == 0x47 && base[offset + 1] == 0x45 && base[offset + 2] == 0x54 {
                 return .GET
             }
-            if base[offset] == 0x50  // 'P'
-                && base[offset + 1] == 0x55  // 'U'
-                && base[offset + 2] == 0x54 { // 'T'
+            if base[offset] == 0x50 && base[offset + 1] == 0x55 && base[offset + 2] == 0x54 {
                 return .PUT
             }
-            return .other
         case 4:
-            // POST, HEAD
-            if base[offset] == 0x50  // 'P'
-                && base[offset + 1] == 0x4F  // 'O'
-                && base[offset + 2] == 0x53  // 'S'
-                && base[offset + 3] == 0x54 { // 'T'
+            if base[offset] == 0x50 && base[offset + 1] == 0x4F && base[offset + 2] == 0x53 && base[offset + 3] == 0x54 {
                 return .POST
             }
-            if base[offset] == 0x48  // 'H'
-                && base[offset + 1] == 0x45  // 'E'
-                && base[offset + 2] == 0x41  // 'A'
-                && base[offset + 3] == 0x44 { // 'D'
+            if base[offset] == 0x48 && base[offset + 1] == 0x45 && base[offset + 2] == 0x41 && base[offset + 3] == 0x44 {
                 return .HEAD
             }
-            return .other
         case 5:
-            // PATCH, TRACE
-            if base[offset] == 0x50  // 'P'
-                && base[offset + 1] == 0x41  // 'A'
-                && base[offset + 2] == 0x54  // 'T'
-                && base[offset + 3] == 0x43  // 'C'
-                && base[offset + 4] == 0x48 { // 'H'
+            if base[offset] == 0x50 && base[offset + 1] == 0x41 && base[offset + 2] == 0x54 && base[offset + 3] == 0x43 && base[offset + 4] == 0x48 {
                 return .PATCH
             }
-            if base[offset] == 0x54  // 'T'
-                && base[offset + 1] == 0x52  // 'R'
-                && base[offset + 2] == 0x41  // 'A'
-                && base[offset + 3] == 0x43  // 'C'
-                && base[offset + 4] == 0x45 { // 'E'
+            if base[offset] == 0x54 && base[offset + 1] == 0x52 && base[offset + 2] == 0x41 && base[offset + 3] == 0x43 && base[offset + 4] == 0x45 {
                 return .TRACE
             }
-            return .other
         case 6:
-            // DELETE
-            if base[offset] == 0x44  // 'D'
-                && base[offset + 1] == 0x45  // 'E'
-                && base[offset + 2] == 0x4C  // 'L'
-                && base[offset + 3] == 0x45  // 'E'
-                && base[offset + 4] == 0x54  // 'T'
-                && base[offset + 5] == 0x45 { // 'E'
+            if base[offset] == 0x44 && base[offset + 1] == 0x45 && base[offset + 2] == 0x4C && base[offset + 3] == 0x45 && base[offset + 4] == 0x54 && base[offset + 5] == 0x45 {
                 return .DELETE
             }
-            return .other
         case 7:
-            // OPTIONS, CONNECT
-            if base[offset] == 0x4F  // 'O'
-                && base[offset + 1] == 0x50  // 'P'
-                && base[offset + 2] == 0x54  // 'T'
-                && base[offset + 3] == 0x49  // 'I'
-                && base[offset + 4] == 0x4F  // 'O'
-                && base[offset + 5] == 0x4E  // 'N'
-                && base[offset + 6] == 0x53 { // 'S'
+            if base[offset] == 0x4F && base[offset + 1] == 0x50 && base[offset + 2] == 0x54 && base[offset + 3] == 0x49 && base[offset + 4] == 0x4F && base[offset + 5] == 0x4E && base[offset + 6] == 0x53 {
                 return .OPTIONS
             }
-            if base[offset] == 0x43  // 'C'
-                && base[offset + 1] == 0x4F  // 'O'
-                && base[offset + 2] == 0x4E  // 'N'
-                && base[offset + 3] == 0x4E  // 'N'
-                && base[offset + 4] == 0x45  // 'E'
-                && base[offset + 5] == 0x43  // 'C'
-                && base[offset + 6] == 0x54 { // 'T'
+            if base[offset] == 0x43 && base[offset + 1] == 0x4F && base[offset + 2] == 0x4E && base[offset + 3] == 0x4E && base[offset + 4] == 0x45 && base[offset + 5] == 0x43 && base[offset + 6] == 0x54 {
                 return .CONNECT
             }
-            return .other
         default:
-            return .other
+            break
         }
+        return .other(raw: String(decoding: UnsafeBufferPointer(
+            start: base.advanced(by: offset), count: length
+        ), as: UTF8.self))
     }
 
     @usableFromInline

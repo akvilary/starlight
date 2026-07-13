@@ -84,7 +84,7 @@ public struct RequestContext: ~Copyable {
 
     /// Construct an empty context.
     public init() {
-        self.method = .other
+        self.method = .other(raw: "")
         self.status = .ok
         self.path = ByteBufferAllocator().buffer(capacity: 0)
         self.params = Params()
@@ -102,7 +102,7 @@ public struct RequestContext: ~Copyable {
     /// - Complexity: O(params.count + headers.count). Independent of
     ///   request size.
     public mutating func reset() {
-        self.method = .other
+        self.method = .other(raw: "")
         self.status = .ok
         self.path.clear()
         self.params.removeAll()
