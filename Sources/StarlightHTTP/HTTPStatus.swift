@@ -14,6 +14,7 @@ public struct HTTPStatus: Sendable, Hashable {
 
     @inlinable
     public init(_ code: Int, reasonPhrase: String? = nil) {
+        precondition((100...599).contains(code), "HTTPStatus: code must be in 100...599")
         self.code = code
         self.reasonPhrase = reasonPhrase ?? HTTPStatus.defaultReason(for: code)
     }

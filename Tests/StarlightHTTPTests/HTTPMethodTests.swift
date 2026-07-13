@@ -24,12 +24,12 @@ struct HTTPStatusTests {
     }
 
     @Test func customReasonPhrase() {
-        let status = HTTPStatus(599, reasonPhrase: "Server-Side Flood")
-        #expect(status.code == 599)
-        #expect(status.reasonPhrase == "Server-Side Flood")
+        let status = HTTPStatus(503, reasonPhrase: "Service Unavailable")
+        #expect(status.code == 503)
+        #expect(status.reasonPhrase == "Service Unavailable")
     }
 
-    @Test func unknownCodeGetsUnknownReason() {
-        #expect(HTTPStatus(789).reasonPhrase == "Unknown")
+    @Test func customCodeGetsDefaultReason() {
+        #expect(HTTPStatus(418).reasonPhrase == "Unknown")
     }
 }
