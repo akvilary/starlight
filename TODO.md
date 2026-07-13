@@ -35,7 +35,7 @@
 
 ---
 
-## Блок B — Логические баги
+## Блок B — Логические баги — ✅ ЗАКРЫТ
 
 - [x] **B-1. Аккумулятор memory leak на keep-alive** — `discardReadBytes()` в `afterDispatch()`.
 - [x] **B-2. reset() не чистит responseBuffer** — Анализ: НЕ баг. `plaintext(_:into:)` всегда clear() перед записью. Regression test добавлен.
@@ -47,7 +47,7 @@
 - [x] **B-8. Status code не валидируется** — `precondition((100...599).contains(code))`.
 - [x] **B-9. writeStatusLine расходится с defaultReason** — Обе таблицы синхронизированы (21 код).
 - [x] **B-10. Middleware short-circuit outer after** — Анализ: НЕ баг. Regression test добавлен.
-- [ ] **B-11. soReusePort magic number fallback** — rawValue: 15 на других платформах.
+- [x] **B-11. soReusePort magic number fallback** — `#error` вместо rawValue: 15. @inlinable убран.
 - [x] **B-12. Unused fn binding** — `case .async(let fn)` → `case .async`.
 
 ---
@@ -89,7 +89,7 @@
 |---|---|---|
 | 0 — Краши/corruption/security | 8 | ✅ 8/8 |
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
-| B — Логические баги | 12 | 11 (B-1..B-10, B-12) |
+| B — Логические баги | 12 | ✅ 12/12 |
 | C — Performance/zero-alloc | 13 | 2 (C-3, C-10) |
 | D — API/clean code | 8 | 5 (D-1..D-3, D-5, D-6) |
-| **Итого** | **53** | **33 закрыто, 20 осталось** |
+| **Итого** | **53** | **34 закрыто, 19 осталось** |
