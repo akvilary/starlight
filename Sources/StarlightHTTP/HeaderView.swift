@@ -157,7 +157,7 @@ public struct HeaderView: Sendable {
                 var out: [String] = []
                 var pos = 0
                 while pos < length {
-                    guard let lineEnd = HeaderView.findByte(
+                    guard let lineEnd = SearchAlgorithm.findByte(
                         0x0A, in: base, from: pos, to: length
                     ) else { break }
                     let lineContentEnd = (lineEnd > pos && base[lineEnd - 1] == 0x0D)
@@ -189,7 +189,7 @@ public struct HeaderView: Sendable {
                 var n = 0
                 var pos = 0
                 while pos < length {
-                    guard let lineEnd = HeaderView.findByte(
+                    guard let lineEnd = SearchAlgorithm.findByte(
                         0x0A, in: base, from: pos, to: length
                     ) else { break }
                     let lineContentEnd = (lineEnd > pos && base[lineEnd - 1] == 0x0D)
@@ -226,7 +226,7 @@ public struct HeaderView: Sendable {
         let needleLen = name.utf8.count
         var pos = 0
         while pos < length {
-            guard let lineEnd = findByte(0x0A, in: block, from: pos, to: length) else {
+            guard let lineEnd = SearchAlgorithm.findByte(0x0A, in: block, from: pos, to: length) else {
                 return nil
             }
             let lineContentEnd = (lineEnd > pos && block[lineEnd - 1] == 0x0D)
@@ -257,7 +257,7 @@ public struct HeaderView: Sendable {
         let needleLen = name.utf8.count
         var pos = 0
         while pos < length {
-            guard let lineEnd = findByte(0x0A, in: block, from: pos, to: length) else {
+            guard let lineEnd = SearchAlgorithm.findByte(0x0A, in: block, from: pos, to: length) else {
                 return nil
             }
             let lineContentEnd = (lineEnd > pos && block[lineEnd - 1] == 0x0D)
@@ -341,18 +341,5 @@ public struct HeaderView: Sendable {
         }
         let valueLen = valueEnd - valueStart
         return (valueStart, valueLen)
-    }
-
-    /// Single-byte search inside the header block.
-    /// Delegates to `SearchAlgorithm.findByte` (SWAR).
-    @usableFromInline
-    @inline(__always)
-    static func findByte(
-        _ needle: UInt8,
-        in block: UnsafePointer<UInt8>,
-        from start: Int,
-        to end: Int
-    ) -> Int? {
-        SearchAlgorithm.findByte(needle, in: block, from: start, to: end)
     }
 }

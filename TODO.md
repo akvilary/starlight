@@ -63,7 +63,7 @@
 - [ ] **C-6. Route.pattern: String мёртвое хранилище** — Удалить или CustomStringConvertible.
 - [ ] **C-7. Побайтовое сравнение вместо memcmp** — Для сегментов ≥8 байт.
 - [ ] **C-8. Query-strip в роутере, не в парсере** — Перенести в stepRequestLine.
-- [ ] **C-9. SWAR дублирован** — ByteSearch.findByte и HeaderView.findByte.
+- [x] **C-9. SWAR дублирован** — Удалён wrapper `HeaderView.findByte`, все 4 call-site переведены напрямую на `SearchAlgorithm.findByte`.
 - [x] **C-10. ByteBufferAllocator comment** — Исправлен.
 - [x] **C-11. StarlightCore неиспользуемая зависимость NIOCore** — Убрана: `StarlightCore` нигде не импортирует `NIOCore`.
 - [ ] **C-12. splitPath двойная аллокация** — Walk UTF-8 напрямую.
@@ -91,6 +91,6 @@
 | 0 — Краши/corruption/security | 9 | 8 (0-1..0-8) |
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
 | B — Логические баги | 12 | ✅ 12/12 |
-| C — Performance/zero-alloc | 13 | 4 (C-3, C-10, C-11, C-13) |
+| C — Performance/zero-alloc | 13 | 5 (C-3, C-9, C-10, C-11, C-13) |
 | D — API/clean code | 8 | 6 (D-1..D-6) |
-| **Итого** | **54** | **37 закрыто, 17 осталось** |
+| **Итого** | **54** | **38 закрыто, 16 осталось** |

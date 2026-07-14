@@ -35,11 +35,9 @@ import StarlightHTTP
 /// A single path segment of a route pattern.
 @usableFromInline
 enum RouteSegment: Equatable, Sendable {
-    /// Static text — must match exactly. `bytes` is the pre-compiled
-    /// UTF-8 of `text`, allocated once at registration time so the
-    /// per-request matcher can compare raw bytes without touching
-    /// `String.utf8` (which uses opaque indices).
-    case literal(text: String, bytes: [UInt8])
+    /// Static text — must match exactly. Pre-compiled UTF-8 bytes
+    /// for zero-index byte comparison during matching.
+    case literal([UInt8])
     /// Named capture — matches any non-empty segment, captures into params[name].
     case param(String)
 }
@@ -438,7 +436,7 @@ public final class Router: @unchecked Sendable {
             // Skip leading '/' separators (handles consecutive slashes).
             while pos < pathLen && path[pos] == 0x2F { pos += 1 }
             switch segment {
-            case .literal(_, let bytes):
+            case .literal(let bytes):
                 guard pos + bytes.count <= pathLen else { return false }
                 for i in 0..<bytes.count {
                     if path[pos] != bytes[i] { return false }
@@ -479,7 +477,7 @@ public final class Router: @unchecked Sendable {
                 return .param(String(part.dropFirst()))
             } else {
                 let s = String(part)
-                return .literal(text: s, bytes: Array(s.utf8))
+                return .literal(Array(s.utf8))
             }
         }
     }
