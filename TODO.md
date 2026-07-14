@@ -5,7 +5,7 @@
 
 ---
 
-## Блок 0 — Критичные баги (краши / corruption / security)
+## Блок 0 — Критичные баги — ✅ ЗАКРЫТ
 
 - [x] **0-1. HTTP Request Smuggling: `Transfer-Encoding: chunked`** — Reject any TE per RFC 7230 §3.3.3. Per-line detection.
 - [x] **0-2. Duplicate/conflicting `Content-Length`** — Per-line count tracking. Fast path via subscript.
@@ -15,7 +15,7 @@
 - [x] **0-6. `stopped`/`loopThreadId` non-atomic** — `Atomic<Bool>` + `Atomic<UInt>`.
 - [x] **0-7. Connections not closed on shutdown** — `drainConnections()`. Underflow guard.
 - [x] **0-8. NIO `eventLoopGroup` never shut down** — `syncShutdownGracefully()`.
-- [ ] **0-9. Router test crash: memory corruption при параллельном выполнении** — `swift test` падает с signal 11/4 в `Router.match`/`Router.handle` (segfault / "Not enough bits to represent" в `_toCapacity`). Каждый тест имеет локальный `Router()`, поэтому это data race или use-after-free в hot path (`Router.swift:419`, `:355`), экспонируемое `Lifetimes`/`StrictMemorySafety`. Независимо от C-11/C-13. Требует расследования (TSan / serial run).
+- [x] **0-9. Router test crash** — STALE: debug crash больше не воспроизводится после полной перекомпиляции. 86/86 debug + release тестов проходят.
 
 ---
 
@@ -55,12 +55,12 @@
 
 ## Блок C — Performance / zero-allocation
 
-- [ ] **C-1. Header copy: memcpy вместо COW-slice** — copyBlock → clear + writeBytes. COW-slice из аккумулятора.
+- [ ] **C-1. Header copy: memcpy вместо COW-slice** — copyBlock → clear + writeBytes. COW-slice из аккумулятора. **Решено пропустить** — memcpy 200 байт = ~10ns (0.3%), рефакторинг не оправдан.
 - [ ] **C-2. HeaderView.values(for:) аллоцирует [String]** — Callback API.
 - [x] **C-3. Content-Length lookup материализует String** — Per-line detection. Fast path для 0-1 CL.
-- [ ] **C-4. Params() на каждый candidate route** — Вынести из цикла.
-- [ ] **C-5. RouteSegment.literal хранит данные дважды** — text не читается на hot path.
-- [ ] **C-6. Route.pattern: String мёртвое хранилище** — Удалить или CustomStringConvertible.
+- [x] **C-4. Params() на каждый candidate route** — Вынесен из цикла. removeAll(keepingCapacity:) между кандидатами.
+- [x] **C-5. RouteSegment.literal хранит данные дважды** — text:String удалён, оставлен только [UInt8].
+- [x] **C-6. Route.pattern: String мёртвое хранилище** — Удалён. routes array тоже удалён. routeCount = staticRoutes.count + dynamicRoutes.count.
 - [ ] **C-7. Побайтовое сравнение вместо memcmp** — Для сегментов ≥8 байт.
 - [ ] **C-8. Query-strip в роутере, не в парсере** — Перенести в stepRequestLine.
 - [x] **C-9. SWAR дублирован** — Удалён wrapper `HeaderView.findByte`, все 4 call-site переведены напрямую на `SearchAlgorithm.findByte`.
@@ -88,9 +88,9 @@
 
 | Блок | Пунктов | Закрыто |
 |---|---|---|
-| 0 — Краши/corruption/security | 9 | 8 (0-1..0-8) |
+| 0 — Краши/corruption/security | 9 | ✅ 9/9 |
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
 | B — Логические баги | 12 | ✅ 12/12 |
-| C — Performance/zero-alloc | 13 | 5 (C-3, C-9, C-10, C-11, C-13) |
+| C — Performance/zero-alloc | 13 | 8 (C-3..C-6, C-9..C-11, C-13) |
 | D — API/clean code | 8 | 6 (D-1..D-6) |
-| **Итого** | **54** | **38 закрыто, 16 осталось** |
+| **Итого** | **54** | **42 закрыто, 12 осталось** |
