@@ -45,8 +45,6 @@ enum RouteSegment: Equatable, Sendable {
 /// A registered route.
 struct Route: Sendable {
     let method: HTTPMethod
-    /// Original pattern, kept for diagnostics / `debugPrint`.
-    let pattern: String
     /// Pre-split segments for fast matching.
     let segments: [RouteSegment]
     /// Sync or async dispatch kind. `var` so `freeze()` can replace
@@ -166,12 +164,6 @@ public struct Middleware: Sendable {
 /// and only `handle(_:)` is invoked concurrently from event loops.
 /// Debug builds assert this invariant; release builds trust the caller.
 public final class Router: @unchecked Sendable {
-    /// User handlers indexed by route. Searched linearly.
-    private var routes: [Route] = []
-
-    /// Static-only routes (all segments are `.literal`), tried first
-    /// so static precedence is guaranteed without per-request
-    /// `allSatisfy` overhead.
     private var staticRoutes: [Route] = []
 
     /// Routes containing at least one `.param` segment, tried after
@@ -246,7 +238,7 @@ public final class Router: @unchecked Sendable {
             preconditionFailure("Cannot register a route for .other — it would match every unknown method.")
         }
         let segments = Self.parsePattern(pattern)
-        let route = Route(method: method, pattern: pattern, segments: segments, handler: kind)
+        let route = Route(method: method, segments: segments, handler: kind)
         let isAllStatic = segments.allSatisfy {
             if case .literal = $0 { return true } else { return false }
         }
@@ -255,7 +247,6 @@ public final class Router: @unchecked Sendable {
         } else {
             dynamicRoutes.append(route)
         }
-        routes.append(route)
     }
 
     /// Append a middleware to the chain. Middlewares are invoked in
@@ -487,5 +478,5 @@ public final class Router: @unchecked Sendable {
     }
 
     /// Number of registered routes. Useful for tests.
-    public var routeCount: Int { self.routes.count }
+    public var routeCount: Int { staticRoutes.count + dynamicRoutes.count }
 }
