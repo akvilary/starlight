@@ -390,9 +390,13 @@ public final class Router: @unchecked Sendable {
             for i in 0..<total {
                 if base[i] == 0x3F { pathLen = i; break }
             }
+            // Reuse a single Params across all candidates — avoids
+            // per-candidate array allocation. removeAll(keepingCapacity:)
+            // preserves the backing array for reuse.
+            var params = Params()
             // Static routes first (pre-partitioned at registration).
             for route in staticRoutes where route.method == method {
-                var params = Params()
+                params.removeAll()
                 if Self.matchBytes(route.segments, base, pathLen, &params) {
                     params.setBackingBuffer(path)
                     return (route.handler, params)
@@ -400,7 +404,7 @@ public final class Router: @unchecked Sendable {
             }
             // Dynamic routes.
             for route in dynamicRoutes where route.method == method {
-                var params = Params()
+                params.removeAll()
                 if Self.matchBytes(route.segments, base, pathLen, &params) {
                     params.setBackingBuffer(path)
                     return (route.handler, params)
