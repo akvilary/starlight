@@ -28,6 +28,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
+
 import NIOCore
 import Synchronization
 import StarlightHTTP
@@ -432,11 +438,23 @@ public final class Router: @unchecked Sendable {
             while pos < pathLen && path[pos] == 0x2F { pos += 1 }
             switch segment {
             case .literal(let bytes):
-                guard pos + bytes.count <= pathLen else { return false }
-                for i in 0..<bytes.count {
-                    if path[pos] != bytes[i] { return false }
-                    pos += 1
+                let len = bytes.count
+                guard pos + len <= pathLen else { return false }
+                var matched: Bool
+                if len >= 8 {
+                    // memcmp for longer segments — glibc uses SIMD.
+                    matched = bytes.withUnsafeBufferPointer { buf in
+                        memcmp(path.advanced(by: pos), buf.baseAddress!, len) == 0
+                    }
+                } else {
+                    // Inline for short segments — avoids call overhead.
+                    matched = true
+                    for i in 0..<len {
+                        if path[pos + i] != bytes[i] { matched = false; break }
+                    }
                 }
+                if !matched { return false }
+                pos += len
             case .param(let name):
                 // Capture until next '/' or end of (query-stripped) path.
                 let start = pos
