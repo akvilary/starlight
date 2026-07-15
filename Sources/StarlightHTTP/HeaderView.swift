@@ -146,15 +146,15 @@ public struct HeaderView: Sendable {
         }
     }
 
-    /// All values for `name`, in insertion order. Use for multi-valued
-    /// headers like `Set-Cookie` (rare on requests, common on responses).
-    public func values(for name: String) -> [String] {
-        guard self.block.readableBytes > 0 else { return [] }
-        return self.block.withUnsafeReadableBytes { rawBytes -> [String] in
-            rawBytes.withMemoryRebound(to: UInt8.self) { typedBytes -> [String] in
-                guard let base = typedBytes.baseAddress else { return [] }
+    /// Call `body` for each value of `name`, in insertion order.
+    /// Zero-allocation: no `[String]` array is created. Use for
+    /// multi-valued headers like `Set-Cookie`.
+    public func forEachValue(of name: String, _ body: (String) -> Void) {
+        guard self.block.readableBytes > 0 else { return }
+        self.block.withUnsafeReadableBytes { rawBytes in
+            rawBytes.withMemoryRebound(to: UInt8.self) { typedBytes in
+                guard let base = typedBytes.baseAddress else { return }
                 let length = typedBytes.count
-                var out: [String] = []
                 var pos = 0
                 while pos < length {
                     guard let lineEnd = SearchAlgorithm.findByte(
@@ -168,13 +168,20 @@ public struct HeaderView: Sendable {
                         base, lineStart: pos, lineContentEnd: lineContentEnd,
                         needle: name
                     ) {
-                        out.append(value)
+                        body(value)
                     }
                     pos = lineEnd + 1
                 }
-                return out
             }
         }
+    }
+
+    /// All values for `name`, in insertion order. Convenience wrapper
+    /// around `forEachValue(of:_:)` — allocates `[String]`.
+    public func values(for name: String) -> [String] {
+        var out: [String] = []
+        forEachValue(of: name) { out.append($0) }
+        return out
     }
 
     /// Number of captured headers (computed by walking the block).
