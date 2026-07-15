@@ -56,12 +56,12 @@
 ## Блок C — Performance / zero-allocation
 
 - [ ] **C-1. Header copy: memcpy вместо COW-slice** — copyBlock → clear + writeBytes. COW-slice из аккумулятора. **Решено пропустить** — memcpy 200 байт = ~10ns (0.3%), рефакторинг не оправдан.
-- [ ] **C-2. HeaderView.values(for:) аллоцирует [String]** — Callback API.
+- [x] **C-2. HeaderView.values(for:) аллоцирует [String]** — Добавлен forEachValue(of:_:) callback API. values(for:) — тонкий wrapper.
 - [x] **C-3. Content-Length lookup материализует String** — Per-line detection. Fast path для 0-1 CL.
 - [x] **C-4. Params() на каждый candidate route** — Вынесен из цикла. removeAll(keepingCapacity:) между кандидатами.
 - [x] **C-5. RouteSegment.literal хранит данные дважды** — text:String удалён, оставлен только [UInt8].
 - [x] **C-6. Route.pattern: String мёртвое хранилище** — Удалён. routes array тоже удалён. routeCount = staticRoutes.count + dynamicRoutes.count.
-- [ ] **C-7. Побайтовое сравнение вместо memcmp** — Для сегментов ≥8 байт.
+- [x] **C-7. Побайтовое сравнение вместо memcmp** — memcmp для сегментов ≥8 байт (glibc SIMD). Inline loop для <8.
 - [ ] **C-8. Query-strip в роутере, не в парсере** — Перенести в stepRequestLine.
 - [x] **C-9. SWAR дублирован** — Удалён wrapper `HeaderView.findByte`, все 4 call-site переведены напрямую на `SearchAlgorithm.findByte`.
 - [x] **C-10. ByteBufferAllocator comment** — Исправлен.
@@ -91,6 +91,6 @@
 | 0 — Краши/corruption/security | 9 | ✅ 9/9 |
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
 | B — Логические баги | 12 | ✅ 12/12 |
-| C — Performance/zero-alloc | 13 | 8 (C-3..C-6, C-9..C-11, C-13) |
+| C — Performance/zero-alloc | 13 | 10 (C-2..C-7, C-9..C-11, C-13) |
 | D — API/clean code | 8 | 6 (D-1..D-6) |
-| **Итого** | **54** | **42 закрыто, 12 осталось** |
+| **Итого** | **54** | **44 закрыто, 10 осталось** |
