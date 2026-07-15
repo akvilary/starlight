@@ -477,25 +477,36 @@ public final class Router: @unchecked Sendable {
             || (pos + 1 == pathLen && path[pos] == 0x2F)
     }
 
-    // MARK: - Pattern / path parsing
-
-    /// Split a URL path into non-empty segments.
-    static func splitPath(_ path: String) -> [String] {
-        path.split(separator: "/").map(String.init)
-    }
+    // MARK: - Pattern parsing
 
     /// Parse a route pattern (e.g. `/users/:id`) into segments with
-    /// pre-compiled bytes for zero-allocation matching.
+    /// pre-compiled bytes for zero-allocation matching. Walks UTF-8
+    /// directly — no intermediate [Substring] or [String] arrays.
     static func parsePattern(_ pattern: String) -> [RouteSegment] {
-        let parts = splitPath(pattern)
-        return parts.map { part in
-            if part.hasPrefix(":") {
-                return .param(String(part.dropFirst()))
+        var segments: [RouteSegment] = []
+        var utf8 = pattern.utf8[...]
+        // Skip leading slashes.
+        while utf8.first == 0x2F { utf8 = utf8.dropFirst() }
+
+        while !utf8.isEmpty {
+            // Find next '/' or end.
+            let segmentEnd = utf8.firstIndex(of: 0x2F) ?? utf8.endIndex
+            let part = utf8[..<segmentEnd]
+
+            if part.first == 0x3A {  // ':'
+                // Param — name needs a String for Params lookup.
+                segments.append(.param(String(decoding: part.dropFirst(), as: UTF8.self)))
+            } else if part.first == 0x2A {  // '*'
+                // Catch-all — treated as literal for now.
+                segments.append(.literal(Array(part)))
             } else {
-                let s = String(part)
-                return .literal(Array(s.utf8))
+                segments.append(.literal(Array(part)))
             }
+
+            utf8 = utf8[segmentEnd...]
+            while utf8.first == 0x2F { utf8 = utf8.dropFirst() }
         }
+        return segments
     }
 
     /// Number of registered routes. Useful for tests.
