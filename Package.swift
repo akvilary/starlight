@@ -21,10 +21,9 @@ let package = Package(
         .watchOS(.v11),
     ],
     products: [
-        // The umbrella product — pulls in everything.
         .library(name: "Starlight", targets: ["Starlight"]),
-        // Granular products for users who only want a slice of the stack.
         .library(name: "StarlightCore", targets: ["StarlightCore"]),
+        .library(name: "StarlightIORing", targets: ["StarlightIORing"]),
         .library(name: "StarlightHTTP", targets: ["StarlightHTTP"]),
         .library(name: "StarlightRouting", targets: ["StarlightRouting"]),
         .library(name: "StarlightServer", targets: ["StarlightServer"]),
@@ -50,6 +49,13 @@ let package = Package(
         .target(
             name: "StarlightCore",
             dependencies: [],
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── io_uring event loop (Linux only — generic async I/O) ─────────────
+        .target(
+            name: "StarlightIORing",
+            dependencies: ioringDependencies,
             swiftSettings: baseSwiftSettings
         ),
 
@@ -169,15 +175,31 @@ var baseSwiftSettings: [SwiftSetting] {
 // compiles, but only the relevant path is executed.
 
 #if os(Linux)
+var ioringDependencies: [Target.Dependency] {
+    [
+        "StarlightCore",
+        "CLinuxExt",
+        .product(name: "SystemPackage", package: "swift-system"),
+    ]
+}
+#else
+var ioringDependencies: [Target.Dependency] {
+    [
+        "StarlightCore",
+    ]
+}
+#endif
+
+#if os(Linux)
 var serverDependencies: [Target.Dependency] {
     [
+        "StarlightIORing",
         "StarlightCore",
         "StarlightHTTP",
         "StarlightRouting",
         "CLinuxExt",
         .product(name: "SystemPackage", package: "swift-system"),
         .product(name: "NIOCore", package: "swift-nio"),
-        // NIO kept for runtime fallback / tests on Linux:
         .product(name: "NIOPosix", package: "swift-nio"),
     ]
 }
