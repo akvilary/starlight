@@ -62,11 +62,11 @@
 - [x] **C-5. RouteSegment.literal хранит данные дважды** — text:String удалён, оставлен только [UInt8].
 - [x] **C-6. Route.pattern: String мёртвое хранилище** — Удалён. routes array тоже удалён. routeCount = staticRoutes.count + dynamicRoutes.count.
 - [x] **C-7. Побайтовое сравнение вместо memcmp** — memcmp для сегментов ≥8 байт (glibc SIMD). Inline loop для <8.
-- [ ] **C-8. Query-strip в роутере, не в парсере** — Перенести в stepRequestLine.
+- [x] **C-8. Query-strip в роутере, не в парсере** — Перенесён в stepRequestLine. match() использует path напрямую.
 - [x] **C-9. SWAR дублирован** — Удалён wrapper `HeaderView.findByte`, все 4 call-site переведены напрямую на `SearchAlgorithm.findByte`.
 - [x] **C-10. ByteBufferAllocator comment** — Исправлен.
 - [x] **C-11. StarlightCore неиспользуемая зависимость NIOCore** — Убрана: `StarlightCore` нигде не импортирует `NIOCore`.
-- [ ] **C-12. splitPath двойная аллокация** — Walk UTF-8 напрямую.
+- [x] **C-12. splitPath двойная аллокация** — splitPath удалён. parsePattern — single-pass UTF-8 walk напрямую в [RouteSegment].
 - [x] **C-13. findFirstOf2/findFirstOf dead code** — Удалены (вместе с `ByteMatch`): не использовались ни в Sources, ни в Tests.
 
 ---
@@ -91,6 +91,6 @@
 | 0 — Краши/corruption/security | 9 | ✅ 9/9 |
 | A — Архитектура | 12 | 7 (A-3, A-9..A-13) |
 | B — Логические баги | 12 | ✅ 12/12 |
-| C — Performance/zero-alloc | 13 | 10 (C-2..C-7, C-9..C-11, C-13) |
+| C — Performance/zero-alloc | 13 | 12 (C-2..C-8, C-9..C-13; C-1 skipped) |
 | D — API/clean code | 8 | 6 (D-1..D-6) |
-| **Итого** | **54** | **44 закрыто, 10 осталось** |
+| **Итого** | **54** | **46 закрыто, 8 осталось** |
