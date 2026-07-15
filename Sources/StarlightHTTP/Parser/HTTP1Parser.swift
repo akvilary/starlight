@@ -252,12 +252,14 @@ public struct HTTP1Parser: ~Copyable {
         guard pLen >= 1 else {
             state = .error; throw HTTP1ParseError.malformedRequestLine
         }
-        // Record the path's byte location for the codec to create a
-        // zero-copy ByteBuffer slice. Avoids the heap String allocation
-        // that String(decoding:as:) incurs for paths > 15 bytes
-        // (the majority of real-world paths like /api/v1/users/42).
+        // Strip query string here (once per request) so the router's
+        // match() doesn't need to scan for '?' on every call.
+        var actualPathLen = pLen
+        for i in 0..<pLen {
+            if buffer[pStart + i] == 0x3F { actualPathLen = i; break }
+        }
         self.pathStart = pStart
-        self.pathLength = pLen
+        self.pathLength = actualPathLen
 
         // VERSION = [sp2+1, lineContentEnd)
         let versionStart = sp2 + 1

@@ -382,11 +382,8 @@ public final class Router: @unchecked Sendable {
                 return nil
             }
             let total = rawBytes.count
-            // Strip query string.
-            var pathLen = total
-            for i in 0..<total {
-                if base[i] == 0x3F { pathLen = i; break }
-            }
+            // Path is already query-stripped by the parser — no '?' scan needed.
+            let pathLen = total
             // Reuse a single Params across all candidates — avoids
             // per-candidate array allocation. removeAll(keepingCapacity:)
             // preserves the backing array for reuse.
@@ -415,8 +412,14 @@ public final class Router: @unchecked Sendable {
     /// a temporary `ByteBuffer` — use the `ByteBuffer` overload for
     /// the hot path (zero-copy from the accumulator).
     public func match(method: HTTPMethod, path: String) -> (handler: HandlerKind, params: Params)? {
-        var buf = ByteBufferAllocator().buffer(capacity: path.utf8.count)
-        buf.writeString(path)
+        let pathOnly: String
+        if let qIdx = path.firstIndex(of: "?") {
+            pathOnly = String(path[..<qIdx])
+        } else {
+            pathOnly = path
+        }
+        var buf = ByteBufferAllocator().buffer(capacity: pathOnly.utf8.count)
+        buf.writeString(pathOnly)
         return self.match(method: method, path: buf)
     }
 
