@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "Starlight", targets: ["Starlight"]),
         .library(name: "StarlightCore", targets: ["StarlightCore"]),
         .library(name: "StarlightIORing", targets: ["StarlightIORing"]),
+        .library(name: "StarlightPoll", targets: ["StarlightPoll"]),
         .library(name: "StarlightHTTP", targets: ["StarlightHTTP"]),
         .library(name: "StarlightRouting", targets: ["StarlightRouting"]),
         .library(name: "StarlightServer", targets: ["StarlightServer"]),
@@ -56,6 +57,20 @@ let package = Package(
         .target(
             name: "StarlightIORing",
             dependencies: ioringDependencies,
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── epoll-based mio analog (Linux only — generic async I/O) ──────────
+        //    Low-level `Poll`/`Registry`/`Token`/`Interest`/`Events`/`Waker`
+        //    API mirroring mio (rust), plus a high-level `PollEventLoop`
+        //    that conforms to `SerialExecutor` and provides the same
+        //    async read/write surface as `IORingEventLoop`. This is the
+        //    default Linux backend — more portable than io_uring
+        //    (works under gVisor, old Docker, kernel <5.7) and the
+        //    substrate of `mio`/`tokio`'s battle-tested reactor.
+        .target(
+            name: "StarlightPoll",
+            dependencies: pollDependencies,
             swiftSettings: baseSwiftSettings
         ),
 
@@ -115,6 +130,11 @@ let package = Package(
         .testTarget(
             name: "StarlightHTTPTests",
             dependencies: ["StarlightHTTP"],
+            swiftSettings: baseSwiftSettings
+        ),
+        .testTarget(
+            name: "StarlightPollTests",
+            dependencies: ["StarlightPoll"],
             swiftSettings: baseSwiftSettings
         ),
         .testTarget(
@@ -190,10 +210,28 @@ var ioringDependencies: [Target.Dependency] {
 }
 #endif
 
+// StarlightPoll has the same Linux-only surface as StarlightIORing but
+// does not need SystemPackage — it speaks directly to epoll via CLinuxExt.
+#if os(Linux)
+var pollDependencies: [Target.Dependency] {
+    [
+        "StarlightCore",
+        "CLinuxExt",
+    ]
+}
+#else
+var pollDependencies: [Target.Dependency] {
+    [
+        "StarlightCore",
+    ]
+}
+#endif
+
 #if os(Linux)
 var serverDependencies: [Target.Dependency] {
     [
         "StarlightIORing",
+        "StarlightPoll",
         "StarlightCore",
         "StarlightHTTP",
         "StarlightRouting",

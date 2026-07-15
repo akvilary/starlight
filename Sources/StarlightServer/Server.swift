@@ -69,7 +69,25 @@ public final class StarlightServer: @unchecked Sendable {
     public let stats = ServerStats()
     public let loopCount: Int
 
-    // io_uring state (Linux only)
+    /// Backend selected at start time. Surfaced for diagnostics
+    /// (`backendName` in the benchmark banner).
+    public private(set) var backend: Backend = .nio
+
+    /// The I/O backend actually driving this server.
+    public enum Backend: String, Sendable {
+        case epoll     // StarlightPoll — default on Linux
+        case ioUring   // StarlightIORing — opt-in (kernel ≥5.7)
+        case nio       // NIOAsyncChannel — macOS / fallback
+    }
+
+    // epoll state (Linux only) — primary backend.
+    #if os(Linux)
+    private var epollLoops: [EpollExecutorLoop] = []
+    private var epollShutdownContinuation: CheckedContinuation<Void, Never>?
+    private var usingEpoll = false
+    #endif
+
+    // io_uring state (Linux only) — opt-in alternative.
     #if os(Linux) && compiler(>=6.2) && $Lifetimes
     private var ioRingLoops: [IORingExecutorLoop] = []
     private var shutdownContinuation: CheckedContinuation<Void, Never>?
@@ -86,12 +104,22 @@ public final class StarlightServer: @unchecked Sendable {
 
     // MARK: - Start / Shutdown
 
+    /// Selects which Linux backend to use.
+    public enum LinuxBackendPreference: Sendable {
+        /// Default: epoll. Falls back to NIO if epoll is unavailable
+        /// (essentially never on a Linux ≥2.6).
+        case epoll
+        /// Opt-in: io_uring. Falls back to epoll, then NIO.
+        case ioUring
+    }
+
     public func start(
         host: String,
         port: Int,
         mode: Mode = .http,
         httpHandler: HTTPHandler? = nil,
-        router: Router? = nil
+        router: Router? = nil,
+        linuxBackend: LinuxBackendPreference = .epoll
     ) async throws {
         precondition(mode != .http || httpHandler != nil || router != nil,
                      "HTTP mode requires an httpHandler closure or a Router")
@@ -99,24 +127,54 @@ public final class StarlightServer: @unchecked Sendable {
         router?.freeze()
 
         #if os(Linux) && compiler(>=6.2) && $Lifetimes
-        // Try io_uring backend first — runtime detection for container compat.
-        if ioUringAvailable() {
+        // Explicit io_uring preference — try io_uring first, then fall
+        // through to epoll, then NIO.
+        if linuxBackend == .ioUring, ioUringAvailable() {
             do {
                 try await startWithIORing(host: host, port: port, mode: mode,
                                           httpHandler: httpHandler, router: router)
+                backend = .ioUring
                 return
             } catch {
-                // IORing init or setup failed — fall through to NIO.
+                // Fall through to epoll.
             }
         }
         #endif
 
-        // NIO backend (primary on macOS, fallback on Linux).
+        #if os(Linux)
+        // epoll — the default Linux backend. Production-proven (mio/
+        // tokio use the same primitive), works in every container and
+        // kernel version, no seccomp / capability gotchas.
+        do {
+            try await startWithEpoll(host: host, port: port, mode: mode,
+                                     httpHandler: httpHandler, router: router)
+            backend = .epoll
+            return
+        } catch {
+            // Fall through to NIO.
+        }
+        #endif
+
+        // NIO backend (primary on macOS, last-resort fallback on Linux).
         try await startWithNIO(host: host, port: port, mode: mode,
                                httpHandler: httpHandler, router: router)
+        backend = .nio
     }
 
     public func shutdown() {
+        #if os(Linux)
+        if usingEpoll {
+            for loop in epollLoops {
+                loop.shutdown()
+            }
+            epollLoops.removeAll()
+            epollShutdownContinuation?.resume()
+            epollShutdownContinuation = nil
+            usingEpoll = false
+            return
+        }
+        #endif
+
         #if os(Linux) && compiler(>=6.2) && $Lifetimes
         if usingIORing {
             for loop in ioRingLoops {
@@ -153,6 +211,53 @@ public final class StarlightServer: @unchecked Sendable {
         shutdown()
     }
 }
+
+// MARK: - epoll backend (Linux — default)
+
+#if os(Linux)
+
+extension StarlightServer {
+    private func startWithEpoll(
+        host: String, port: Int, mode: Mode,
+        httpHandler: HTTPHandler?, router: Router?
+    ) async throws {
+        precondition(self.epollLoops.isEmpty, "StarlightServer already started")
+
+        var created: [EpollExecutorLoop] = []
+        do {
+            for cpuIndex in 0..<loopCount {
+                let loop = try EpollExecutorLoop(
+                    host: host, port: port, mode: mode,
+                    handler: httpHandler, router: router,
+                    stats: self.stats, cpuIndex: CInt(cpuIndex)
+                )
+                try loop.setup()
+                created.append(loop)
+
+                let cpu = CInt(cpuIndex)
+                Thread.detachNewThread { [loop] in
+                    sl_pin_to_cpu(cpu)
+                    do { try loop.run() }
+                    catch { /* log */ }
+                }
+            }
+        } catch {
+            // Cleanup partial creation — fall through to NIO.
+            for loop in created { loop.shutdown() }
+            throw error
+        }
+
+        epollLoops = created
+        usingEpoll = true
+
+        // Suspend until shutdown() is called.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.epollShutdownContinuation = continuation
+        }
+    }
+}
+
+#endif
 
 // MARK: - io_uring backend
 

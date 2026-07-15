@@ -68,6 +68,9 @@ struct CLI {
     var loops: Int = System.coreCount
     var statsInterval: Int = 5   // seconds; 0 disables
     var mode: String = "echo"    // "echo", "http", or "router"
+    #if os(Linux)
+    var useIoUring: Bool = false // default: epoll (StarlightPoll)
+    #endif
 }
 
 func parseArgs(_ args: [String]) -> CLI {
@@ -90,6 +93,13 @@ func parseArgs(_ args: [String]) -> CLI {
             if let v = next(), let n = Int(v) { cli.statsInterval = n }
         case "--mode", "-m":
             if let v = next() { cli.mode = v }
+        case "--io-uring":
+            #if os(Linux)
+            cli.useIoUring = true
+            #else
+            FileHandle.standardError.writeLine("--io-uring is only available on Linux")
+            exit(2)
+            #endif
         case "--help":
             printHelp()
             exit(0)
@@ -115,6 +125,7 @@ func printHelp() {
         -l, --loops <count>          Number of event loops (default: core count)
         -s, --stats-interval <sec>   Seconds between stats prints (0 = off, default: 5)
         -m, --mode <echo|http|router>  Pipeline (default: echo)
+            --io-uring               Use io_uring instead of epoll (Linux only)
             --help                   Print this help and exit
 
     EXAMPLES:
@@ -234,21 +245,26 @@ struct StarlightBenchmark {
 
         signal(SIGPIPE, SIG_IGN)
 
+        // Default backend per platform. On Linux the default is now
+        // StarlightPoll (epoll) — the same primitive mio/tokio use,
+        // production-proven and container-friendly. io_uring is opt-in
+        // via `--io-uring`. NIO is the macOS primary and Linux
+        // last-resort fallback.
         #if os(Linux)
-        let backendName = "io_uring"
+        let backendName = cli.useIoUring ? "io_uring" : "epoll"
         #else
         let backendName = "NIOAsyncChannel"
         #endif
 
         out("""
         ╔══════════════════════════════════════════════════════════════════╗
-        ║         Starlight Phase 4 — \(cli.mode.uppercased()) (\(backendName))        ║
+        ║         Starlight Phase 4 — \(cli.mode.uppercased()) (\(backendName))          ║
         ╚══════════════════════════════════════════════════════════════════╝
         Configuration:
           Bind                : \(cli.host):\(cli.port)
           Event loops         : \(server.loopCount)  (= CPU cores, thread-per-core)
           SO_REUSEPORT        : enabled  (per-loop listener, kernel-balanced accept)
-          Architecture        : \(backendName) (thread-per-core, batch submit)
+          Architecture        : \(backendName) (thread-per-core)
           Pipeline            : \(cli.mode == "http" ? "HTTP/1.1 hello world" : cli.mode == "router" ? "HTTP/1.1 router" : "TCP echo")
         """)
         out("  Status              : starting…")
@@ -283,6 +299,16 @@ struct StarlightBenchmark {
         // `start()` blocks until shutdown (SIGINT terminates the
         // process; the kernel closes listeners and the discarding
         // task group drains).
+        #if os(Linux)
+        try await server.start(
+            host: cli.host,
+            port: cli.port,
+            mode: mode,
+            httpHandler: httpHandler,
+            router: router,
+            linuxBackend: cli.useIoUring ? .ioUring : .epoll
+        )
+        #else
         try await server.start(
             host: cli.host,
             port: cli.port,
@@ -290,5 +316,6 @@ struct StarlightBenchmark {
             httpHandler: httpHandler,
             router: router
         )
+        #endif
     }
 }
