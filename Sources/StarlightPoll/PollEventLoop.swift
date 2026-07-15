@@ -4,11 +4,15 @@
 //  StarlightPoll
 //
 //  High-level Swift Concurrency event loop built on top of the low-level
-//  `Poll` / `Registry` / `Waker` primitives. This is the epoll analogue
-//  of `StarlightIORing.IORingEventLoop` — same async `read`/`write`
+//  `Poll` / `Registry` / `Waker` primitives from the `mio` package
+//  (https://github.com/akvilary/mio). This is the epoll analogue of
+//  `StarlightIORing.IORingEventLoop` — same async `read`/`write`
 //  surface, same SerialExecutor semantics, but every operation is
 //  driven by readiness notifications on a single epoll fd instead of
 //  io_uring submissions.
+//
+//  The mio primitives are re-exported, so `import StarlightPoll` is
+//  sufficient to reach `Poll`, `Token`, `Interest`, `Ready`, etc.
 //
 //  Design notes
 //  ------------
@@ -30,7 +34,11 @@
 #if os(Linux)
 
 import Foundation
-import CLinuxExt
+// Re-export the mio primitives so consumers of `StarlightPoll` get
+// `Poll`, `Token`, `Interest`, `Ready`, `Event`, `Events`, `Waker`,
+// `Registry`, `PollError` transitively (mirrors how the module bundled
+// them before they were extracted into the standalone mio package).
+@_exported import MIO
 import Synchronization
 import StarlightCore
 

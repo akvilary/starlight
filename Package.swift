@@ -37,6 +37,10 @@ let package = Package(
         // Apple SystemPackage — provides IORing (~Copyable ring management),
         // FileDescriptor, Errno. IORing requires main branch (unreleased).
         .package(url: "https://github.com/apple/swift-system.git", branch: "main"),
+        // mio — epoll-backed readiness I/O primitives (Poll/Registry/Token/
+        // Interest/Ready/Event/Events/Waker), a Swift port of Rust's mio.
+        // Extracted into its own package: https://github.com/akvilary/mio
+        .package(url: "https://github.com/akvilary/mio.git", from: "0.1.0"),
     ],
     targets: [
         // ── C wrappers for GNU-extension syscalls (accept4, eventfd, …) ────
@@ -199,6 +203,7 @@ var ioringDependencies: [Target.Dependency] {
     [
         "StarlightCore",
         "CLinuxExt",
+        .product(name: "CMIO", package: "mio"),   // eventfd wrapper
         .product(name: "SystemPackage", package: "swift-system"),
     ]
 }
@@ -210,13 +215,13 @@ var ioringDependencies: [Target.Dependency] {
 }
 #endif
 
-// StarlightPoll has the same Linux-only surface as StarlightIORing but
-// does not need SystemPackage — it speaks directly to epoll via CLinuxExt.
+// StarlightPoll wraps the mio package: it re-exports the low-level
+// primitives and adds the high-level `PollEventLoop` executor on top.
 #if os(Linux)
 var pollDependencies: [Target.Dependency] {
     [
         "StarlightCore",
-        "CLinuxExt",
+        .product(name: "MIO", package: "mio"),
     ]
 }
 #else

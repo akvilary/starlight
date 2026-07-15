@@ -16,7 +16,6 @@ import Testing
 import Foundation
 import Synchronization
 import StarlightPoll
-import CLinuxExt
 
 #if canImport(Glibc)
 import Glibc
