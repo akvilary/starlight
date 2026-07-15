@@ -100,8 +100,6 @@ final class EpollExecutorLoop: @unchecked Sendable {
     private var listenerFd: CInt = -1
     private var connections: [CInt: EpollConnection] = [:]
     private var connectionCount: Int = 0
-    private var newConnQueue: [CInt] = []
-    private var newConnLock = pthread_spinlock_t()
     private var connActor: EpollConnectionActor? = nil
 
     // MARK: Init
@@ -125,13 +123,10 @@ final class EpollExecutorLoop: @unchecked Sendable {
         // per-loop we cap at a safe ceiling well below the io_uring depth
         // because each entry corresponds to a live socket.
         self.maxConnectionsPerLoop = 8192 - 8
-
-        pthread_spin_init(&newConnLock, 0)
     }
 
     deinit {
         if listenerFd >= 0 { Glibc.close(listenerFd) }
-        pthread_spin_destroy(&newConnLock)
     }
 
     // MARK: Setup
@@ -147,13 +142,16 @@ final class EpollExecutorLoop: @unchecked Sendable {
     // MARK: Run (delegates to PollEventLoop)
 
     func run() throws {
-        eventLoop.onWakeup = { [self] in
-            self.handleNewConnections()
-        }
-
-        // Start accept thread (separate from the event loop thread).
-        Thread.detachNewThread { [self] in
-            self.acceptThreadMain()
+        // Register the listening socket as a watch channel directly with
+        // epoll for readability (level-triggered, persistent — NOT
+        // oneshot). When the kernel reports pending connections, the
+        // handler drains them with accept4 on the loop thread. This
+        // eliminates the separate accept thread, its spinlock queue, and
+        // the cross-thread wakeup per accept burst — matching the
+        // mio/tokio idiom of registering the listener with the reactor.
+        _ = try eventLoop.registerWatch(fd: listenerFd, interest: .readable) { [self] ready in
+            guard ready.isReadable else { return }
+            self.handleAccept()
         }
 
         try eventLoop.run()
@@ -165,43 +163,21 @@ final class EpollExecutorLoop: @unchecked Sendable {
         eventLoop.shutdown()
     }
 
-    // MARK: Accept thread
+    // MARK: Accept (runs inline on the loop thread via the watch handler)
 
-    private func acceptThreadMain() {
+    /// Drain the listening socket's accept queue. Called from the loop
+    /// thread when the listener reports readable. Loops on non-blocking
+    /// `accept4` until `EAGAIN`, satisfying the level-triggered "drain
+    /// readiness" contract so the kernel does not re-fire the event until
+    /// a new connection arrives. Each accepted fd is handed off to
+    /// `setupNewConnection`, which spawns a connection-loop Task pinned
+    /// to this loop's executor.
+    private func handleAccept() {
         while !eventLoop.isStopped {
-            var pfd = pollfd(fd: listenerFd, events: LinuxSocketConst.POLLIN, revents: 0)
-            let ret = Glibc.poll(&pfd, 1, 1000)
-            if ret <= 0 { continue }
-            if (pfd.revents & LinuxSocketConst.POLLIN) == 0 { continue }
-
-            var accepted = false
-            while true {
-                let fd = sl_accept4(listenerFd)
-                if fd < 0 { break }
-                _ = linuxSetTcpNoDelay(fd)
-                linuxSetKeepalive(fd)
-
-                pthread_spin_lock(&newConnLock)
-                newConnQueue.append(fd)
-                pthread_spin_unlock(&newConnLock)
-                accepted = true
-            }
-
-            if accepted {
-                eventLoop.wakeup()
-            }
-        }
-    }
-
-    // MARK: New connection handling (called on loop thread via onWakeup)
-
-    private func handleNewConnections() {
-        var fds: [CInt] = []
-        pthread_spin_lock(&newConnLock)
-        swap(&newConnQueue, &fds)
-        pthread_spin_unlock(&newConnLock)
-
-        for fd in fds {
+            let fd = sl_accept4(listenerFd)
+            if fd < 0 { break } // EAGAIN — queue drained.
+            _ = linuxSetTcpNoDelay(fd)
+            linuxSetKeepalive(fd)
             setupNewConnection(fd)
         }
     }

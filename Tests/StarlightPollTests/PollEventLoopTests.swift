@@ -178,6 +178,45 @@ struct PollEventLoopTests {
         #expect(result.readN == 6)
         #expect(Array(result.read.prefix(6)) == payload)
     }
+
+    @Test("Watch channel fires its handler on the loop thread")
+    func watchReadiness() async throws {
+        let loop = try PollEventLoop()
+        let sp = makeSocketpair()
+        guard let sp else { Issue.record("socketpair failed"); return }
+        let (a, b) = (sp.read, sp.write)
+        defer {
+            _ = Glibc.close(a); _ = Glibc.close(b)
+            loop.shutdown()
+        }
+
+        let fired = Atomic<Bool>(false)
+        let readyBits = Atomic<UInt32>(0)
+
+        // Register end `a` as a watch BEFORE starting the loop — this
+        // matches production usage (registerWatch is called from run()
+        // before eventLoop.run()) and avoids a race on the loop-private
+        // `channels` map.
+        _ = try loop.registerWatch(fd: a, interest: .readable) { ready in
+            readyBits.store(ready.rawValue, ordering: .releasing)
+            fired.store(true, ordering: .releasing)
+        }
+
+        let loopThread = Thread { [loop] in try? loop.run() }
+        loopThread.start()
+        try await Task.sleep(for: .milliseconds(30))
+
+        // Write to the other end → `a` becomes readable.
+        var byte: UInt8 = 0x55
+        _ = withUnsafePointer(to: &byte) { ptr in
+            Glibc.write(b, ptr, 1)
+        }
+
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(fired.load(ordering: .acquiring) == true)
+        let bits = readyBits.load(ordering: .acquiring)
+        #expect(Ready(rawValue: bits).isReadable)
+    }
 }
 
 // MARK: - Helpers

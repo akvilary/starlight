@@ -44,12 +44,23 @@ import Glibc
 /// loop thread (with the exception of `cancelChannel`, which is
 /// expected to be called from the loop thread as well — it is the
 /// connection-loop task that does this).
+///
+/// A channel is in exactly one of two modes:
+///   - **managed**: `watch == nil`. The loop performs the actual
+///     `read(2)`/`write(2)` when the fd is ready and resumes the
+///     pending continuation. One `EPOLLONESHOT` event per armed op,
+///     re-armed by `rearm`.
+///   - **watch**: `watch != nil`. The loop does no I/O itself — it calls
+///     `watch` with the observed `Ready` and returns. The fd stays armed
+///     with the caller-supplied interest (typically level-triggered and
+///     persistent, e.g. a listening socket drained with `accept4`).
 @usableFromInline
 internal struct PollChannelState {
     var fd: CInt
     var registered: Bool = false
     var pendingRead: (CheckedContinuation<Int, Never>, UnsafeMutableRawBufferPointer)?
     var pendingWrite: (CheckedContinuation<Int, Never>, UnsafeRawBufferPointer)?
+    var watch: (@Sendable (Ready) -> Void)?
 }
 
 // MARK: - PollEventLoop
@@ -199,9 +210,39 @@ public final class PollEventLoop: @unchecked Sendable {
         return id
     }
 
+    /// Register a watch channel — an fd the caller wants to drive
+    /// directly via `handler` rather than through the async read/write
+    /// API. Returns a fresh channelId that can later be passed to
+    /// `cancelChannel`.
+    ///
+    /// The canonical use case is a listening socket: register it with
+    /// `.readable` (level-triggered, no `.oneshot`) and drain
+    /// `accept4(2)` in `handler` until `EAGAIN`. The loop does no I/O on
+    /// a watch channel and does not re-arm it — `handler` is invoked for
+    /// every readiness event the kernel reports, matching mio's plain
+    /// level-triggered registration.
+    ///
+    /// `handler` runs on the loop thread. It is stored (escaping) for the
+    /// lifetime of the channel; allocate it once at setup, not per event.
+    public func registerWatch(
+        fd: CInt, interest: Interest,
+        _ handler: @Sendable @escaping (Ready) -> Void
+    ) throws -> UInt32 {
+        let id = nextChannelId
+        nextChannelId &+= 1
+        var state = PollChannelState(fd: fd)
+        state.watch = handler
+        try registry.register(fd: fd, token: Token(id), interest: interest)
+        state.registered = true
+        channels[id] = state
+        return id
+    }
+
     /// Cancel any outstanding read/write on `channelId`. Pending
     /// continuations are resumed with `-1`. Should be called on the
     /// loop thread (typically from the connection-loop Task body).
+    /// Also valid for a watch channel: its handler closure is released
+    /// when the entry is removed.
     public func cancelChannel(_ channelId: UInt32) {
         // Atomically remove + retrieve — no write-back needed because
         // the entry is gone after this call. `state` is a let-constant
@@ -329,6 +370,17 @@ public final class PollEventLoop: @unchecked Sendable {
     private func processChannelEvent(_ event: Event) {
         let channelId = UInt32(truncatingIfNeeded: event.token.raw)
         guard var state = channels[channelId] else { return }
+
+        // Watch channels: the caller owns I/O. Invoke the handler and
+        // return without touching the read/write continuation path or
+        // re-arming — the fd stays armed with its caller-supplied
+        // interest (typically level-triggered + persistent). No write-
+        // back needed: `state` is unmodified here.
+        if let watch = state.watch {
+            watch(event.ready)
+            return
+        }
+
         let fd = state.fd
 
         // Read readiness: issue read(2) and resume the waiter.
@@ -385,6 +437,8 @@ public final class PollEventLoop: @unchecked Sendable {
                 cont.resume(returning: -1)
             }
         }
+        // Releases any held watch closures (e.g. the listener's accept
+        // handler) as well as the channel states.
         channels.removeAll()
         _ = overflowEvents.increment()
     }
