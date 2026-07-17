@@ -252,14 +252,14 @@ struct HTTP1Codec: ~Copyable {
     }
 
     /// `404 Not Found` response for unmatched routes. Uses the
-    /// per-connection `ctx.responseBuffer` for zero-alloc error
+    /// codec's reusable `responseBuffer` for zero-alloc error
     /// responses on keep-alive connections.
     mutating func notFoundResponse() -> HTTPResponse {
         return HTTPResponse.plaintext(
             "404 Not Found: \(self.ctx.method) \(self.ctx.pathString)\n",
             status: HTTPStatus(404, reasonPhrase: "Not Found"),
             keepAlive: false,
-            into: &self.ctx.responseBuffer
+            into: &self.responseBuffer
         )
     }
 

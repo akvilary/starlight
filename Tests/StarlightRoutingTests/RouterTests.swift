@@ -23,6 +23,29 @@ final class Box<T>: @unchecked Sendable {
     init(_ v: T) { self.value = v }
 }
 
+/// Test-only dispatch helper — invokes the handler that the router
+/// matched, so middleware composition can be verified without pulling
+/// in the codec (which lives in StarlightServer). Mirrors what the
+/// codec does on the hot path: match → set params → invoke handler.
+@discardableResult
+private func dispatch(
+    _ router: Router, method: HTTPMethod, path: String
+) async throws -> HTTPResponse? {
+    var ctx = RequestContext()
+    ctx.method = method
+    ctx.setPath(path)
+    guard let m = router.match(method: method, path: ctx.path) else {
+        return nil
+    }
+    ctx.params = m.params
+    switch m.handler {
+    case .sync(let fn):
+        return try fn(ctx)
+    case .async(let fn):
+        return try await fn(ctx)
+    }
+}
+
 @Suite("Router")
 struct RouterTests {
     // MARK: - Static routes
@@ -233,22 +256,23 @@ struct RouterTests {
         #expect(builder.build().match(method: .GET, path: "/anything") == nil)
     }
 
-    // MARK: - handle() dispatch through middleware
+    // MARK: - Dispatch through match() + handler invocation
+    //
+    // Router.handle() was removed — the codec on the hot path calls
+    // match() directly and synthesises its own 404. These tests now
+    // drive the same path via the `dispatch()` helper at the top of
+    // this file, which mirrors what the codec does: match → set
+    // params → invoke handler.
 
-    @Test("handle() returns 404 response when no match")
-    func handleReturns404() async throws {
+    @Test("Unmatched path returns nil (404 is the codec's job)")
+    func unmatchedReturnsNil() async throws {
         let builder = RouterBuilder()
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/nope")
-        let response = try await builder.build().handle(&ctx)
-        // We can't easily inspect the buffer contents here without
-        // pulling in ByteBuffer read APIs; we just check that the
-        // response exists. The "404" string is in there.
-        #expect(response.headerBuffer.readableBytes > 0)
+        builder.get("/here") { _ in HTTPResponse.plaintext("h") }
+        let response = try await dispatch(builder.build(), method: .GET, path: "/not-here")
+        #expect(response == nil)
     }
 
-    @Test("handle() invokes matched handler with params set on ctx")
+    @Test("Matched handler receives params from the path")
     func handleInvokesMatched() async throws {
         let builder = RouterBuilder()
         let capturedParam = Box<String?>(nil)
@@ -256,12 +280,8 @@ struct RouterTests {
             capturedParam.value = ctx.params["id"]
             return HTTPResponse.plaintext("ok")
         }
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/users/123")
-        _ = try await builder.build().handle(&ctx)
+        _ = try await dispatch(builder.build(), method: .GET, path: "/users/123")
         #expect(capturedParam.value == "123")
-        #expect(ctx.params["id"] == "123")
     }
 
     @Test("Middleware wraps the matched handler")
@@ -276,10 +296,7 @@ struct RouterTests {
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/x")
-        _ = try await builder.build().handle(&ctx)
+        _ = try await dispatch(builder.build(), method: .GET, path: "/x")
         #expect(log.value == ["before", "handler", "after"])
     }
 
@@ -299,10 +316,7 @@ struct RouterTests {
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/x")
-        _ = try await builder.build().handle(&ctx)
+        _ = try await dispatch(builder.build(), method: .GET, path: "/x")
         #expect(log.value == [
             "outer-before", "inner-before", "handler",
             "inner-after", "outer-after"
@@ -321,10 +335,7 @@ struct RouterTests {
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/x")
-        _ = try await builder.build().handle(&ctx)
+        _ = try await dispatch(builder.build(), method: .GET, path: "/x")
         #expect(log.value == ["before", "handler", "after"])
     }
 
@@ -344,12 +355,10 @@ struct RouterTests {
             handlerCalled.value = true
             return HTTPResponse.plaintext("ok")
         }
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/blocked")
-        let response = try await builder.build().handle(&ctx)
+        let response = try await dispatch(builder.build(), method: .GET, path: "/blocked")
+        #expect(response != nil)
         #expect(!handlerCalled.value)
-        let body = response.headerBuffer.getString(at: 0, length: response.headerBuffer.readableBytes)
+        let body = response!.headerBuffer.getString(at: 0, length: response!.headerBuffer.readableBytes)
         #expect(body?.contains("denied") == true)
     }
 
@@ -374,10 +383,7 @@ struct RouterTests {
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/x")
-        _ = try await builder.build().handle(&ctx)
+        _ = try await dispatch(builder.build(), method: .GET, path: "/x")
         // outer-before → inner-before → inner-after → outer-after
         // Handler is skipped. Both after hooks run.
         #expect(log.value == [

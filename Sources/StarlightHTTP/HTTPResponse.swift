@@ -35,10 +35,11 @@ import NIOPosix
 /// in the connection Task, zero allocation.
 ///
 /// The handler is allowed to `throw`. A thrown error propagates up
-/// through `Router.handle(_:)` (which is `async throws`) and is
-/// caught by `HTTP1Codec`, which synthesises a `500 Internal Server
-/// Error` response. To customise the error response, register an
-/// error-handling middleware that wraps the handler in `do/catch`.
+/// through `HTTP1Codec.tryParse()` / `dispatchAsync()` (which invoke
+/// the handler via `try`) and is caught by the codec, which
+/// synthesises a `500 Internal Server Error` response. To customise
+/// the error response, register an error-handling middleware that
+/// wraps the handler in `do/catch`.
 public typealias HTTPHandler = @Sendable (borrowing RequestContext) throws -> HTTPResponse
 
 /// Async variant — same signature but with `async`. Runs inline in
@@ -134,8 +135,8 @@ extension HTTPResponse {
     ///
     /// Usage:
     /// ```swift
-    /// // In a handler, using the codec's per-connection buffer:
-    /// return HTTPResponse.plaintext("ok", into: &ctx.responseBuffer)
+    /// // In the codec, using its per-connection reusable buffer:
+    /// return HTTPResponse.plaintext("ok", into: &self.responseBuffer)
     /// ```
     public static func plaintext(
         _ body: String,

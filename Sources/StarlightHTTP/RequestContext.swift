@@ -77,19 +77,6 @@ public struct RequestContext: ~Copyable {
     /// Nil for bodyless requests (GET/HEAD/etc.).
     public var body: ByteBuffer?
 
-    /// Reusable response buffer. Cleared and refilled per request by
-    /// `HTTPResponse.plaintext(_:into:)` or any response builder that
-    /// accepts an `inout ByteBuffer`. `ByteBuffer` is COW, so the
-    /// returned `HTTPResponse` shares storage until the next write
-    /// triggers copy-on-write — no memcpy on the hot path.
-    ///
-    /// Used internally by the codec (400/413/500 responses) and the
-    /// router (404 responses). Handlers receive the context as
-    /// `borrowing` and cannot pass this as `inout` — for zero-alloc
-    /// responses in handlers, pre-build response buffers at startup
-    /// (as the benchmark does).
-    public var responseBuffer: ByteBuffer
-
     /// Construct an empty context.
     public init() {
         self.method = .other(raw: "")
@@ -99,7 +86,6 @@ public struct RequestContext: ~Copyable {
         self.params = Params()
         self.headers = HeaderView()
         self.body = nil
-        self.responseBuffer = ByteBufferAllocator().buffer(capacity: 512)
     }
 
     /// Reset the context between keep-alive requests on the same connection.
@@ -122,11 +108,6 @@ public struct RequestContext: ~Copyable {
         self.query.removeAll()
         self.body = nil
         self.path.clear()
-        // Note: responseBuffer is intentionally NOT cleared here.
-        // It is cleared by HTTPResponse.plaintext(_:into:) when the
-        // next response is written. If no response writes into it,
-        // stale data is harmless because the handler always produces
-        // a fresh HTTPResponse.
     }
 
     /// Decode the path to a `String` on demand. Allocates a heap

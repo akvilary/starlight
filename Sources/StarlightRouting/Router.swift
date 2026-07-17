@@ -433,43 +433,6 @@ public struct Router: Sendable {
         self = builder.build()
     }
 
-    // MARK: - Dispatch
-
-    /// Dispatch a parsed request through the router.
-    ///
-    /// This is the entry point that `HTTP1Codec` calls once the
-    /// request line + headers have been parsed. The router:
-    ///   1. Matches `(ctx.method, ctx.path)` against the routes.
-    ///   2. Populates `ctx.params` with any dynamic-segment captures.
-    ///   3. Invokes the matched handler (sync or async).
-    ///   4. Returns a 404 response if no route matched.
-    ///
-    /// Middleware is pre-composed at `RouterBuilder.build()` time —
-    /// per-request dispatch is just "call the matched handler."
-    ///
-    /// `throws` propagates errors from the handler (or from
-    /// middleware that doesn't catch them). The codec turns an
-    /// uncaught error into a `500 Internal Server Error` response.
-    public func handle(_ ctx: inout RequestContext) async throws -> HTTPResponse {
-        let method = ctx.method
-        guard let match = match(method: method, path: ctx.path) else {
-            return HTTPResponse.plaintext(
-                "404 Not Found: \(method) \(ctx.pathString)\n",
-                status: HTTPStatus(404, reasonPhrase: "Not Found"),
-                keepAlive: false,
-                into: &ctx.responseBuffer
-            )
-        }
-        ctx.params = match.params
-
-        switch match.handler {
-        case .sync(let fn):
-            return try fn(ctx)
-        case .async(let fn):
-            return try await fn(ctx)
-        }
-    }
-
     // MARK: - Matching
 
     /// Match `(method, path)` against the registered routes and return

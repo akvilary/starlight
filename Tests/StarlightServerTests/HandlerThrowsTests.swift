@@ -64,28 +64,6 @@ struct HandlerThrowsTests {
         #expect(body.contains("500 Internal Server Error"))
     }
 
-    // MARK: - Router handle propagates throws
-
-    @Test("Router.handle rethrows handler errors")
-    func routerHandleRethrows() async throws {
-        let builder = RouterBuilder()
-        builder.get("/fail") { _ in throw TestError(message: "router boom") }
-        let router = builder.build()
-
-        var ctx = RequestContext()
-        ctx.method = .GET
-        ctx.setPath("/fail")
-
-        do {
-            try await router.handle(&ctx)
-            Issue.record("expected router.handle to throw")
-        } catch let e as TestError {
-            #expect(e.message == "router boom")
-        } catch {
-            Issue.record("unexpected error type: \(error)")
-        }
-    }
-
     // MARK: - Non-throwing handlers still work
 
     @Test("Non-throwing sync handler is unaffected")
