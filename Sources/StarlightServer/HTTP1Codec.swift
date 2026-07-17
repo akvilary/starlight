@@ -37,7 +37,19 @@ import StarlightHTTP
 import StarlightRouting
 
 /// HTTP/1.1 request/response codec. One instance per connection.
-final class HTTP1Codec: @unchecked Sendable {
+///
+/// `~Copyable` enforces exclusive ownership at compile time: a codec
+/// cannot be copied, so there is never any ambiguity about which code
+/// path owns the parser state, the accumulator, or the pending route
+/// match. Each connection Task constructs one codec and consumes it
+/// when the Task ends — no shared references, no ARC traffic, no
+/// `@unchecked Sendable` override.
+///
+/// The codec is NOT `Sendable`. It is owned exclusively by a single
+/// connection Task and never crosses isolation domains. Backends that
+/// construct one must do so inside the Task that will run the
+/// connection loop.
+struct HTTP1Codec: ~Copyable {
     private let handler: HTTPHandler?
     private let router: Router?
     private var parser = HTTP1Parser()
@@ -86,7 +98,7 @@ final class HTTP1Codec: @unchecked Sendable {
     ///   growing the accumulator to gigabytes. If the projected size
     ///   exceeds `maxAccumulatorBytes`, the chunk is dropped and the
     ///   `overflowed` flag is set so the next `tryParse()` returns 413.
-    func feed(_ bytes: ByteBuffer) {
+    mutating func feed(_ bytes: ByteBuffer) {
         let projected = self.accumulator.readableBytes + bytes.readableBytes
         if projected > self.maxAccumulatorBytes {
             self.overflowed = true
@@ -97,7 +109,7 @@ final class HTTP1Codec: @unchecked Sendable {
 
     /// Feed raw bytes directly — avoids intermediate ByteBuffer allocation.
     /// Used by the io_uring/epoll backends which read into a raw buffer.
-    func feed(_ bytes: UnsafeBufferPointer<UInt8>) {
+    mutating func feed(_ bytes: UnsafeBufferPointer<UInt8>) {
         let projected = self.accumulator.readableBytes + bytes.count
         if projected > self.maxAccumulatorBytes {
             self.overflowed = true
@@ -134,7 +146,7 @@ final class HTTP1Codec: @unchecked Sendable {
     /// 500 handler throw / misconfiguration) are centralised here and
     /// in `dispatchAsync()` so backends cannot drift apart in how
     /// they synthesise these responses.
-    func tryParse() -> ParseResult {
+    mutating func tryParse() -> ParseResult {
         switch self.parseAndExtract() {
         case .incomplete:
             return .incomplete
@@ -198,7 +210,7 @@ final class HTTP1Codec: @unchecked Sendable {
     /// the async handler. The cache avoids a second `router.match()`
     /// call (which would otherwise run twice — once to discover the
     /// handler is async, once to dispatch).
-    func dispatchAsync() async -> HTTPResponse {
+    mutating func dispatchAsync() async -> HTTPResponse {
         precondition(self.pendingMatch != nil,
             "dispatchAsync() called without a preceding .needsAsync from tryParse()")
         let cached = self.pendingMatch!
@@ -226,7 +238,7 @@ final class HTTP1Codec: @unchecked Sendable {
     // MARK: - Shared helpers
 
     /// Reset state after dispatch (called by both sync and async paths).
-    internal func afterDispatch() {
+    mutating func afterDispatch() {
         self.ctx.reset()
         self.parser.reset()
         // Compact the accumulator: move unread bytes (pipelined
@@ -242,7 +254,7 @@ final class HTTP1Codec: @unchecked Sendable {
     /// `404 Not Found` response for unmatched routes. Uses the
     /// per-connection `ctx.responseBuffer` for zero-alloc error
     /// responses on keep-alive connections.
-    internal func notFoundResponse() -> HTTPResponse {
+    mutating func notFoundResponse() -> HTTPResponse {
         return HTTPResponse.plaintext(
             "404 Not Found: \(self.ctx.method) \(self.ctx.pathString)\n",
             status: HTTPStatus(404, reasonPhrase: "Not Found"),
@@ -254,7 +266,7 @@ final class HTTP1Codec: @unchecked Sendable {
     /// `500 Internal Server Error` response for misconfiguration
     /// (no router/handler wired up) — defensively returned rather
     /// than crashing when StarlightServer's precondition is bypassed.
-    internal func internalErrorResponse() -> HTTPResponse {
+    mutating func internalErrorResponse() -> HTTPResponse {
         return HTTPResponse.plaintext(
             "500 Internal Server Error\n",
             status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
@@ -274,14 +286,14 @@ final class HTTP1Codec: @unchecked Sendable {
     /// error-handling middleware (a future addition) rather than in
     /// the codec. Production builds silently convert the throw to
     /// 500; tests can verify the 500 status code.
-    internal func synthesize500(_ error: Error) -> HTTPResponse {
+    mutating func synthesize500(_ error: Error) -> HTTPResponse {
         return self.internalErrorResponse()
     }
 
     // MARK: - Internal: parsing phase
 
     /// Internal result of the parsing phase.
-    private enum ParseState {
+    fileprivate enum ParseState {
         case incomplete
         case errorResponse(HTTPResponse)  // 400, 413
         case parsed                        // ready for dispatch
@@ -290,7 +302,7 @@ final class HTTP1Codec: @unchecked Sendable {
     /// Parse one request from the accumulator. Extracts zero-copy
     /// path/body slices and advances the reader index. On error or
     /// incomplete input, resets state appropriately.
-    private func parseAndExtract() -> ParseState {
+    fileprivate mutating func parseAndExtract() -> ParseState {
         // DoS defence — flag was set by feed() when the incoming
         // chunk would have exceeded maxAccumulatorBytes.
         if self.overflowed {

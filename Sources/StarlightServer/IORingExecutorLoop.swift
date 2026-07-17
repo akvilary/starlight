@@ -212,7 +212,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                                       readBuffer: readBuffer,
                                       readBufferSize: readBufferSize)
             } else {
-                let codec: HTTP1Codec
+                var codec: HTTP1Codec
                 if let router = router {
                     codec = HTTP1Codec(router: router)
                 } else {
@@ -221,7 +221,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
                 await self?.httpLoop(fd: fd, channelId: channelId,
                                      readBuffer: readBuffer,
                                      readBufferSize: readBufferSize,
-                                     codec: codec)
+                                     codec: &codec)
             }
         }
     }
@@ -288,7 +288,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
     func httpLoop(fd: CInt, channelId: UInt32,
                   readBuffer: UnsafeMutablePointer<UInt8>,
                   readBufferSize: Int,
-                  codec: HTTP1Codec) async {
+                  codec: inout HTTP1Codec) async {
         var needsRead = true
         while true {
             parseLoop: while true {

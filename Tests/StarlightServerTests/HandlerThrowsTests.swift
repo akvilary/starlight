@@ -26,7 +26,7 @@ struct HandlerThrowsTests {
 
     @Test("Sync handler that throws → 500, connection closes")
     func syncHandlerThrows() async {
-        let codec = HTTP1Codec(handler: { _ in throw TestError(message: "boom") })
+        var codec = HTTP1Codec(handler: { _ in throw TestError(message: "boom") })
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
@@ -48,7 +48,7 @@ struct HandlerThrowsTests {
     func asyncHandlerThrows() async {
         let builder = RouterBuilder()
         builder.get("/") { _ async throws in throw TestError(message: "async boom") }
-        let codec = HTTP1Codec(router: builder.build())
+        var codec = HTTP1Codec(router: builder.build())
 
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -90,7 +90,7 @@ struct HandlerThrowsTests {
 
     @Test("Non-throwing sync handler is unaffected")
     func nonThrowingSyncHandler() async {
-        let codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
+        var codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
@@ -104,7 +104,7 @@ struct HandlerThrowsTests {
     func nonThrowingAsyncHandler() async {
         let builder = RouterBuilder()
         builder.get("/") { _ async in HTTPResponse.plaintext("ok") }
-        let codec = HTTP1Codec(router: builder.build())
+        var codec = HTTP1Codec(router: builder.build())
 
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -119,7 +119,7 @@ struct HandlerThrowsTests {
 
     @Test("tryParse handles throwing sync handler → 500")
     func tryParseThrowingSyncHandler() {
-        let codec = HTTP1Codec(handler: { _ in throw TestError(message: "sync boom") })
+        var codec = HTTP1Codec(handler: { _ in throw TestError(message: "sync boom") })
 
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")

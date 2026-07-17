@@ -24,7 +24,10 @@ extension HTTP1Codec {
     /// Mirrors the pre-A-8 async `tryParse()` signature so existing
     /// tests don't have to spell out the `switch` + `await
     /// dispatchAsync()` dance on every call site.
-    func parseAndDispatch() async -> HTTPResponse? {
+    ///
+    /// `mutating` because the underlying `tryParse()` /
+    /// `dispatchAsync()` mutate the codec's parser and accumulator.
+    mutating func parseAndDispatch() async -> HTTPResponse? {
         switch self.tryParse() {
         case .incomplete:
             return nil

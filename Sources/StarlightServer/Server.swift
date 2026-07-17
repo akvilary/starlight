@@ -416,7 +416,7 @@ extension StarlightServer {
         handler: HTTPHandler?,
         router: Router?
     ) async {
-        let codec: HTTP1Codec
+        var codec: HTTP1Codec
         if let router = router {
             codec = HTTP1Codec(router: router)
         } else if let handler = handler {

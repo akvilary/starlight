@@ -22,7 +22,7 @@ struct HTTP1CodecTests {
 
     @Test("Malformed request produces exactly one 400, then nil — no infinite loop")
     func malformedRequestSingle400() async {
-        let codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
+        var codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GARBAGE WITHOUT SPACES OR VERSION\r\n\r\n")
         codec.feed(bytes)
@@ -41,7 +41,7 @@ struct HTTP1CodecTests {
 
     @Test("Unsupported HTTP version produces one 400, then nil")
     func unsupportedVersionSingle400() async {
-        let codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
+        var codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GET / HTTP/2.0\r\n\r\n")
         codec.feed(bytes)
@@ -56,7 +56,7 @@ struct HTTP1CodecTests {
 
     @Test("Malformed header produces one 400, then nil")
     func malformedHeaderSingle400() async {
-        let codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
+        var codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
         var bytes = ByteBufferAllocator().buffer(capacity: 128)
         bytes.writeString("GET / HTTP/1.1\r\nNoColonHereJustText\r\n\r\n")
         codec.feed(bytes)
@@ -73,7 +73,7 @@ struct HTTP1CodecTests {
 
     @Test("Accumulator overflow produces one 413, then nil")
     func overflowSingle413() async {
-        let codec = HTTP1Codec(
+        var codec = HTTP1Codec(
             handler: { _ in HTTPResponse.plaintext("ok") },
             maxAccumulatorBytes: 16
         )
@@ -92,7 +92,7 @@ struct HTTP1CodecTests {
 
     @Test("Overflow detected in feed() — bytes are NOT written to accumulator")
     func overflowInFeedNotTryParse() async {
-        let codec = HTTP1Codec(
+        var codec = HTTP1Codec(
             handler: { _ in HTTPResponse.plaintext("ok") },
             maxAccumulatorBytes: 32
         )
@@ -128,7 +128,7 @@ struct HTTP1CodecTests {
 
     @Test("Valid request parses correctly after a prior error on the same codec")
     func validAfterError() async {
-        let codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
+        var codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
 
         // Feed malformed bytes.
         var bad = ByteBufferAllocator().buffer(capacity: 64)
@@ -153,7 +153,7 @@ struct HTTP1CodecTests {
 
     @Test("Two pipelined requests produce exactly two responses, then nil")
     func pipeliningTwoRequests() async {
-        let codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
+        var codec = HTTP1Codec(handler: { _ in HTTPResponse.plaintext("ok") })
         var bytes = ByteBufferAllocator().buffer(capacity: 256)
         bytes.writeString("GET /first HTTP/1.1\r\n\r\nGET /second HTTP/1.1\r\n\r\n")
         codec.feed(bytes)
@@ -172,7 +172,7 @@ struct HTTP1CodecTests {
 
     @Test("Valid GET request dispatches handler and returns its response")
     func validGetDispatches() async {
-        let codec = HTTP1Codec(handler: { ctx in
+        var codec = HTTP1Codec(handler: { ctx in
             #expect(ctx.method == .GET)
             return HTTPResponse.plaintext("hello")
         })
@@ -194,7 +194,7 @@ struct HTTP1CodecTests {
             let id = ctx.params["id"] ?? "?"
             return HTTPResponse.plaintext("user \(id)")
         }
-        let codec = HTTP1Codec(router: builder.build())
+        var codec = HTTP1Codec(router: builder.build())
         var bytes = ByteBufferAllocator().buffer(capacity: 128)
         bytes.writeString("GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
@@ -214,7 +214,7 @@ struct HTTP1CodecTests {
     func noStaleDataInErrorResponse() async {
         let builder = RouterBuilder()
         builder.get("/ok") { _ in HTTPResponse.plaintext("ok-data") }
-        let codec = HTTP1Codec(router: builder.build())
+        var codec = HTTP1Codec(router: builder.build())
 
         // Request 1: valid → handler writes "ok-data" (new buffer).
         var bytes1 = ByteBufferAllocator().buffer(capacity: 64)
