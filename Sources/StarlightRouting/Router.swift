@@ -129,20 +129,20 @@ public struct Middleware: Sendable {
         after: @escaping @Sendable (borrowing RequestContext, HTTPResponse) -> HTTPResponse = { _, r in r }
     ) {
         self.wrapSync = { next in
-            return { ctx in
+            return { ctx throws in
                 switch before(ctx) {
                 case .proceed:
-                    return after(ctx, next(ctx))
+                    return after(ctx, try next(ctx))
                 case .shortCircuit(let response):
                     return after(ctx, response)
                 }
             }
         }
         self.wrapAsync = { next in
-            return { ctx async in
+            return { ctx async throws in
                 switch before(ctx) {
                 case .proceed:
-                    return after(ctx, await next(ctx))
+                    return after(ctx, try await next(ctx))
                 case .shortCircuit(let response):
                     return after(ctx, response)
                 }
@@ -334,7 +334,7 @@ public final class RouterBuilder {
                 }
                 return .sync(h)
             }
-            var h: AsyncHTTPHandler = { ctx async in fn(ctx) }
+            var h: AsyncHTTPHandler = { ctx async throws in try fn(ctx) }
             for mw in self.middlewares.reversed() {
                 h = mw.wrapAsync(h)
             }
@@ -446,7 +446,11 @@ public struct Router: Sendable {
     ///
     /// Middleware is pre-composed at `RouterBuilder.build()` time —
     /// per-request dispatch is just "call the matched handler."
-    public func handle(_ ctx: inout RequestContext) async -> HTTPResponse {
+    ///
+    /// `throws` propagates errors from the handler (or from
+    /// middleware that doesn't catch them). The codec turns an
+    /// uncaught error into a `500 Internal Server Error` response.
+    public func handle(_ ctx: inout RequestContext) async throws -> HTTPResponse {
         let method = ctx.method
         guard let match = match(method: method, path: ctx.path) else {
             return HTTPResponse.plaintext(
@@ -460,9 +464,9 @@ public struct Router: Sendable {
 
         switch match.handler {
         case .sync(let fn):
-            return fn(ctx)
+            return try fn(ctx)
         case .async(let fn):
-            return await fn(ctx)
+            return try await fn(ctx)
         }
     }
 

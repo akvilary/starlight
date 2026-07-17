@@ -28,7 +28,7 @@ struct RouterTests {
     // MARK: - Static routes
 
     @Test("Static route matches exact path")
-    func staticMatch() {
+    func staticMatch() throws {
         let builder = RouterBuilder()
         let registered = Box(false)
         builder.get("/health") { _ in
@@ -42,7 +42,7 @@ struct RouterTests {
         if let m = match {
             var ctx = RequestContext()
             ctx.params = m.params
-            if case .sync(let fn) = m.handler { _ = fn(ctx) }
+            if case .sync(let fn) = m.handler { _ = try fn(ctx) }
             #expect(registered.value)
         }
     }
@@ -113,7 +113,7 @@ struct RouterTests {
     // MARK: - Precedence: static beats dynamic
 
     @Test("Static route wins over dynamic when both match")
-    func staticBeatsDynamic() {
+    func staticBeatsDynamic() throws {
         let builder = RouterBuilder()
         let hitDynamic = Box(false)
         let hitStatic = Box(false)
@@ -133,14 +133,14 @@ struct RouterTests {
         if let m = match {
             var ctx = RequestContext()
             ctx.params = m.params
-            if case .sync(let fn) = m.handler { _ = fn(ctx) }
+            if case .sync(let fn) = m.handler { _ = try fn(ctx) }
         }
         #expect(hitStatic.value)
         #expect(!hitDynamic.value)
     }
 
     @Test("Dynamic route still matches when static doesn't apply")
-    func dynamicWhenNoStatic() {
+    func dynamicWhenNoStatic() throws {
         let builder = RouterBuilder()
         let hitDynamic = Box(false)
         builder.get("/users/me") { _ in HTTPResponse.plaintext("static") }
@@ -155,7 +155,7 @@ struct RouterTests {
         if let m = match {
             var ctx = RequestContext()
             ctx.params = m.params
-            if case .sync(let fn) = m.handler { _ = fn(ctx) }
+            if case .sync(let fn) = m.handler { _ = try fn(ctx) }
         }
         #expect(hitDynamic.value)
     }
@@ -174,7 +174,7 @@ struct RouterTests {
     }
 
     @Test("Same path different methods route to different handlers")
-    func samePathDifferentMethods() {
+    func samePathDifferentMethods() throws {
         let builder = RouterBuilder()
         let hit = Box("")
         builder.get("/items") { _ in hit.value = "get"; return HTTPResponse.plaintext("g") }
@@ -189,7 +189,7 @@ struct RouterTests {
                 continue
             }
             var ctx = RequestContext()
-            if case .sync(let fn) = m.handler { _ = fn(ctx) }
+            if case .sync(let fn) = m.handler { _ = try fn(ctx) }
             #expect(hit.value == expected)
         }
     }
@@ -236,12 +236,12 @@ struct RouterTests {
     // MARK: - handle() dispatch through middleware
 
     @Test("handle() returns 404 response when no match")
-    func handleReturns404() async {
+    func handleReturns404() async throws {
         let builder = RouterBuilder()
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/nope")
-        let response = await builder.build().handle(&ctx)
+        let response = try await builder.build().handle(&ctx)
         // We can't easily inspect the buffer contents here without
         // pulling in ByteBuffer read APIs; we just check that the
         // response exists. The "404" string is in there.
@@ -249,7 +249,7 @@ struct RouterTests {
     }
 
     @Test("handle() invokes matched handler with params set on ctx")
-    func handleInvokesMatched() async {
+    func handleInvokesMatched() async throws {
         let builder = RouterBuilder()
         let capturedParam = Box<String?>(nil)
         builder.get("/users/:id") { ctx in
@@ -259,13 +259,13 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/users/123")
-        _ = await builder.build().handle(&ctx)
+        _ = try await builder.build().handle(&ctx)
         #expect(capturedParam.value == "123")
         #expect(ctx.params["id"] == "123")
     }
 
     @Test("Middleware wraps the matched handler")
-    func middlewareWraps() async {
+    func middlewareWraps() async throws {
         let builder = RouterBuilder()
         let log = Box<[String]>([])
         builder.use(Middleware(
@@ -279,12 +279,12 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await builder.build().handle(&ctx)
+        _ = try await builder.build().handle(&ctx)
         #expect(log.value == ["before", "handler", "after"])
     }
 
     @Test("Multiple middlewares compose outermost-first")
-    func multipleMiddlewares() async {
+    func multipleMiddlewares() async throws {
         let builder = RouterBuilder()
         let log = Box<[String]>([])
         builder.use(Middleware(
@@ -302,7 +302,7 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await builder.build().handle(&ctx)
+        _ = try await builder.build().handle(&ctx)
         #expect(log.value == [
             "outer-before", "inner-before", "handler",
             "inner-after", "outer-after"
@@ -310,7 +310,7 @@ struct RouterTests {
     }
 
     @Test("Middleware applies to async handlers")
-    func middlewareWrapsAsync() async {
+    func middlewareWrapsAsync() async throws {
         let builder = RouterBuilder()
         let log = Box<[String]>([])
         builder.use(Middleware(
@@ -324,12 +324,12 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await builder.build().handle(&ctx)
+        _ = try await builder.build().handle(&ctx)
         #expect(log.value == ["before", "handler", "after"])
     }
 
     @Test("Middleware shortCircuit skips handler")
-    func middlewareShortCircuit() async {
+    func middlewareShortCircuit() async throws {
         let builder = RouterBuilder()
         let handlerCalled = Box(false)
         builder.use(Middleware(
@@ -347,14 +347,14 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/blocked")
-        let response = await builder.build().handle(&ctx)
+        let response = try await builder.build().handle(&ctx)
         #expect(!handlerCalled.value)
         let body = response.headerBuffer.getString(at: 0, length: response.headerBuffer.readableBytes)
         #expect(body?.contains("denied") == true)
     }
 
     @Test("Short-circuit in inner middleware still runs outer middleware's after")
-    func shortCircuitOuterAfterRuns() async {
+    func shortCircuitOuterAfterRuns() async throws {
         let builder = RouterBuilder()
         let log = Box<[String]>([])
         // Outer middleware — its after MUST run even when inner short-circuits.
@@ -377,7 +377,7 @@ struct RouterTests {
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await builder.build().handle(&ctx)
+        _ = try await builder.build().handle(&ctx)
         // outer-before → inner-before → inner-after → outer-after
         // Handler is skipped. Both after hooks run.
         #expect(log.value == [

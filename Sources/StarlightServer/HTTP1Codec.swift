@@ -129,7 +129,13 @@ final class HTTP1Codec: @unchecked Sendable {
             self.ctx.params = m.params
             switch m.handler {
             case .sync(let fn):
-                let r = fn(self.ctx)
+                let r: HTTPResponse
+                do {
+                    r = try fn(self.ctx)
+                } catch {
+                    self.afterDispatch()
+                    return .response(self.synthesize500(error))
+                }
                 self.afterDispatch()
                 return .response(r)
             case .async:
@@ -138,7 +144,13 @@ final class HTTP1Codec: @unchecked Sendable {
                 return .needsAsync
             }
         } else if let handler = self.handler {
-            let r = handler(self.ctx)
+            let r: HTTPResponse
+            do {
+                r = try handler(self.ctx)
+            } catch {
+                self.afterDispatch()
+                return .response(self.synthesize500(error))
+            }
             self.afterDispatch()
             return .response(r)
         } else {
@@ -165,16 +177,31 @@ final class HTTP1Codec: @unchecked Sendable {
             // Use cached match — avoids redundant router.match() call.
             self.pendingMatch = nil
             self.ctx.params = cached.params
-            switch cached.handler {
-            case .sync(let fn):
-                response = fn(self.ctx)
-            case .async(let fn):
-                response = await fn(self.ctx)
+            do {
+                switch cached.handler {
+                case .sync(let fn):
+                    response = try fn(self.ctx)
+                case .async(let fn):
+                    response = try await fn(self.ctx)
+                }
+            } catch {
+                self.afterDispatch()
+                return self.synthesize500(error)
             }
         } else if let router = self.router {
-            response = await router.handle(&self.ctx)
+            do {
+                response = try await router.handle(&self.ctx)
+            } catch {
+                self.afterDispatch()
+                return self.synthesize500(error)
+            }
         } else if let handler = self.handler {
-            response = handler(self.ctx)
+            do {
+                response = try handler(self.ctx)
+            } catch {
+                self.afterDispatch()
+                return self.synthesize500(error)
+            }
         } else {
             response = HTTPResponse.plaintext(
                 "500 Internal Server Error\n",
@@ -201,6 +228,27 @@ final class HTTP1Codec: @unchecked Sendable {
         self.accumulator.discardReadBytes()
     }
 
+    /// Synthesise a `500 Internal Server Error` response for an
+    /// uncaught handler error. The connection is closed after the
+    /// response is written (`keepAlive: false`) — a thrown error
+    /// may indicate corrupted state, so we don't trust the
+    /// connection to recover.
+    ///
+    /// The error itself is intentionally not logged at this layer:
+    /// stderr is global mutable state under Swift 6 strict
+    /// concurrency, and a logging strategy belongs in user-supplied
+    /// error-handling middleware (a future addition) rather than in
+    /// the codec. Production builds silently convert the throw to
+    /// 500; tests can verify the 500 status code.
+    internal func synthesize500(_ error: Error) -> HTTPResponse {
+        return HTTPResponse.plaintext(
+            "500 Internal Server Error\n",
+            status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
+            keepAlive: false,
+            into: &self.responseBuffer
+        )
+    }
+
     /// Try to parse and dispatch one complete request from the
     /// accumulator. Returns the response, or `nil` if the
     /// accumulator doesn't have a complete request yet.
@@ -217,9 +265,17 @@ final class HTTP1Codec: @unchecked Sendable {
         // Invoke the user handler (or the router).
         let response: HTTPResponse
         if let router = self.router {
-            response = await router.handle(&self.ctx)
+            do {
+                response = try await router.handle(&self.ctx)
+            } catch {
+                response = self.synthesize500(error)
+            }
         } else if let handler = self.handler {
-            response = handler(self.ctx)
+            do {
+                response = try handler(self.ctx)
+            } catch {
+                response = self.synthesize500(error)
+            }
         } else {
             response = HTTPResponse.plaintext(
                 "500 Internal Server Error\n",

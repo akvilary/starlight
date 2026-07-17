@@ -33,13 +33,21 @@ import NIOPosix
 /// Closure that, given a parsed request context, produces an HTTP
 /// response. The handler runs **synchronously** — directly inline
 /// in the connection Task, zero allocation.
-public typealias HTTPHandler = @Sendable (borrowing RequestContext) -> HTTPResponse
+///
+/// The handler is allowed to `throw`. A thrown error propagates up
+/// through `Router.handle(_:)` (which is `async throws`) and is
+/// caught by `HTTP1Codec`, which synthesises a `500 Internal Server
+/// Error` response. To customise the error response, register an
+/// error-handling middleware that wraps the handler in `do/catch`.
+public typealias HTTPHandler = @Sendable (borrowing RequestContext) throws -> HTTPResponse
 
 /// Async variant — same signature but with `async`. Runs inline in
 /// the connection Task via `await`, **zero Task-per-request
 /// allocation** (the connection Task is the only Task; async
 /// handlers are continuations within it, not spawned Tasks).
-public typealias AsyncHTTPHandler = @Sendable (borrowing RequestContext) async -> HTTPResponse
+///
+/// See `HTTPHandler` for the `throws` semantics.
+public typealias AsyncHTTPHandler = @Sendable (borrowing RequestContext) async throws -> HTTPResponse
 
 /// Dispatch kind for a registered route. Either sync or async.
 /// Stored in `Route` so the codec can branch at dispatch time.
