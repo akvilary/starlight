@@ -393,18 +393,25 @@ public struct HTTP1Parser: ~Copyable {
                 }
                 contentLength = cl
             } else {
-                // Multiple CL headers — verify all values are identical.
+                // Multiple CL headers — RFC 7230 §3.3.2 says a server
+                // MAY reject requests where the values differ
+                // (anti-smuggling defence).
+                //
+                // Invariant: `contentLengthCount > 1` ⇒ at least two
+                // CL header lines were stored in `ctx.headers` during
+                // stepHeaders (the counter is incremented only when
+                // `isContentLength(...)` returns true, which itself
+                // only fires for a line that the parser has already
+                // validated and consumed). Therefore `values(for:)`
+                // is guaranteed non-empty.
+                //
+                // The precondition surfaces any future drift between
+                // `isContentLength` (which decides what to count) and
+                // `matchLineRange`/`forEachValue` (which decide what
+                // to materialise) as an immediate, diagnosable trap
+                // rather than a silent out-of-bounds access.
                 let clValues = ctx.headers.values(for: "Content-Length")
-                guard let first = clValues.first else {
-                    contentLength = nil
-                    // Skip to body determination below
-                    if let cl = contentLength, cl > 0 {
-                        state = .body(remaining: cl)
-                    } else {
-                        state = .complete
-                    }
-                    return
-                }
+                let first = clValues[0]
                 guard clValues.dropFirst().allSatisfy({ $0 == first }) else {
                     state = .error
                     throw HTTP1ParseError.invalidContentLength
