@@ -83,6 +83,28 @@ public struct QueryView: Sendable {
         ))
     }
 
+    /// Span-based overload (SE-0447). Same semantics as the
+    /// `UnsafeBufferPointer` version, but the source is a borrowing
+    /// `Span<UInt8>` — the parser's preferred input form.
+    @inlinable
+    internal mutating func copyBlock(
+        from span: borrowing Span<UInt8>,
+        offset: Int,
+        count: Int
+    ) {
+        self.block.clear()
+        guard count > 0 else { return }
+        // Bridge the Span to UnsafeBufferPointer for direct writeBytes.
+        // The bridge is zero-allocation (UnsafeBufferPointer is a
+        // stack struct over the span's storage).
+        span.withUnsafeBufferPointer { ptr in
+            self.block.writeBytes(UnsafeBufferPointer(
+                start: ptr.baseAddress!.advanced(by: offset),
+                count: count
+            ))
+        }
+    }
+
     // MARK: - Public lookup API
 
     /// Look up the first value for `name`, URL-decoded. Returns `nil`

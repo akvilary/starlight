@@ -24,7 +24,7 @@ struct QueryViewTests {
         var ctx = RequestContext()
         let bytes = Array(raw.utf8)
         let complete = try bytes.withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete, "Request did not parse to completion")
         return ctx

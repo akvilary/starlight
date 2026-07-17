@@ -73,6 +73,24 @@ public struct HeaderView: Sendable {
         ))
     }
 
+    /// Span-based overload (SE-0447). Bridges to UnsafeBufferPointer
+    /// for direct writeBytes — zero allocation.
+    @inlinable
+    internal mutating func copyBlock(
+        from span: borrowing Span<UInt8>,
+        offset: Int,
+        count: Int
+    ) {
+        self.block.clear()
+        guard count > 0 else { return }
+        span.withUnsafeBufferPointer { ptr in
+            self.block.writeBytes(UnsafeBufferPointer(
+                start: ptr.baseAddress!.advanced(by: offset),
+                count: count
+            ))
+        }
+    }
+
     // MARK: - Public lookup API
 
     /// Look up the first value for `name`, case-insensitive. Returns

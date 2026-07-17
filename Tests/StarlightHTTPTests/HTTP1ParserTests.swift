@@ -23,7 +23,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         #expect(ctx.method == .GET)
@@ -35,7 +35,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         #expect(ctx.method == .POST)
@@ -58,7 +58,7 @@ struct HTTP1ParserTests {
             var parser = HTTP1Parser()
             var ctx = RequestContext()
             let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
             #expect(complete, "Request did not parse to completion: \(raw)")
             #expect(ctx.method == expected, "Method mismatch for: \(raw)")
@@ -71,7 +71,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         #expect(ctx.method == .other(raw: "BREW"))
@@ -85,7 +85,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
     }
@@ -97,7 +97,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -109,7 +109,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -129,7 +129,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         #expect(ctx.method == .GET)
@@ -150,7 +150,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         // Leading whitespace is stripped by HeaderView.
@@ -169,7 +169,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -187,7 +187,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         // Parser records body location but does NOT copy — the codec
@@ -206,7 +206,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         #expect(parser.bodyLength == 0)
@@ -224,7 +224,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -241,7 +241,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -258,7 +258,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -275,7 +275,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -293,7 +293,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -311,7 +311,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         #expect(parser.bodyLength == 5)
@@ -330,7 +330,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -349,7 +349,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -365,7 +365,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -382,7 +382,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         #expect(throws: HTTP1ParseError.self) {
             try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
     }
@@ -397,7 +397,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser(maxHeaderCount: 100)
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
     }
@@ -420,12 +420,12 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
 
         let complete1 = try firstChunk.withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(!complete1, "Should be incomplete after first partial")
 
         let complete2 = try secondChunk.withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete2, "Should be complete after second feed")
         #expect(ctx.method == .GET)
@@ -444,7 +444,7 @@ struct HTTP1ParserTests {
         for end in 1...raw.count {
             let accumulated = Array(raw.prefix(end))
             lastComplete = try accumulated.withUnsafeBufferPointer { ptr -> Bool in
-                try parser.feed(ptr, into: &ctx)
+                try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
             }
         }
         #expect(lastComplete)
@@ -464,7 +464,7 @@ struct HTTP1ParserTests {
 
         // Feed both requests in one buffer.
         let complete1 = try combined.withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete1)
         #expect(parser.consumedBytes == raw1Bytes.count)
@@ -476,7 +476,7 @@ struct HTTP1ParserTests {
         // Feed only the tail (raw2) — the caller has dropped the bytes
         // that were consumed by the first request.
         let complete2 = try raw2Bytes.withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete2)
         #expect(ctx.method == .GET)
@@ -493,7 +493,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(complete)
         #expect(ctx.method == .GET)
@@ -507,7 +507,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         let buf: [UInt8] = []
         let complete = try buf.withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(!complete)
         #expect(parser.state == .requestLine)
@@ -519,7 +519,7 @@ struct HTTP1ParserTests {
         var parser = HTTP1Parser()
         var ctx = RequestContext()
         let complete = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(!complete)
         #expect(parser.state == .requestLine)
@@ -531,7 +531,7 @@ struct HTTP1ParserTests {
         var ctx = RequestContext()
         let raw = "GET / HTTP/1.1\r\n\r\n"
         _ = try Array(raw.utf8).withUnsafeBufferPointer { ptr -> Bool in
-            try parser.feed(ptr, into: &ctx)
+            try parser.feed(Span(_unsafeStart: ptr.baseAddress!, count: ptr.count), into: &ctx)
         }
         #expect(parser.state == .complete)
         #expect(parser.consumedBytes > 0)

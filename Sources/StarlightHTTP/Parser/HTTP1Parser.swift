@@ -172,8 +172,16 @@ public struct HTTP1Parser: ~Copyable {
     ///     fields into.
     /// - Returns: `true` iff the parser has reached `.complete`.
     /// - Throws: `HTTP1ParseError` on malformed input.
+    /// Feed bytes from a `Span<UInt8>` (SE-0447). The parser reads
+    /// from `buffer[consumedBytes...]` on each call and advances.
+    ///
+    /// `Span` is `~Copyable & ~Escapable` — the parser cannot copy
+    /// it, store it, or escape it past the call. This enforces the
+    /// "parser only borrows the input" contract at compile time,
+    /// replacing the previous `UnsafeBufferPointer<UInt8>` parameter
+    /// which carried no such guarantee.
     public mutating func feed(
-        _ buffer: UnsafeBufferPointer<UInt8>,
+        _ buffer: borrowing Span<UInt8>,
         into ctx: inout RequestContext
     ) throws -> Bool {
         let count = buffer.count
@@ -224,7 +232,7 @@ public struct HTTP1Parser: ~Copyable {
     /// Parse the request line. Transitions to `.headers` on success.
     @usableFromInline
     mutating func stepRequestLine(
-        _ buffer: UnsafeBufferPointer<UInt8>,
+        _ buffer: borrowing Span<UInt8>,
         count: Int,
         into ctx: inout RequestContext
     ) throws {
@@ -323,7 +331,7 @@ public struct HTTP1Parser: ~Copyable {
     /// `.complete` on end-of-headers (Phase 2 does not parse bodies).
     @usableFromInline
     mutating func stepHeaders(
-        _ buffer: UnsafeBufferPointer<UInt8>,
+        _ buffer: borrowing Span<UInt8>,
         count: Int,
         into ctx: inout RequestContext
     ) throws {
@@ -466,56 +474,60 @@ public struct HTTP1Parser: ~Copyable {
     @usableFromInline
     @inline(__always)
     func decodeMethod(
-        _ buffer: UnsafeBufferPointer<UInt8>,
+        _ buffer: borrowing Span<UInt8>,
         offset: Int,
         length: Int
     ) -> HTTPMethod {
-        let base = buffer.baseAddress!
         switch length {
         case 3:
-            if base[offset] == 0x47 && base[offset + 1] == 0x45 && base[offset + 2] == 0x54 {
+            if buffer[offset] == 0x47 && buffer[offset + 1] == 0x45 && buffer[offset + 2] == 0x54 {
                 return .GET
             }
-            if base[offset] == 0x50 && base[offset + 1] == 0x55 && base[offset + 2] == 0x54 {
+            if buffer[offset] == 0x50 && buffer[offset + 1] == 0x55 && buffer[offset + 2] == 0x54 {
                 return .PUT
             }
         case 4:
-            if base[offset] == 0x50 && base[offset + 1] == 0x4F && base[offset + 2] == 0x53 && base[offset + 3] == 0x54 {
+            if buffer[offset] == 0x50 && buffer[offset + 1] == 0x4F && buffer[offset + 2] == 0x53 && buffer[offset + 3] == 0x54 {
                 return .POST
             }
-            if base[offset] == 0x48 && base[offset + 1] == 0x45 && base[offset + 2] == 0x41 && base[offset + 3] == 0x44 {
+            if buffer[offset] == 0x48 && buffer[offset + 1] == 0x45 && buffer[offset + 2] == 0x41 && buffer[offset + 3] == 0x44 {
                 return .HEAD
             }
         case 5:
-            if base[offset] == 0x50 && base[offset + 1] == 0x41 && base[offset + 2] == 0x54 && base[offset + 3] == 0x43 && base[offset + 4] == 0x48 {
+            if buffer[offset] == 0x50 && buffer[offset + 1] == 0x41 && buffer[offset + 2] == 0x54 && buffer[offset + 3] == 0x43 && buffer[offset + 4] == 0x48 {
                 return .PATCH
             }
-            if base[offset] == 0x54 && base[offset + 1] == 0x52 && base[offset + 2] == 0x41 && base[offset + 3] == 0x43 && base[offset + 4] == 0x45 {
+            if buffer[offset] == 0x54 && buffer[offset + 1] == 0x52 && buffer[offset + 2] == 0x41 && buffer[offset + 3] == 0x43 && buffer[offset + 4] == 0x45 {
                 return .TRACE
             }
         case 6:
-            if base[offset] == 0x44 && base[offset + 1] == 0x45 && base[offset + 2] == 0x4C && base[offset + 3] == 0x45 && base[offset + 4] == 0x54 && base[offset + 5] == 0x45 {
+            if buffer[offset] == 0x44 && buffer[offset + 1] == 0x45 && buffer[offset + 2] == 0x4C && buffer[offset + 3] == 0x45 && buffer[offset + 4] == 0x54 && buffer[offset + 5] == 0x45 {
                 return .DELETE
             }
         case 7:
-            if base[offset] == 0x4F && base[offset + 1] == 0x50 && base[offset + 2] == 0x54 && base[offset + 3] == 0x49 && base[offset + 4] == 0x4F && base[offset + 5] == 0x4E && base[offset + 6] == 0x53 {
+            if buffer[offset] == 0x4F && buffer[offset + 1] == 0x50 && buffer[offset + 2] == 0x54 && buffer[offset + 3] == 0x49 && buffer[offset + 4] == 0x4F && buffer[offset + 5] == 0x4E && buffer[offset + 6] == 0x53 {
                 return .OPTIONS
             }
-            if base[offset] == 0x43 && base[offset + 1] == 0x4F && base[offset + 2] == 0x4E && base[offset + 3] == 0x4E && base[offset + 4] == 0x45 && base[offset + 5] == 0x43 && base[offset + 6] == 0x54 {
+            if buffer[offset] == 0x43 && buffer[offset + 1] == 0x4F && buffer[offset + 2] == 0x4E && buffer[offset + 3] == 0x4E && buffer[offset + 4] == 0x45 && buffer[offset + 5] == 0x43 && buffer[offset + 6] == 0x54 {
                 return .CONNECT
             }
         default:
             break
         }
-        return .other(raw: String(decoding: UnsafeBufferPointer(
-            start: base.advanced(by: offset), count: length
-        ), as: UTF8.self))
+        // Unknown method — materialise via a byte-by-byte copy from the
+        // Span (Span is ~Escapable, cannot be passed to String(decoding:)
+        // directly). For the rare unknown-method case this allocation is
+        // acceptable.
+        var raw: [UInt8] = []
+        raw.reserveCapacity(length)
+        for i in 0..<length { raw.append(buffer[offset + i]) }
+        return .other(raw: String(decoding: raw, as: UTF8.self))
     }
 
     @usableFromInline
     @inline(__always)
     mutating func validateVersion(
-        _ buffer: UnsafeBufferPointer<UInt8>,
+        _ buffer: borrowing Span<UInt8>,
         offset: Int,
         length: Int
     ) throws {
@@ -524,20 +536,20 @@ public struct HTTP1Parser: ~Copyable {
             state = .error
             throw HTTP1ParseError.unsupportedVersion
         }
-        let base = buffer.baseAddress!
-        // Inline byte comparison — no [UInt8] allocation.
-        if  base[offset]     != 0x48  // H
-            || base[offset + 1] != 0x54  // T
-            || base[offset + 2] != 0x54  // T
-            || base[offset + 3] != 0x50  // P
-            || base[offset + 4] != 0x2F  // /
-            || base[offset + 5] != 0x31  // 1
-            || base[offset + 6] != 0x2E  // .
+        // Inline byte comparison via Span subscript (bounds-checked
+        // in debug, zero-cost in release).
+        if  buffer[offset]     != 0x48  // H
+            || buffer[offset + 1] != 0x54  // T
+            || buffer[offset + 2] != 0x54  // T
+            || buffer[offset + 3] != 0x50  // P
+            || buffer[offset + 4] != 0x2F  // /
+            || buffer[offset + 5] != 0x31  // 1
+            || buffer[offset + 6] != 0x2E  // .
         {
             state = .error
             throw HTTP1ParseError.unsupportedVersion
         }
-        if base[offset + 7] != 0x30 && base[offset + 7] != 0x31 {
+        if buffer[offset + 7] != 0x30 && buffer[offset + 7] != 0x31 {
             state = .error
             throw HTTP1ParseError.unsupportedVersion
         }
@@ -576,12 +588,11 @@ public struct HTTP1Parser: ~Copyable {
     @usableFromInline
     @inline(__always)
     static func isContentLength(
-        _ buffer: UnsafeBufferPointer<UInt8>, _ s: Int, _ e: Int
+        _ buffer: borrowing Span<UInt8>, _ s: Int, _ e: Int
     ) -> Bool {
         guard e &- s >= 15 else { return false }
-        let b = buffer.baseAddress!
         func ci(_ i: Int, _ upper: UInt8) -> Bool {
-            let v = b[i]
+            let v = buffer[i]
             return v == upper || v == (upper | 0x20)
         }
         return ci(s, 0x43)       // C
@@ -591,26 +602,25 @@ public struct HTTP1Parser: ~Copyable {
             && ci(s &+ 4, 0x45)  // E
             && ci(s &+ 5, 0x4E)  // N
             && ci(s &+ 6, 0x54)  // T
-            && b[s &+ 7] == 0x2D // -
+            && buffer[s &+ 7] == 0x2D  // -
             && ci(s &+ 8, 0x4C)  // L
             && ci(s &+ 9, 0x45)  // E
             && ci(s &+ 10, 0x4E) // N
             && ci(s &+ 11, 0x47) // G
             && ci(s &+ 12, 0x54) // T
             && ci(s &+ 13, 0x48) // H
-            && b[s &+ 14] == 0x3A// :
+            && buffer[s &+ 14] == 0x3A  // :
     }
 
     /// Case-insensitive check for `Transfer-Encoding:` (17 name bytes + colon).
     @usableFromInline
     @inline(__always)
     static func isTransferEncoding(
-        _ buffer: UnsafeBufferPointer<UInt8>, _ s: Int, _ e: Int
+        _ buffer: borrowing Span<UInt8>, _ s: Int, _ e: Int
     ) -> Bool {
         guard e &- s >= 18 else { return false }
-        let b = buffer.baseAddress!
         func ci(_ i: Int, _ upper: UInt8) -> Bool {
-            let v = b[i]
+            let v = buffer[i]
             return v == upper || v == (upper | 0x20)
         }
         return ci(s, 0x54)        // T
@@ -621,7 +631,7 @@ public struct HTTP1Parser: ~Copyable {
             && ci(s &+ 5, 0x46)   // F
             && ci(s &+ 6, 0x45)   // E
             && ci(s &+ 7, 0x52)   // R
-            && b[s &+ 8] == 0x2D  // -
+            && buffer[s &+ 8] == 0x2D  // -
             && ci(s &+ 9, 0x45)   // E
             && ci(s &+ 10, 0x4E)  // N
             && ci(s &+ 11, 0x43)  // C
@@ -630,6 +640,6 @@ public struct HTTP1Parser: ~Copyable {
             && ci(s &+ 14, 0x49)  // I
             && ci(s &+ 15, 0x4E)  // N
             && ci(s &+ 16, 0x47)  // G
-            && b[s &+ 17] == 0x3A // :
+            && buffer[s &+ 17] == 0x3A  // :
     }
 }

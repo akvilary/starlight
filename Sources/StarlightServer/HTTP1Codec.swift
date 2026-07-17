@@ -330,9 +330,11 @@ struct HTTP1Codec: ~Copyable {
                     consumed = 0
                     return
                 }
-                let buf = UnsafeBufferPointer(start: base, count: typedBytes.count)
+                // Build a Span over the readable bytes — the parser's
+                // preferred input form (memory-safe, ~Escapable).
+                let span = Span(_unsafeStart: base, count: typedBytes.count)
                 do {
-                    complete = try self.parser.feed(buf, into: &self.ctx)
+                    complete = try self.parser.feed(span, into: &self.ctx)
                     consumed = self.parser.consumedBytes
                 } catch let err as HTTP1ParseError {
                     parseError = err

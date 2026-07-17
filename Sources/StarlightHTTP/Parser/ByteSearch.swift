@@ -72,4 +72,26 @@ public enum SearchAlgorithm {
         guard start < hi else { return nil }
         return findByte(needle, in: bytes.baseAddress!, from: start, to: hi)
     }
+
+    /// Convenience overload for `Span<UInt8>` (SE-0447) — bridges to
+    /// the canonical `UnsafePointer` implementation via the span's
+    /// `withUnsafeBufferPointer`. Zero allocation: the bridge is a
+    /// stack-local `UnsafeBufferPointer` view over the span's storage.
+    ///
+    /// The `Span` overload is the preferred entry point for new code
+    /// — `Span` is `~Copyable & ~Escapable`, so it carries the
+    /// borrowing contract in its type.
+    @inlinable
+    @inline(__always)
+    public static func findByte(
+        _ needle: UInt8,
+        in span: borrowing Span<UInt8>,
+        from start: Int,
+        to end: Int
+    ) -> Int? {
+        guard start < end else { return nil }
+        return span.withUnsafeBufferPointer { ptr -> Int? in
+            findByte(needle, in: ptr.baseAddress!, from: start, to: end)
+        }
+    }
 }
