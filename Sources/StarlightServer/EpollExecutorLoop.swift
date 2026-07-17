@@ -10,6 +10,17 @@
 //  surface, same connection/HTTP codec wiring, but uses readiness
 //  notifications on epoll instead of io_uring submissions.
 //
+//  ─── Connection model (Tokio-style) ──────────────────────────────────
+//
+//  Each accepted connection spawns a Task via:
+//
+//      Task(executorPreference: eventLoop) { ... }
+//
+//  (SE-0431, `TaskExecutor` protocol). The Task runs on the loop's
+//  thread, owns its state on its own frame (fd, read buffer, codec),
+//  and tears down via `defer` on exit. No per-connection actor is
+//  needed — the loop's executor pins the Task directly.
+//
 //===----------------------------------------------------------------------===//
 
 #if os(Linux)
@@ -26,60 +37,16 @@ import StarlightRouting
 import Glibc
 #endif
 
-// MARK: - ExecutorConnection
+// MARK: - ConnectionState
 //
-// Identical to the io_uring variant but renamed to avoid an ambiguous
-// type lookup when both backends are compiled in (Linux + Lifetimes).
-// A future cleanup would extract these into a shared file with a
-// protocol that both IORingExecutorLoop and EpollExecutorLoop conform
-// to — but for now we keep the io_uring path untouched.
+// Immutable bag of per-connection state that needs to outlive the
+// Task frame — specifically, the channelId is needed by the loop's
+// `connections` table for shutdown cancellation. The fd is stored as
+// the dict key. Everything else (codec, read buffer) is owned by the
+// per-connection Task directly.
 
-final class EpollConnection: @unchecked Sendable {
+struct EpollConnectionState: Sendable {
     let channelId: UInt32
-    let fd: CInt
-    let readBuffer: UnsafeMutablePointer<UInt8>
-    let readBufferSize: Int
-    let codec: HTTP1Codec?
-
-    init(channelId: UInt32, fd: CInt, readBufferSize: Int, isEchoMode: Bool,
-         router: Router?, handler: HTTPHandler?) {
-        self.channelId = channelId
-        self.fd = fd
-        self.readBufferSize = readBufferSize
-        self.readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
-        if isEchoMode {
-            self.codec = nil
-        } else if let router = router {
-            self.codec = HTTP1Codec(router: router)
-        } else {
-            self.codec = HTTP1Codec(handler: handler!)
-        }
-    }
-
-    deinit { readBuffer.deallocate() }
-}
-
-// MARK: - ConnectionActor
-
-final actor EpollConnectionActor {
-    nonisolated let _executor: UnownedSerialExecutor
-
-    init(_ executor: UnownedSerialExecutor) {
-        self._executor = executor
-    }
-
-    nonisolated var unownedExecutor: UnownedSerialExecutor {
-        _executor
-    }
-
-    func handle(fd: CInt, conn: EpollConnection,
-                loop: EpollExecutorLoop) async {
-        if conn.codec == nil {
-            await loop.echoLoop(fd: fd, conn: conn)
-        } else {
-            await loop.httpLoop(fd: fd, conn: conn)
-        }
-    }
 }
 
 // MARK: - EpollExecutorLoop (HTTP-specific wrapper around PollEventLoop)
@@ -104,9 +71,12 @@ final class EpollExecutorLoop: @unchecked Sendable {
     /// explicit cancellation is unconditional and releases the closure
     /// immediately).
     private var listenerWatchId: UInt32 = 0
-    private var connections: [CInt: EpollConnection] = [:]
+    /// fd → channelId of every active connection. Used by shutdown's
+    /// drainConnections() to cancel channels and close fds. Mutated
+    /// only on the loop thread (handleAccept, closeConnection,
+    /// drainConnections all run there).
+    private var connections: [CInt: EpollConnectionState] = [:]
     private var connectionCount: Int = 0
-    private var connActor: EpollConnectionActor? = nil
 
     // MARK: Init
 
@@ -194,7 +164,7 @@ final class EpollExecutorLoop: @unchecked Sendable {
     /// readiness" contract so the kernel does not re-fire the event until
     /// a new connection arrives. Each accepted fd is handed off to
     /// `setupNewConnection`, which spawns a connection-loop Task pinned
-    /// to this loop's executor.
+    /// to this loop's executor via `Task(executorPreference:)`.
     private func handleAccept() {
         while !eventLoop.isStopped {
             let fd = sl_accept4(listenerFd)
@@ -214,19 +184,48 @@ final class EpollExecutorLoop: @unchecked Sendable {
         connectionCount += 1
 
         let channelId = eventLoop.registerChannel()
-        let conn = EpollConnection(
-            channelId: channelId, fd: fd,
-            readBufferSize: readBufferSize,
-            isEchoMode: isEchoMode,
-            router: router, handler: handler
-        )
-        connections[fd] = conn
+        connections[fd] = EpollConnectionState(channelId: channelId)
 
-        if connActor == nil {
-            connActor = EpollConnectionActor(eventLoop.cachedExecutor)
-        }
-        Task {
-            await connActor!.handle(fd: fd, conn: conn, loop: self)
+        // Spawn a Task pinned directly to the loop via TaskExecutor
+        // (SE-0431). No actor wrapper needed — `executorPreference`
+        // enqueues the Task's first job onto the loop, and subsequent
+        // continuations (after `await eventLoop.read/write`) resume on
+        // the same loop thread. State is owned by the Task frame:
+        // readBuffer allocated here, codec constructed here.
+        //
+        // Capture list is `[weak self]` so the loop can deinit if the
+        // Task outlives it (defensive — shutdown() drains connections
+        // explicitly).
+        let isEchoMode = self.isEchoMode
+        let readBufferSize = self.readBufferSize
+        let router = self.router
+        let handler = self.handler
+        Task(executorPreference: eventLoop) { [weak self] in
+            // Per-connection read buffer — owned by this Task,
+            // deallocated on exit (echo / HTTP / error path alike).
+            let readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
+            defer { readBuffer.deallocate() }
+
+            if isEchoMode {
+                await self?.echoLoop(fd: fd, channelId: channelId,
+                                      readBuffer: readBuffer,
+                                      readBufferSize: readBufferSize)
+            } else {
+                // Codec — constructed here, owned by this Task. Will
+                // become `~Copyable struct` in Phase C; for now it's
+                // still a class, but the ownership is unambiguous: no
+                // other reference exists.
+                let codec: HTTP1Codec
+                if let router = router {
+                    codec = HTTP1Codec(router: router)
+                } else {
+                    codec = HTTP1Codec(handler: handler!)
+                }
+                await self?.httpLoop(fd: fd, channelId: channelId,
+                                     readBuffer: readBuffer,
+                                     readBufferSize: readBufferSize,
+                                     codec: codec)
+            }
         }
     }
 
@@ -243,17 +242,20 @@ final class EpollExecutorLoop: @unchecked Sendable {
     // would be a use-after-free (the kernel may have handed that fd to
     // another thread's socket()/accept4()).
     func closeConnection(fd: CInt) {
-        if let conn = connections.removeValue(forKey: fd) {
+        if let state = connections.removeValue(forKey: fd) {
             connectionCount -= 1
-            eventLoop.cancelChannel(conn.channelId)
+            eventLoop.cancelChannel(state.channelId)
             Glibc.close(fd)
         }
     }
 
     private func drainConnections() {
-        for (_, conn) in connections {
-            eventLoop.cancelChannel(conn.channelId)
-            Glibc.close(conn.fd)
+        for (_, state) in connections {
+            eventLoop.cancelChannel(state.channelId)
+            // fd is closed by the connection Task on its exit (via
+            // closeConnection or by returning from the loop). Here we
+            // only cancel the channel — the Task will observe the
+            // cancelled read/write and exit.
         }
         connections.removeAll()
         connectionCount = 0
@@ -261,14 +263,16 @@ final class EpollExecutorLoop: @unchecked Sendable {
 
     // MARK: Connection loops
 
-    func echoLoop(fd: CInt, conn: EpollConnection) async {
+    func echoLoop(fd: CInt, channelId: UInt32,
+                  readBuffer: UnsafeMutablePointer<UInt8>,
+                  readBufferSize: Int) async {
         while true {
             let buf = UnsafeMutableRawBufferPointer(
-                start: UnsafeMutableRawPointer(conn.readBuffer),
-                count: conn.readBufferSize
+                start: UnsafeMutableRawPointer(readBuffer),
+                count: readBufferSize
             )
             let bytesRead = await eventLoop.read(
-                channelId: conn.channelId, fd: fd, into: buf
+                channelId: channelId, fd: fd, into: buf
             )
             guard bytesRead > 0 else {
                 closeConnection(fd: fd)
@@ -279,10 +283,10 @@ final class EpollExecutorLoop: @unchecked Sendable {
 
             var offset = 0
             while offset < bytesRead {
-                let ptr = UnsafeRawPointer(conn.readBuffer).advanced(by: offset)
+                let ptr = UnsafeRawPointer(readBuffer).advanced(by: offset)
                 let len = bytesRead - offset
                 let written = await eventLoop.write(
-                    channelId: conn.channelId, fd: fd,
+                    channelId: channelId, fd: fd,
                     from: UnsafeRawBufferPointer(start: ptr, count: len)
                 )
                 if written < 0 { break }
@@ -291,8 +295,10 @@ final class EpollExecutorLoop: @unchecked Sendable {
         }
     }
 
-    func httpLoop(fd: CInt, conn: EpollConnection) async {
-        let codec = conn.codec!
+    func httpLoop(fd: CInt, channelId: UInt32,
+                  readBuffer: UnsafeMutablePointer<UInt8>,
+                  readBufferSize: Int,
+                  codec: HTTP1Codec) async {
         var needsRead = true
         while true {
             parseLoop: while true {
@@ -303,7 +309,8 @@ final class EpollExecutorLoop: @unchecked Sendable {
                     break parseLoop
 
                 case .response(let response):
-                    await writeResponse(fd, conn, response)
+                    await writeResponse(fd: fd, channelId: channelId,
+                                        response: response)
                     if !response.keepAlive {
                         closeConnection(fd: fd)
                         return
@@ -312,7 +319,8 @@ final class EpollExecutorLoop: @unchecked Sendable {
 
                 case .needsAsync:
                     let response = await codec.dispatchAsync()
-                    await writeResponse(fd, conn, response)
+                    await writeResponse(fd: fd, channelId: channelId,
+                                        response: response)
                     if !response.keepAlive {
                         closeConnection(fd: fd)
                         return
@@ -323,11 +331,11 @@ final class EpollExecutorLoop: @unchecked Sendable {
 
             guard needsRead else { continue }
             let buf = UnsafeMutableRawBufferPointer(
-                start: UnsafeMutableRawPointer(conn.readBuffer),
-                count: conn.readBufferSize
+                start: UnsafeMutableRawPointer(readBuffer),
+                count: readBufferSize
             )
             let bytesRead = await eventLoop.read(
-                channelId: conn.channelId, fd: fd, into: buf
+                channelId: channelId, fd: fd, into: buf
             )
             guard bytesRead > 0 else {
                 closeConnection(fd: fd)
@@ -335,14 +343,14 @@ final class EpollExecutorLoop: @unchecked Sendable {
             }
             _ = loopStats.bytesReceived.add(Int64(bytesRead))
             codec.feed(UnsafeBufferPointer(
-                start: conn.readBuffer, count: bytesRead))
+                start: readBuffer, count: bytesRead))
             needsRead = false
         }
     }
 
     private func writeResponse(
-        _ fd: CInt, _ conn: EpollConnection,
-        _ response: HTTPResponse
+        fd: CInt, channelId: UInt32,
+        response: HTTPResponse
     ) async {
         let headerLen = response.headerBuffer.readableBytes
         let bodyLen = response.bodyBuffer?.readableBytes ?? 0
@@ -365,7 +373,7 @@ final class EpollExecutorLoop: @unchecked Sendable {
             if offset < headerLen {
                 let len = min(headerLen - offset, remaining)
                 written = await eventLoop.write(
-                    channelId: conn.channelId, fd: fd,
+                    channelId: channelId, fd: fd,
                     from: UnsafeRawBufferPointer(
                         start: headerBase.advanced(by: offset), count: len
                     )
@@ -374,7 +382,7 @@ final class EpollExecutorLoop: @unchecked Sendable {
                 let bodyOffset = offset - headerLen
                 let len = min(bodyLen - bodyOffset, remaining)
                 written = await eventLoop.write(
-                    channelId: conn.channelId, fd: fd,
+                    channelId: channelId, fd: fd,
                     from: UnsafeRawBufferPointer(
                         start: bodyBase.advanced(by: bodyOffset), count: len
                     )

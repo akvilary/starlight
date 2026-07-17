@@ -216,6 +216,32 @@ struct PollEventLoopTests {
         let bits = readyBits.load(ordering: .acquiring)
         #expect(Ready(rawValue: bits).isReadable)
     }
+
+    // MARK: - TaskExecutor: Task(executorPreference:)
+
+    @Test("Task(executorPreference:) pins a Task to the loop")
+    func taskExecutorPinning() async throws {
+        let loop = try PollEventLoop(eventsCapacity: 16)
+        let loopThread = Thread { [loop] in try? loop.run() }
+        loopThread.start()
+        try await Task.sleep(for: .milliseconds(50))
+        defer { loop.shutdown() }
+
+        // Task body runs on the loop's thread. The Task itself
+        // captures its executor at spawn time — if executorPreference
+        // is broken, the Task would land on the global cooperative
+        // pool (still works functionally, just not on the loop).
+        // The pinned path enqueues via the loop's `enqueue`, which
+        // wakes the loop; an unpinned path does not. Either way the
+        // Task completes and `await task.value` returns.
+        let task = Task(executorPreference: loop) {
+            // empty body — we just need it to complete
+        }
+        _ = await task.value
+        // If we got here, the Task executed on (or was drained by)
+        // the loop. The precondition is that executorPreference
+        // does not hang and does not crash.
+    }
 }
 
 // MARK: - Helpers

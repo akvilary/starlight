@@ -74,6 +74,15 @@ public final class IORingEventLoop: @unchecked Sendable {
         return ce
     }
 
+    // Cached task executor for `Task(executorPreference:)` (SE-0431).
+    private var _cachedTaskExecutor: UnownedTaskExecutor? = nil
+    public var cachedTaskExecutor: UnownedTaskExecutor {
+        if let te = _cachedTaskExecutor { return te }
+        let te = UnownedTaskExecutor(ordinary: self)
+        _cachedTaskExecutor = te
+        return te
+    }
+
     // MARK: Init
 
     public init(queueDepth: UInt32 = 4096) {
@@ -383,6 +392,20 @@ extension IORingEventLoop: SerialExecutor {
 
     public func isSameExclusiveExecutionContext(other: IORingEventLoop) -> Bool {
         other === self
+    }
+}
+
+// MARK: - TaskExecutor conformance
+//
+// See PollEventLoop's TaskExecutor extension for the rationale.
+// Lets us spawn a Task pinned to this loop directly via:
+//
+//     Task(executorPreference: loop.eventLoop) { ... }
+//
+// without going through an empty actor wrapper.
+extension IORingEventLoop: TaskExecutor {
+    public func asUnownedTaskExecutor() -> UnownedTaskExecutor {
+        return cachedTaskExecutor
     }
 }
 

@@ -123,6 +123,18 @@ public final class PollEventLoop: @unchecked Sendable {
         return ce
     }
 
+    // Cached UnownedTaskExecutor (created on first access).
+    // Used by `Task(executorPreference: loop)` — the runtime fetches
+    // this once per Task spawn, so caching avoids a fresh
+    // `UnownedTaskExecutor` struct allocation on each enqueue.
+    private var _cachedTaskExecutor: UnownedTaskExecutor? = nil
+    public var cachedTaskExecutor: UnownedTaskExecutor {
+        if let te = _cachedTaskExecutor { return te }
+        let te = UnownedTaskExecutor(ordinary: self)
+        _cachedTaskExecutor = te
+        return te
+    }
+
     // MARK: Init
 
     public init(eventsCapacity: Int = 1024) throws {
@@ -519,6 +531,30 @@ extension PollEventLoop: SerialExecutor {
 
     public func isSameExclusiveExecutionContext(other: PollEventLoop) -> Bool {
         other === self
+    }
+}
+
+// MARK: - TaskExecutor conformance
+//
+// `TaskExecutor` (SE-0431, macOS 15+/iOS 18+) lets us spawn a Task
+// pinned to this executor directly via:
+//
+//     Task(executorPreference: loop.eventLoop) {
+//         // runs on the loop's thread
+//     }
+//
+// Without this, the only way to pin a Task to a custom executor was
+// to route it through an actor with a `nonisolated unownedExecutor`
+// property — that's why EpollConnectionActor existed as an empty
+// singleton. With TaskExecutor, the actor wrapper is no longer
+// necessary; Tasks can be spawned directly against the loop.
+//
+// The implementation is trivial because `enqueue` semantics are
+// identical to SerialExecutor — the difference is only the API
+// surface (Task(executorPreference:) vs. await on actor method).
+extension PollEventLoop: TaskExecutor {
+    public func asUnownedTaskExecutor() -> UnownedTaskExecutor {
+        return cachedTaskExecutor
     }
 }
 
