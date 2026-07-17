@@ -232,12 +232,22 @@ final class EpollExecutorLoop: @unchecked Sendable {
 
     // MARK: Connection cleanup
 
+    /// Idempotent: if the fd is still in the connections table, remove
+    /// it, cancel its channel, and close the fd exactly once. If the fd
+    /// is already gone (closed by drainConnections or by a prior
+    /// closeConnection call), this is a no-op.
+    //
+    // The fd is closed ONLY when it was found in the table. A missing
+    // entry means drainConnections() (or another closeConnection) has
+    // already closed it — calling close(fd) again on a recycled fd
+    // would be a use-after-free (the kernel may have handed that fd to
+    // another thread's socket()/accept4()).
     func closeConnection(fd: CInt) {
         if let conn = connections.removeValue(forKey: fd) {
             connectionCount -= 1
             eventLoop.cancelChannel(conn.channelId)
+            Glibc.close(fd)
         }
-        Glibc.close(fd)
     }
 
     private func drainConnections() {

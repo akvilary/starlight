@@ -158,7 +158,13 @@ public final class IORingEventLoop: @unchecked Sendable {
         }
 
         // Resume any remaining waiters with errors on shutdown.
+        // Then drain the resulting jobs: each resume enqueues a Task
+        // continuation into loopJobs/poolJobs. Without this final
+        // drain, the Tasks (which hold captures of the loop, connection
+        // fds, codecs, etc.) would leak — their cleanup code (which
+        // calls closeConnection and returns) never runs.
         recoverOrphanedContinuations()
+        drainJobs()
     }
 
     public func shutdown() {

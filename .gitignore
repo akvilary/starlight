@@ -36,3 +36,5 @@ xcuserdata/
 # Benchmark temp files
 /tmp/
 bench/binaries/
+bench/results/*.log
+bench/results/*.txt
