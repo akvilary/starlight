@@ -132,13 +132,23 @@ final class IORingExecutorLoop: @unchecked Sendable {
     // MARK: Run (delegates to IORingEventLoop)
 
     func run() throws {
-        eventLoop.onWakeup = { [self] in
-            self.handleNewConnections()
+        // `[weak self]` + explicit `onWakeup = nil` in `shutdown()`
+        // breaks the retain cycle:
+        //   IORingExecutorLoop ─strong→ eventLoop
+        //   ─strong→ onWakeup closure ─strong→ IORingExecutorLoop
+        // Without this the deinit never runs and listenerFd,
+        // newConnQueue, readBuffers, and the accept pthread leak for
+        // the lifetime of the process.
+        eventLoop.onWakeup = { [weak self] in
+            self?.handleNewConnections()
         }
 
         // Start accept thread (separate from the event loop thread).
-        Thread.detachNewThread { [self] in
-            self.acceptThreadMain()
+        // `[weak self]` so the thread doesn't keep the loop alive if
+        // shutdown() raced ahead; the `self?` guard lets the thread
+        // exit cleanly when the loop is gone.
+        Thread.detachNewThread { [weak self] in
+            self?.acceptThreadMain()
         }
 
         try eventLoop.run()
@@ -147,6 +157,10 @@ final class IORingExecutorLoop: @unchecked Sendable {
     }
 
     func shutdown() {
+        // Tear down the wakeup closure before stopping the loop —
+        // releases the closure that captures `self` and breaks the
+        // retain cycle unconditionally. Idempotent.
+        eventLoop.onWakeup = nil
         eventLoop.shutdown()
     }
 

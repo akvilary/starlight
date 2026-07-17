@@ -35,3 +35,4 @@ xcuserdata/
 
 # Benchmark temp files
 /tmp/
+bench/binaries/

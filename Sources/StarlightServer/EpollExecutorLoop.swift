@@ -98,6 +98,12 @@ final class EpollExecutorLoop: @unchecked Sendable {
     internal let loopStats: ServerStats
 
     private var listenerFd: CInt = -1
+    /// channelId of the listener watch registered with `eventLoop`.
+    /// Stored so `shutdown()` can call `cancelChannel` and break the
+    /// retain cycle (the watch closure captures `self` weakly, but
+    /// explicit cancellation is unconditional and releases the closure
+    /// immediately).
+    private var listenerWatchId: UInt32 = 0
     private var connections: [CInt: EpollConnection] = [:]
     private var connectionCount: Int = 0
     private var connActor: EpollConnectionActor? = nil
@@ -149,9 +155,18 @@ final class EpollExecutorLoop: @unchecked Sendable {
         // eliminates the separate accept thread, its spinlock queue, and
         // the cross-thread wakeup per accept burst — matching the
         // mio/tokio idiom of registering the listener with the reactor.
-        _ = try eventLoop.registerWatch(fd: listenerFd, interest: .readable) { [self] ready in
+        //
+        // `[weak self]` + explicit `cancelChannel(listenerWatchId)` in
+        // `shutdown()` breaks the retain cycle:
+        //   EpollExecutorLoop ─strong→ eventLoop
+        //   ─strong→ channels[id].watch closure ─strong→ EpollExecutorLoop
+        // Without this the deinit never runs and listenerFd / readBuffers
+        // leak for the lifetime of the process.
+        listenerWatchId = try eventLoop.registerWatch(
+            fd: listenerFd, interest: .readable
+        ) { [weak self] ready in
             guard ready.isReadable else { return }
-            self.handleAccept()
+            self?.handleAccept()
         }
 
         try eventLoop.run()
@@ -160,6 +175,14 @@ final class EpollExecutorLoop: @unchecked Sendable {
     }
 
     func shutdown() {
+        // Tear down the listener watch before stopping the loop —
+        // releases the closure that captures `self` and breaks the
+        // retain cycle unconditionally. Idempotent: safe to call
+        // multiple times (cancelChannel on an unknown id is a no-op).
+        if listenerWatchId != 0 {
+            eventLoop.cancelChannel(listenerWatchId)
+            listenerWatchId = 0
+        }
         eventLoop.shutdown()
     }
 
