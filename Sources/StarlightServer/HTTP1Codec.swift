@@ -171,6 +171,9 @@ struct HTTP1Codec: ~Copyable {
                 let r: HTTPResponse
                 do {
                     r = try fn(self.ctx)
+                } catch let httpError as HTTPError {
+                    self.afterDispatch()
+                    return .response(self.synthesizeHTTPError(httpError))
                 } catch {
                     self.afterDispatch()
                     return .response(self.synthesize500(error))
@@ -186,6 +189,9 @@ struct HTTP1Codec: ~Copyable {
             let r: HTTPResponse
             do {
                 r = try handler(self.ctx)
+            } catch let httpError as HTTPError {
+                self.afterDispatch()
+                return .response(self.synthesizeHTTPError(httpError))
             } catch {
                 self.afterDispatch()
                 return .response(self.synthesize500(error))
@@ -227,6 +233,9 @@ struct HTTP1Codec: ~Copyable {
             case .async(let fn):
                 response = try await fn(self.ctx)
             }
+        } catch let httpError as HTTPError {
+            self.afterDispatch()
+            return self.synthesizeHTTPError(httpError)
         } catch {
             self.afterDispatch()
             return self.synthesize500(error)
@@ -288,6 +297,21 @@ struct HTTP1Codec: ~Copyable {
     /// 500; tests can verify the 500 status code.
     mutating func synthesize500(_ error: Error) -> HTTPResponse {
         return self.internalErrorResponse()
+    }
+
+    /// Synthesise a response for a typed `HTTPError`. Uses the error's
+    /// `status` and `defaultMessage` to build a response with the
+    /// correct status code (404, 403, etc.) instead of the generic 500.
+    ///
+    /// Like `synthesize500`, the connection is closed after the
+    /// response is written (`keepAlive: false`).
+    mutating func synthesizeHTTPError(_ error: HTTPError) -> HTTPResponse {
+        return HTTPResponse.plaintext(
+            "\(error.defaultMessage)\n",
+            status: error.status,
+            keepAlive: false,
+            into: &self.responseBuffer
+        )
     }
 
     // MARK: - Internal: parsing phase

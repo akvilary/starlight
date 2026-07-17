@@ -172,27 +172,8 @@ accept4-drain). Унифицировать io_uring backend.
 
 #### 6.5 — Error-handling middleware
 
-**Цель**: `Middleware.init(catch:)` для custom error responses.
-
-```swift
-builder.use(Middleware { error, ctx in
-    switch error {
-    case let e as NotFoundError:
-        return HTTPResponse.plaintext("not found", status: .notFound)
-    default:
-        return HTTPResponse.plaintext("error: \(error)", status: .internalServerError)
-    }
-})
-```
-
-#### 6.6 — `HTTPError` enum
-
-**Цель**: syntactic sugar для typed errors.
-
-```swift
-throw HTTPError.notFound
-throw HTTPError.badRequest("missing field 'name'")
-```
+**Цель**: `Middleware.init(catch:)` для custom error responses
+поверх typed `HTTPError`.
 
 ---
 
