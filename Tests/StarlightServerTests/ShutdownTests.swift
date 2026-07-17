@@ -33,15 +33,15 @@ struct ShutdownTests {
     @Test("start() returns within 2s of shutdown()")
     func startReturnsAfterShutdown() async throws {
         let server = StarlightServer(loopCount: 2)
-        let router = Router()
-        router.get("/") { _ in HTTPResponse.plaintext("ok") }
+        let builder = RouterBuilder()
+        builder.get("/") { _ in HTTPResponse.plaintext("ok") }
 
         // Run start() in a detached Task so we can call shutdown()
         // from outside it.
         let startTask = Task<Void, Error> {
             try await server.start(
                 host: "127.0.0.1", port: 0, mode: .http,
-                httpHandler: nil, router: router
+                httpHandler: nil, router: builder.build()
             )
         }
 
@@ -75,13 +75,13 @@ struct ShutdownTests {
     @Test("shutdown() is idempotent")
     func shutdownIdempotent() async throws {
         let server = StarlightServer(loopCount: 1)
-        let router = Router()
-        router.get("/") { _ in HTTPResponse.plaintext("ok") }
+        let builder = RouterBuilder()
+        builder.get("/") { _ in HTTPResponse.plaintext("ok") }
 
         let startTask = Task<Void, Error> {
             try await server.start(
                 host: "127.0.0.1", port: 0, mode: .http,
-                httpHandler: nil, router: router
+                httpHandler: nil, router: builder.build()
             )
         }
 

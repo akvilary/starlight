@@ -216,24 +216,24 @@ func makeBenchmarkRouter() -> Router {
     let rootBufLet = rootBuf
     let healthBufLet = healthBuf
 
-    let router = Router()
-    router.get("/") { _ in
+    let builder = RouterBuilder()
+    builder.get("/") { _ in
         HTTPResponse(headerBuffer: rootBufLet)
     }
-    router.get("/health") { _ in
+    builder.get("/health") { _ in
         HTTPResponse(headerBuffer: healthBufLet)
     }
-    router.get("/users/:id") { ctx in
+    builder.get("/users/:id") { ctx in
         // Dynamic route — response depends on the captured id. This
         // necessarily allocates per request.
         let id = ctx.params["id"] ?? "?"
         return HTTPResponse.plaintext("user \(id)\n")
     }
     // Async route — exercises the io_uring async dispatch path.
-    router.get("/async") { ctx async in
+    builder.get("/async") { ctx async in
         return HTTPResponse.plaintext("async ok\n")
     }
-    return router
+    return builder.build()
 }
 
 @main

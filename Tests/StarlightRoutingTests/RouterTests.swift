@@ -29,14 +29,14 @@ struct RouterTests {
 
     @Test("Static route matches exact path")
     func staticMatch() {
-        let router = Router()
+        let builder = RouterBuilder()
         let registered = Box(false)
-        router.get("/health") { _ in
+        builder.get("/health") { _ in
             registered.value = true
             return HTTPResponse.plaintext("ok")
         }
 
-        let match = router.match(method: .GET, path: "/health")
+        let match = builder.build().match(method: .GET, path: "/health")
         #expect(match != nil)
 
         if let m = match {
@@ -49,29 +49,29 @@ struct RouterTests {
 
     @Test("Static route does not match different path")
     func staticMismatch() {
-        let router = Router()
-        router.get("/health") { _ in HTTPResponse.plaintext("ok") }
+        let builder = RouterBuilder()
+        builder.get("/health") { _ in HTTPResponse.plaintext("ok") }
 
-        let match = router.match(method: .GET, path: "/version")
+        let match = builder.build().match(method: .GET, path: "/version")
         #expect(match == nil)
     }
 
     @Test("Root path matches empty pattern")
     func rootPath() {
-        let router = Router()
-        router.get("/") { _ in HTTPResponse.plaintext("root") }
+        let builder = RouterBuilder()
+        builder.get("/") { _ in HTTPResponse.plaintext("root") }
 
-        let match = router.match(method: .GET, path: "/")
+        let match = builder.build().match(method: .GET, path: "/")
         #expect(match != nil)
     }
 
     @Test("Trailing slash handled — `/health` matches `/health/`")
     func trailingSlash() {
-        let router = Router()
-        router.get("/health") { _ in HTTPResponse.plaintext("ok") }
+        let builder = RouterBuilder()
+        builder.get("/health") { _ in HTTPResponse.plaintext("ok") }
 
         // `/health/` splits into the same segments as `/health`.
-        let match = router.match(method: .GET, path: "/health/")
+        let match = builder.build().match(method: .GET, path: "/health/")
         #expect(match != nil)
     }
 
@@ -79,22 +79,22 @@ struct RouterTests {
 
     @Test("Dynamic segment captures value into params")
     func dynamicCapture() {
-        let router = Router()
-        router.get("/users/:id") { _ in HTTPResponse.plaintext("user") }
+        let builder = RouterBuilder()
+        builder.get("/users/:id") { _ in HTTPResponse.plaintext("user") }
 
-        let match = router.match(method: .GET, path: "/users/42")
+        let match = builder.build().match(method: .GET, path: "/users/42")
         #expect(match != nil)
         #expect(match?.params["id"] == "42")
     }
 
     @Test("Multiple dynamic segments all captured")
     func multipleDynamic() {
-        let router = Router()
-        router.get("/users/:userId/posts/:postId") { _ in
+        let builder = RouterBuilder()
+        builder.get("/users/:userId/posts/:postId") { _ in
             HTTPResponse.plaintext("post")
         }
 
-        let match = router.match(method: .GET, path: "/users/7/posts/99")
+        let match = builder.build().match(method: .GET, path: "/users/7/posts/99")
         #expect(match != nil)
         #expect(match?.params["userId"] == "7")
         #expect(match?.params["postId"] == "99")
@@ -102,11 +102,11 @@ struct RouterTests {
 
     @Test("Dynamic segment requires non-empty capture")
     func dynamicEmptyRejected() {
-        let router = Router()
-        router.get("/users/:id") { _ in HTTPResponse.plaintext("user") }
+        let builder = RouterBuilder()
+        builder.get("/users/:id") { _ in HTTPResponse.plaintext("user") }
 
         // `/users/` splits into ["users"] — segment count mismatch.
-        let match = router.match(method: .GET, path: "/users/")
+        let match = builder.build().match(method: .GET, path: "/users/")
         #expect(match == nil)
     }
 
@@ -114,21 +114,21 @@ struct RouterTests {
 
     @Test("Static route wins over dynamic when both match")
     func staticBeatsDynamic() {
-        let router = Router()
+        let builder = RouterBuilder()
         let hitDynamic = Box(false)
         let hitStatic = Box(false)
         // Register dynamic first to prove precedence is not "first
         // registered wins" — static must always win.
-        router.get("/users/me") { _ in
+        builder.get("/users/me") { _ in
             hitStatic.value = true
             return HTTPResponse.plaintext("static")
         }
-        router.get("/users/:id") { _ in
+        builder.get("/users/:id") { _ in
             hitDynamic.value = true
             return HTTPResponse.plaintext("dynamic")
         }
 
-        let match = router.match(method: .GET, path: "/users/me")
+        let match = builder.build().match(method: .GET, path: "/users/me")
         #expect(match != nil)
         if let m = match {
             var ctx = RequestContext()
@@ -141,15 +141,15 @@ struct RouterTests {
 
     @Test("Dynamic route still matches when static doesn't apply")
     func dynamicWhenNoStatic() {
-        let router = Router()
+        let builder = RouterBuilder()
         let hitDynamic = Box(false)
-        router.get("/users/me") { _ in HTTPResponse.plaintext("static") }
-        router.get("/users/:id") { _ in
+        builder.get("/users/me") { _ in HTTPResponse.plaintext("static") }
+        builder.get("/users/:id") { _ in
             hitDynamic.value = true
             return HTTPResponse.plaintext("dynamic")
         }
 
-        let match = router.match(method: .GET, path: "/users/42")
+        let match = builder.build().match(method: .GET, path: "/users/42")
         #expect(match != nil)
         #expect(match?.params["id"] == "42")
         if let m = match {
@@ -164,27 +164,27 @@ struct RouterTests {
 
     @Test("Method must match")
     func methodMismatch() {
-        let router = Router()
-        router.get("/items") { _ in HTTPResponse.plaintext("list") }
-        router.post("/items") { _ in HTTPResponse.plaintext("create") }
+        let builder = RouterBuilder()
+        builder.get("/items") { _ in HTTPResponse.plaintext("list") }
+        builder.post("/items") { _ in HTTPResponse.plaintext("create") }
 
-        #expect(router.match(method: .GET, path: "/items") != nil)
-        #expect(router.match(method: .POST, path: "/items") != nil)
-        #expect(router.match(method: .DELETE, path: "/items") == nil)
+        #expect(builder.build().match(method: .GET, path: "/items") != nil)
+        #expect(builder.build().match(method: .POST, path: "/items") != nil)
+        #expect(builder.build().match(method: .DELETE, path: "/items") == nil)
     }
 
     @Test("Same path different methods route to different handlers")
     func samePathDifferentMethods() {
-        let router = Router()
+        let builder = RouterBuilder()
         let hit = Box("")
-        router.get("/items") { _ in hit.value = "get"; return HTTPResponse.plaintext("g") }
-        router.post("/items") { _ in hit.value = "post"; return HTTPResponse.plaintext("p") }
-        router.delete("/items") { _ in hit.value = "delete"; return HTTPResponse.plaintext("d") }
+        builder.get("/items") { _ in hit.value = "get"; return HTTPResponse.plaintext("g") }
+        builder.post("/items") { _ in hit.value = "post"; return HTTPResponse.plaintext("p") }
+        builder.delete("/items") { _ in hit.value = "delete"; return HTTPResponse.plaintext("d") }
 
         for (method, expected) in [(HTTPMethod.GET, "get"),
                                     (.POST, "post"),
                                     (.DELETE, "delete")] {
-            guard let m = router.match(method: method, path: "/items") else {
+            guard let m = builder.build().match(method: method, path: "/items") else {
                 Issue.record("No match for \(method)")
                 continue
             }
@@ -198,19 +198,19 @@ struct RouterTests {
 
     @Test("Query string stripped before matching")
     func queryStringStripped() {
-        let router = Router()
-        router.get("/search") { _ in HTTPResponse.plaintext("results") }
+        let builder = RouterBuilder()
+        builder.get("/search") { _ in HTTPResponse.plaintext("results") }
 
-        let match = router.match(method: .GET, path: "/search?q=hello&page=2")
+        let match = builder.build().match(method: .GET, path: "/search?q=hello&page=2")
         #expect(match != nil)
     }
 
     @Test("Dynamic segment captured even with query string")
     func dynamicWithQuery() {
-        let router = Router()
-        router.get("/users/:id") { _ in HTTPResponse.plaintext("u") }
+        let builder = RouterBuilder()
+        builder.get("/users/:id") { _ in HTTPResponse.plaintext("u") }
 
-        let match = router.match(method: .GET, path: "/users/42?verbose=1")
+        let match = builder.build().match(method: .GET, path: "/users/42?verbose=1")
         #expect(match != nil)
         #expect(match?.params["id"] == "42")
     }
@@ -219,29 +219,29 @@ struct RouterTests {
 
     @Test("Unmatched path returns nil (caller emits 404)")
     func unmatchedReturnsNil() {
-        let router = Router()
-        router.get("/here") { _ in HTTPResponse.plaintext("h") }
+        let builder = RouterBuilder()
+        builder.get("/here") { _ in HTTPResponse.plaintext("h") }
 
-        #expect(router.match(method: .GET, path: "/not-here") == nil)
-        #expect(router.match(method: .GET, path: "/here/sub") == nil)
+        #expect(builder.build().match(method: .GET, path: "/not-here") == nil)
+        #expect(builder.build().match(method: .GET, path: "/here/sub") == nil)
     }
 
     @Test("Empty router returns nil for everything")
     func emptyRouter() {
-        let router = Router()
-        #expect(router.match(method: .GET, path: "/") == nil)
-        #expect(router.match(method: .GET, path: "/anything") == nil)
+        let builder = RouterBuilder()
+        #expect(builder.build().match(method: .GET, path: "/") == nil)
+        #expect(builder.build().match(method: .GET, path: "/anything") == nil)
     }
 
     // MARK: - handle() dispatch through middleware
 
     @Test("handle() returns 404 response when no match")
     func handleReturns404() async {
-        let router = Router()
+        let builder = RouterBuilder()
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/nope")
-        let response = await router.handle(&ctx)
+        let response = await builder.build().handle(&ctx)
         // We can't easily inspect the buffer contents here without
         // pulling in ByteBuffer read APIs; we just check that the
         // response exists. The "404" string is in there.
@@ -250,59 +250,59 @@ struct RouterTests {
 
     @Test("handle() invokes matched handler with params set on ctx")
     func handleInvokesMatched() async {
-        let router = Router()
+        let builder = RouterBuilder()
         let capturedParam = Box<String?>(nil)
-        router.get("/users/:id") { ctx in
+        builder.get("/users/:id") { ctx in
             capturedParam.value = ctx.params["id"]
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/users/123")
-        _ = await router.handle(&ctx)
+        _ = await builder.build().handle(&ctx)
         #expect(capturedParam.value == "123")
         #expect(ctx.params["id"] == "123")
     }
 
     @Test("Middleware wraps the matched handler")
     func middlewareWraps() async {
-        let router = Router()
+        let builder = RouterBuilder()
         let log = Box<[String]>([])
-        router.use(Middleware(
+        builder.use(Middleware(
             before: { _ in log.value.append("before"); return .proceed },
             after: { _, r in log.value.append("after"); return r }
         ))
-        router.get("/x") { _ in
+        builder.get("/x") { _ in
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await router.handle(&ctx)
+        _ = await builder.build().handle(&ctx)
         #expect(log.value == ["before", "handler", "after"])
     }
 
     @Test("Multiple middlewares compose outermost-first")
     func multipleMiddlewares() async {
-        let router = Router()
+        let builder = RouterBuilder()
         let log = Box<[String]>([])
-        router.use(Middleware(
+        builder.use(Middleware(
             before: { _ in log.value.append("outer-before"); return .proceed },
             after: { _, r in log.value.append("outer-after"); return r }
         ))
-        router.use(Middleware(
+        builder.use(Middleware(
             before: { _ in log.value.append("inner-before"); return .proceed },
             after: { _, r in log.value.append("inner-after"); return r }
         ))
-        router.get("/x") { _ in
+        builder.get("/x") { _ in
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await router.handle(&ctx)
+        _ = await builder.build().handle(&ctx)
         #expect(log.value == [
             "outer-before", "inner-before", "handler",
             "inner-after", "outer-after"
@@ -311,28 +311,28 @@ struct RouterTests {
 
     @Test("Middleware applies to async handlers")
     func middlewareWrapsAsync() async {
-        let router = Router()
+        let builder = RouterBuilder()
         let log = Box<[String]>([])
-        router.use(Middleware(
+        builder.use(Middleware(
             before: { _ in log.value.append("before"); return .proceed },
             after: { _, r in log.value.append("after"); return r }
         ))
-        router.get("/x") { _ async in
+        builder.get("/x") { _ async in
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await router.handle(&ctx)
+        _ = await builder.build().handle(&ctx)
         #expect(log.value == ["before", "handler", "after"])
     }
 
     @Test("Middleware shortCircuit skips handler")
     func middlewareShortCircuit() async {
-        let router = Router()
+        let builder = RouterBuilder()
         let handlerCalled = Box(false)
-        router.use(Middleware(
+        builder.use(Middleware(
             before: { ctx in
                 if ctx.pathString == "/blocked" {
                     return .shortCircuit(HTTPResponse.plaintext("denied"))
@@ -340,14 +340,14 @@ struct RouterTests {
                 return .proceed
             }
         ))
-        router.get("/blocked") { _ in
+        builder.get("/blocked") { _ in
             handlerCalled.value = true
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/blocked")
-        let response = await router.handle(&ctx)
+        let response = await builder.build().handle(&ctx)
         #expect(!handlerCalled.value)
         let body = response.headerBuffer.getString(at: 0, length: response.headerBuffer.readableBytes)
         #expect(body?.contains("denied") == true)
@@ -355,29 +355,29 @@ struct RouterTests {
 
     @Test("Short-circuit in inner middleware still runs outer middleware's after")
     func shortCircuitOuterAfterRuns() async {
-        let router = Router()
+        let builder = RouterBuilder()
         let log = Box<[String]>([])
         // Outer middleware — its after MUST run even when inner short-circuits.
-        router.use(Middleware(
+        builder.use(Middleware(
             before: { _ in log.value.append("outer-before"); return .proceed },
             after: { _, r in log.value.append("outer-after"); return r }
         ))
         // Inner middleware — short-circuits.
-        router.use(Middleware(
+        builder.use(Middleware(
             before: { ctx in
                 log.value.append("inner-before")
                 return .shortCircuit(HTTPResponse.plaintext("blocked"))
             },
             after: { _, r in log.value.append("inner-after"); return r }
         ))
-        router.get("/x") { _ in
+        builder.get("/x") { _ in
             log.value.append("handler")
             return HTTPResponse.plaintext("ok")
         }
         var ctx = RequestContext()
         ctx.method = .GET
         ctx.setPath("/x")
-        _ = await router.handle(&ctx)
+        _ = await builder.build().handle(&ctx)
         // outer-before → inner-before → inner-after → outer-after
         // Handler is skipped. Both after hooks run.
         #expect(log.value == [
@@ -392,21 +392,21 @@ struct RouterTests {
     func patternConsecutiveSlashes() {
         // The router splits on '/' and skips empty segments, so a
         // pattern like `//users//42` should match `/users/42`.
-        let router = Router()
-        router.get("/users/:id") { _ in HTTPResponse.plaintext("u") }
+        let builder = RouterBuilder()
+        builder.get("/users/:id") { _ in HTTPResponse.plaintext("u") }
 
-        #expect(router.match(method: .GET, path: "//users//42") != nil)
+        #expect(builder.build().match(method: .GET, path: "//users//42") != nil)
     }
 
     // MARK: - Route registration count
 
     @Test("routeCount reflects registered routes")
     func routeCount() {
-        let router = Router()
-        #expect(router.routeCount == 0)
-        router.get("/a") { _ in HTTPResponse.plaintext("a") }
-        router.get("/b") { _ in HTTPResponse.plaintext("b") }
-        router.post("/c") { _ in HTTPResponse.plaintext("c") }
-        #expect(router.routeCount == 3)
+        let builder = RouterBuilder()
+        #expect(builder.build().routeCount == 0)
+        builder.get("/a") { _ in HTTPResponse.plaintext("a") }
+        builder.get("/b") { _ in HTTPResponse.plaintext("b") }
+        builder.post("/c") { _ in HTTPResponse.plaintext("c") }
+        #expect(builder.build().routeCount == 3)
     }
 }

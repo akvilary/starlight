@@ -189,12 +189,12 @@ struct HTTP1CodecTests {
 
     @Test("Router dispatches through codec and populates params")
     func routerDispatchThroughCodec() async {
-        let router = Router()
-        router.get("/users/:id") { ctx in
+        let builder = RouterBuilder()
+        builder.get("/users/:id") { ctx in
             let id = ctx.params["id"] ?? "?"
             return HTTPResponse.plaintext("user \(id)")
         }
-        let codec = HTTP1Codec(router: router)
+        let codec = HTTP1Codec(router: builder.build())
         var bytes = ByteBufferAllocator().buffer(capacity: 128)
         bytes.writeString("GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
@@ -212,9 +212,9 @@ struct HTTP1CodecTests {
 
     @Test("Error response does not contain stale data from previous request")
     func noStaleDataInErrorResponse() async {
-        let router = Router()
-        router.get("/ok") { _ in HTTPResponse.plaintext("ok-data") }
-        let codec = HTTP1Codec(router: router)
+        let builder = RouterBuilder()
+        builder.get("/ok") { _ in HTTPResponse.plaintext("ok-data") }
+        let codec = HTTP1Codec(router: builder.build())
 
         // Request 1: valid → handler writes "ok-data" (new buffer).
         var bytes1 = ByteBufferAllocator().buffer(capacity: 64)

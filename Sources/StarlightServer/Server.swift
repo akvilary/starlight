@@ -124,7 +124,9 @@ public final class StarlightServer: @unchecked Sendable {
         precondition(mode != .http || httpHandler != nil || router != nil,
                      "HTTP mode requires an httpHandler closure or a Router")
 
-        router?.freeze()
+        // The Router is already an immutable, middleware-composed
+        // snapshot produced by RouterBuilder.build() — no runtime
+        // freeze step needed.
 
         #if os(Linux) && compiler(>=6.2) && $Lifetimes
         // Explicit io_uring preference — try io_uring first, then fall

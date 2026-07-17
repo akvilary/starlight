@@ -3,17 +3,31 @@
 //  Router.swift
 //  StarlightRouting
 //
-//  HTTP request router. Matches incoming (method, path) against
-//  registered patterns and dispatches to the user handler, populating
-//  `ctx.params` with dynamic-segment values.
+//  HTTP request router. Two-type design (type-state pattern):
 //
-//  ─── MVP: linear search with segment-wise comparison ───────────────────
+//    ┌─────────────────────────────┐         ┌─────────────────────┐
+//    │  RouterBuilder              │  build  │  Router             │
+//    │  (class, mutable, !Sendable)│ ──────► │  (struct, immutable │
+//    │                             │         │   Sendable)         │
+//    │  get/post/put/...           │         │                     │
+//    │  use(middleware)            │         │  match(...)         │
+//    │  add(...)                   │         │  handle(...)        │
+//    └─────────────────────────────┘         └─────────────────────┘
 //
-//  Phase 3 ships a simple O(routes × segments) matcher. This is fine
-//  up to ~100 routes — typical application routers see ~10-50 routes
-//  in the hot path. Phase 4 will replace this with a radix trie
-//  (matchit-style) that reduces matching to O(path length) with no
-//  backtracking.
+//  ─── Compile-time safety ────────────────────────────────────────────────
+//
+//  `RouterBuilder` is NOT Sendable — the Swift compiler refuses to
+//  share it across actor boundaries, so route registration is
+//  confined to a single thread by construction. No `Atomic<Bool>`
+//  isFrozen flag, no precondition in `add()`, no `@unchecked` — the
+//  invariant "no concurrent writes during the build phase" is
+//  enforced by the type system.
+//
+//  `Router` is `Sendable` (no `@unchecked`): all of its stored
+//  properties are `let`-bound arrays of `Sendable` value types
+//  (`Route` contains `HandlerKind` closures typed `@Sendable`). Safe
+//  to share between 12 event loops, no further synchronisation
+//  needed.
 //
 //  ─── Pattern syntax ────────────────────────────────────────────────────
 //
@@ -35,7 +49,6 @@ import Darwin
 #endif
 
 import NIOCore
-import Synchronization
 import StarlightHTTP
 
 /// A single path segment of a route pattern.
@@ -48,14 +61,15 @@ enum RouteSegment: Equatable, Sendable {
     case param(String)
 }
 
-/// A registered route.
+/// A registered route. Internal — built by `RouterBuilder`, stored
+/// read-only in `Router`.
 struct Route: Sendable {
     let method: HTTPMethod
     /// Pre-split segments for fast matching.
     let segments: [RouteSegment]
-    /// Sync or async dispatch kind. `var` so `freeze()` can replace
-    /// it with the middleware-composed version once at startup.
-    var handler: HandlerKind
+    /// Sync or async dispatch kind, with middleware already composed
+    /// in by `RouterBuilder.build()`.
+    let handler: HandlerKind
 }
 
 /// Result of a middleware's `before` hook: proceed to the handler,
@@ -91,6 +105,7 @@ public enum MiddlewareResult: Sendable {
 /// with `NonisolatedNonsendingByDefault` — no Task allocation, no
 /// executor hop).
 public struct Middleware: Sendable {
+
     // MARK: - Composition closures
 
     /// Compose this middleware around a sync handler. `nil` when the
@@ -155,21 +170,31 @@ public struct Middleware: Sendable {
     }
 }
 
-/// HTTP request router.
+// MARK: - RouterBuilder (mutable, NOT Sendable)
+
+/// Mutable HTTP router builder. NOT `Sendable` — the compiler forbids
+/// sharing it across actor boundaries, which confines route
+/// registration to a single thread by construction.
 ///
-/// Routes are stored in registration order. Static-segment routes are
-/// tried before dynamic-segment routes when both can match — this is
-/// implemented by partitioning routes at registration time so the
-/// search still terminates as soon as a match is found.
+/// Build a `Router` from a `RouterBuilder` via `build()`:
 ///
-/// **Lifecycle invariant**: routes and middleware must be registered
-/// *before* the router is attached to a server (i.e. before
-/// `StarlightServer.start(... router: router ...)` is called). The
-/// router is not thread-safe for concurrent reads and writes — it
-/// assumes registration happens on a single thread during startup,
-/// and only `handle(_:)` is invoked concurrently from event loops.
-/// Debug builds assert this invariant; release builds trust the caller.
-public final class Router: @unchecked Sendable {
+/// ```swift
+/// let builder = RouterBuilder()
+/// builder.get("/health") { _ in .plaintext("ok") }
+/// builder.get("/users/:id") { ctx in ... }
+/// builder.use(authMiddleware)
+/// let router = builder.build()  // immutable, Sendable
+/// try await server.start(router: router)
+/// ```
+///
+/// After `build()`, the builder may be discarded or reused to build
+/// another independent `Router` (each `build()` returns a fresh
+/// snapshot of the current state — mutations after `build()` do not
+/// affect previously-built routers).
+public final class RouterBuilder {
+
+    // MARK: - Storage (mutable; confined to the building thread)
+
     private var staticRoutes: [Route] = []
 
     /// Routes containing at least one `.param` segment, tried after
@@ -177,19 +202,14 @@ public final class Router: @unchecked Sendable {
     private var dynamicRoutes: [Route] = []
 
     /// Middleware chain applied around every handler. The chain is
-    /// pre-composed at `makeHandler()` time so per-request dispatch is
+    /// pre-composed at `build()` time so per-request dispatch is
     /// just "call the matched handler" — middleware wrapping is
     /// folded into the handler closure.
     private var middlewares: [Middleware] = []
 
-    /// Atomically tracks whether `freeze()` has been called.
-    /// `compareExchange` in `freeze()` ensures only one thread
-    /// performs middleware composition.
-    private let isFrozen = Atomic<Bool>(false)
-
     public init() {}
 
-    // MARK: - Registration (sync)
+    // MARK: - Registration (sync handlers)
 
     /// Register a **sync** handler for `GET <pattern>`.
     public func get(_ pattern: String, _ handler: @escaping HTTPHandler) {
@@ -214,7 +234,7 @@ public final class Router: @unchecked Sendable {
         self.add(.OPTIONS, pattern, .sync(handler))
     }
 
-    // MARK: - Registration (async)
+    // MARK: - Registration (async handlers)
 
     /// Register an **async** handler for `GET <pattern>`. Runs inline
     /// in the connection Task via `await` — zero Task-per-request
@@ -237,9 +257,6 @@ public final class Router: @unchecked Sendable {
 
     /// Register a handler for an arbitrary method + pattern.
     public func add(_ method: HTTPMethod, _ pattern: String, _ kind: HandlerKind) {
-        precondition(!isFrozen.load(ordering: .acquiring),
-            "Router.add called after the router has been attached to a server. " +
-            "Register all routes before calling StarlightServer.start(...).")
         if case .other = method {
             preconditionFailure("Cannot register a route for .other — it would match every unknown method.")
         }
@@ -257,40 +274,47 @@ public final class Router: @unchecked Sendable {
 
     /// Append a middleware to the chain. Middlewares are invoked in
     /// registration order, outermost-first.
-    ///
-    /// - Precondition: must be called before the router is attached
-    ///   to a server. Debug builds trap if called after the first
-    ///   `handle(_:)` invocation.
     public func use(_ middleware: Middleware) {
-        precondition(!isFrozen.load(ordering: .acquiring),
-            "Router.use called after the router has been attached to a server. " +
-            "Register all middleware before calling StarlightServer.start(...).")
         self.middlewares.append(middleware)
     }
 
-    // MARK: - Dispatch
+    // MARK: - Build
 
-    /// Pre-compose middleware into each route's handler. Called once
-    /// from `StarlightServer.start()` before any connection is
-    /// accepted. Thread-safe via `Atomic<Bool>` compareExchange —
-    /// if multiple event loops call this concurrently, only one
-    /// performs the composition.
-    public func freeze() {
-        let (exchanged, _) = isFrozen.compareExchange(
-            expected: false, desired: true, ordering: .acquiringAndReleasing
-        )
-        guard exchanged else { return }
-        guard !middlewares.isEmpty else { return }
+    /// Build an immutable `Router` snapshot from the current state.
+    ///
+    /// Performs middleware composition: each route's handler is
+    /// wrapped in the registered middleware chain (sync fast path
+    /// where possible). The result is an immutable, `Sendable`
+    /// `Router` safe to share across event loops.
+    ///
+    /// The builder itself is not consumed — subsequent `add`/`use`
+    /// calls affect only future `build()` invocations, not previously
+    /// returned routers.
+    public func build() -> Router {
+        var staticRoutes = self.staticRoutes
+        var dynamicRoutes = self.dynamicRoutes
+        guard !middlewares.isEmpty else {
+            return Router(staticRoutes: staticRoutes, dynamicRoutes: dynamicRoutes)
+        }
         for i in staticRoutes.indices {
-            staticRoutes[i].handler = composeOne(staticRoutes[i].handler)
+            staticRoutes[i] = Route(
+                method: staticRoutes[i].method,
+                segments: staticRoutes[i].segments,
+                handler: composeOne(staticRoutes[i].handler)
+            )
         }
         for i in dynamicRoutes.indices {
-            dynamicRoutes[i].handler = composeOne(dynamicRoutes[i].handler)
+            dynamicRoutes[i] = Route(
+                method: dynamicRoutes[i].method,
+                segments: dynamicRoutes[i].segments,
+                handler: composeOne(dynamicRoutes[i].handler)
+            )
         }
+        return Router(staticRoutes: staticRoutes, dynamicRoutes: dynamicRoutes)
     }
 
     /// Compose middleware chain around a single handler. Called only
-    /// from `freeze()`, never per-request.
+    /// from `build()`, never per-request.
     ///
     /// Composition rules:
     /// - **Sync handler + all-middleware-have-wrapSync**: stays sync.
@@ -299,8 +323,7 @@ public final class Router: @unchecked Sendable {
     ///   Overhead is one continuation hop (no Task allocation, no
     ///   executor hop under `NonisolatedNonsendingByDefault`).
     /// - **Async handler**: always composes via `wrapAsync`. Middleware
-    ///   is fully applied (the bug that silently skipped middleware
-    ///   for async routes is fixed).
+    ///   is fully applied.
     private func composeOne(_ handler: HandlerKind) -> HandlerKind {
         switch handler {
         case .sync(let fn):
@@ -326,6 +349,92 @@ public final class Router: @unchecked Sendable {
         }
     }
 
+    // MARK: - Pattern parsing (static — shared with Router)
+
+    /// Parse a route pattern (e.g. `/users/:id`) into segments with
+    /// pre-compiled bytes for zero-allocation matching. Walks UTF-8
+    /// directly — no intermediate [Substring] or [String] arrays.
+    static func parsePattern(_ pattern: String) -> [RouteSegment] {
+        var segments: [RouteSegment] = []
+        var utf8 = pattern.utf8[...]
+        // Skip leading slashes.
+        while utf8.first == 0x2F { utf8 = utf8.dropFirst() }
+
+        while !utf8.isEmpty {
+            // Find next '/' or end.
+            let segmentEnd = utf8.firstIndex(of: 0x2F) ?? utf8.endIndex
+            let part = utf8[..<segmentEnd]
+
+            if part.first == 0x3A {  // ':'
+                // Param — name needs a String for Params lookup.
+                segments.append(.param(String(decoding: part.dropFirst(), as: UTF8.self)))
+            } else if part.first == 0x2A {  // '*'
+                // Catch-all — treated as literal for now.
+                segments.append(.literal(Array(part)))
+            } else {
+                segments.append(.literal(Array(part)))
+            }
+
+            utf8 = utf8[segmentEnd...]
+            while utf8.first == 0x2F { utf8 = utf8.dropFirst() }
+        }
+        return segments
+    }
+}
+
+// MARK: - Router (immutable, Sendable)
+
+/// Immutable HTTP request router. The output of `RouterBuilder.build()`.
+///
+/// Routes are stored in registration order. Static-segment routes are
+/// tried before dynamic-segment routes when both can match — this is
+/// implemented by partitioning routes at build time so the search
+/// terminates as soon as a match is found.
+///
+/// `Sendable` without `@unchecked`: every stored property is a
+/// `let`-bound array of `Sendable` value types. Safe to share between
+/// event loops without further synchronisation.
+public struct Router: Sendable {
+
+    /// Routes whose pattern is entirely literal segments, tried first.
+    private let staticRoutes: [Route]
+
+    /// Routes containing at least one `.param` segment, tried after
+    /// the static partition.
+    private let dynamicRoutes: [Route]
+
+    /// Internal-only initialiser — `RouterBuilder.build()` is the
+    /// only way for application code to obtain a `Router`.
+    internal init(staticRoutes: [Route], dynamicRoutes: [Route]) {
+        self.staticRoutes = staticRoutes
+        self.dynamicRoutes = dynamicRoutes
+    }
+
+    /// Number of registered routes. Useful for tests.
+    public var routeCount: Int { staticRoutes.count + dynamicRoutes.count }
+
+    // MARK: - Convenience init
+
+    /// Build a `Router` from a configuration closure. Syntactic sugar
+    /// over the explicit `RouterBuilder().build()` dance — the closure
+    /// receives a fresh `RouterBuilder`, registers routes/middleware
+    /// on it, and the resulting immutable snapshot is returned.
+    ///
+    /// ```swift
+    /// let router = Router {
+    ///     $0.get("/health") { _ in .plaintext("ok") }
+    ///     $0.get("/users/:id") { ctx in ... }
+    ///     $0.use(authMiddleware)
+    /// }
+    /// ```
+    public init(_ configure: (RouterBuilder) -> Void) {
+        let builder = RouterBuilder()
+        configure(builder)
+        self = builder.build()
+    }
+
+    // MARK: - Dispatch
+
     /// Dispatch a parsed request through the router.
     ///
     /// This is the entry point that `HTTP1Codec` calls once the
@@ -335,15 +444,9 @@ public final class Router: @unchecked Sendable {
     ///   3. Invokes the matched handler (sync or async).
     ///   4. Returns a 404 response if no route matched.
     ///
-    /// Middleware is pre-composed at `freeze()` time — per-request
-    /// dispatch is just "call the matched handler."
+    /// Middleware is pre-composed at `RouterBuilder.build()` time —
+    /// per-request dispatch is just "call the matched handler."
     public func handle(_ ctx: inout RequestContext) async -> HTTPResponse {
-        // freeze() is idempotent. In production, Server.start() calls
-        // it before any connection is accepted, so this is a no-op.
-        // In tests (where start() isn't called), this ensures
-        // middleware is composed on first use — single-threaded, no
-        // race.
-        freeze()
         let method = ctx.method
         guard let match = match(method: method, path: ctx.path) else {
             return HTTPResponse.plaintext(
@@ -363,7 +466,7 @@ public final class Router: @unchecked Sendable {
         }
     }
 
-    // MARK: - Internal matching
+    // MARK: - Matching
 
     /// Match `(method, path)` against the registered routes and return
     /// the matching handler + extracted params. Returns `nil` if no
@@ -476,39 +579,4 @@ public final class Router: @unchecked Sendable {
         return pos == pathLen
             || (pos + 1 == pathLen && path[pos] == 0x2F)
     }
-
-    // MARK: - Pattern parsing
-
-    /// Parse a route pattern (e.g. `/users/:id`) into segments with
-    /// pre-compiled bytes for zero-allocation matching. Walks UTF-8
-    /// directly — no intermediate [Substring] or [String] arrays.
-    static func parsePattern(_ pattern: String) -> [RouteSegment] {
-        var segments: [RouteSegment] = []
-        var utf8 = pattern.utf8[...]
-        // Skip leading slashes.
-        while utf8.first == 0x2F { utf8 = utf8.dropFirst() }
-
-        while !utf8.isEmpty {
-            // Find next '/' or end.
-            let segmentEnd = utf8.firstIndex(of: 0x2F) ?? utf8.endIndex
-            let part = utf8[..<segmentEnd]
-
-            if part.first == 0x3A {  // ':'
-                // Param — name needs a String for Params lookup.
-                segments.append(.param(String(decoding: part.dropFirst(), as: UTF8.self)))
-            } else if part.first == 0x2A {  // '*'
-                // Catch-all — treated as literal for now.
-                segments.append(.literal(Array(part)))
-            } else {
-                segments.append(.literal(Array(part)))
-            }
-
-            utf8 = utf8[segmentEnd...]
-            while utf8.first == 0x2F { utf8 = utf8.dropFirst() }
-        }
-        return segments
-    }
-
-    /// Number of registered routes. Useful for tests.
-    public var routeCount: Int { staticRoutes.count + dynamicRoutes.count }
 }
