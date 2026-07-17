@@ -248,6 +248,14 @@ public final class IORingEventLoop: @unchecked Sendable {
 
     /// Async read from `fd`. Suspends until CQE arrives.
     /// Returns bytes read (0 = EOF, negative = error).
+    ///
+    /// - Precondition: the caller MUST ensure no other `read` is
+    ///   in flight on the same `channelId`. Two overlapping reads
+    ///   would overwrite `readWaiters[channelId]` and leak the
+    ///   previous continuation (its Task would hang forever with a
+    ///   "leaking continuation!" runtime warning). The standard
+    ///   HTTP connection loop (`httpLoop`) honours this naturally —
+    ///   reads are strictly sequential per channel.
     public func read(
         channelId: UInt32, fd: CInt,
         into buffer: UnsafeMutableRawBufferPointer
@@ -259,6 +267,8 @@ public final class IORingEventLoop: @unchecked Sendable {
                 context: packUserData(channelId: channelId, op: .recv)
             )) {
                 needsSubmit = true; inflightSQEs += 1
+                precondition(readWaiters[channelId] == nil,
+                    "IORingEventLoop: overlapping read on channelId=\(channelId) — previous continuation would leak")
                 readWaiters[channelId] = cont
             } else {
                 cont.resume(returning: 0)
@@ -277,6 +287,10 @@ public final class IORingEventLoop: @unchecked Sendable {
 
     /// Async write to `fd`. Suspends until CQE arrives.
     /// Returns bytes written (negative = error).
+    ///
+    /// - Precondition: the caller MUST ensure no other `write` is
+    ///   in flight on the same `channelId`. See `read()` for the
+    ///   rationale — the same invariant applies symmetrically here.
     public func write(
         channelId: UInt32, fd: CInt,
         from buffer: UnsafeRawBufferPointer
@@ -288,8 +302,14 @@ public final class IORingEventLoop: @unchecked Sendable {
                 into: FileDescriptor(rawValue: fd),
                 context: packUserData(channelId: channelId, op: .send)
             ))
-            if ok { needsSubmit = true; inflightSQEs += 1; writeWaiters[channelId] = cont }
-            else { cont.resume(returning: -1) }
+            if ok {
+                needsSubmit = true; inflightSQEs += 1
+                precondition(writeWaiters[channelId] == nil,
+                    "IORingEventLoop: overlapping write on channelId=\(channelId) — previous continuation would leak")
+                writeWaiters[channelId] = cont
+            } else {
+                cont.resume(returning: -1)
+            }
         }
     }
 

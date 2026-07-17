@@ -274,6 +274,14 @@ public final class PollEventLoop: @unchecked Sendable {
     /// EOF, negative on error). The fd MUST be non-blocking — under
     /// level-triggered + oneshot the read will not return EAGAIN in
     /// practice, but if it does the negative result is surfaced.
+    ///
+    /// - Precondition: the caller MUST ensure no other `read` is
+    ///   in flight on the same `channelId`. Two overlapping reads
+    ///   would overwrite `state.pendingRead` and leak the previous
+    ///   continuation (its Task would hang forever with a "leaking
+    ///   continuation!" runtime warning). The standard HTTP
+    ///   connection loop (`httpLoop`) honours this naturally —
+    ///   reads are strictly sequential per channel.
     public func read(
         channelId: UInt32, fd: CInt,
         into buffer: UnsafeMutableRawBufferPointer
@@ -291,6 +299,8 @@ public final class PollEventLoop: @unchecked Sendable {
     ) {
         var state = channels[channelId] ?? PollChannelState(fd: fd)
         state.fd = fd
+        precondition(state.pendingRead == nil,
+            "PollEventLoop: overlapping read on channelId=\(channelId) — previous continuation would leak")
         state.pendingRead = (cont, buffer)
         rearm(channelId: channelId, state: &state)
         // Single write-back after rearm — safe because rearm does not
@@ -304,6 +314,10 @@ public final class PollEventLoop: @unchecked Sendable {
     /// Await writability on `(channelId, fd)`, then perform a single
     /// `write(2)` from `buffer`. Returns bytes written (negative on
     /// error).
+    ///
+    /// - Precondition: the caller MUST ensure no other `write` is
+    ///   in flight on the same `channelId`. See `read()` for the
+    ///   rationale — the same invariant applies symmetrically here.
     public func write(
         channelId: UInt32, fd: CInt,
         from buffer: UnsafeRawBufferPointer
@@ -321,6 +335,8 @@ public final class PollEventLoop: @unchecked Sendable {
     ) {
         var state = channels[channelId] ?? PollChannelState(fd: fd)
         state.fd = fd
+        precondition(state.pendingWrite == nil,
+            "PollEventLoop: overlapping write on channelId=\(channelId) — previous continuation would leak")
         state.pendingWrite = (cont, buffer)
         rearm(channelId: channelId, state: &state)
         // Single write-back after rearm (see armRead for rationale).
