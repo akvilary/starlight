@@ -6,11 +6,27 @@
 //  HTTP/1.1 request/response codec. One instance per connection,
 //  reused across all keep-alive requests.
 //
-//  The codec is driven by `StarlightServer.handleHTTPConnection`:
-//    1. `feed(_:)` — called once per inbound ByteBuffer chunk
-//    2. `tryParse()` — called in a loop to parse and dispatch as
-//       many complete requests as the accumulator now contains
-//       (handles pipelining)
+//  The codec is driven by a backend (epoll, io_uring, or NIO) in two
+//  phases per TCP read event:
+//    1. `feed(_:)` — append inbound bytes to the accumulator.
+//    2. `tryParse()` (sync, in a loop) — parse + dispatch as many
+//       complete requests as the accumulator now contains.
+//       Returns one of:
+//         `.response(HTTPResponse)` — sync handler completed.
+//         `.needsAsync`              — handler is async; caller must
+//                                      `await dispatchAsync()`.
+//         `.incomplete`              — need more bytes.
+//
+//  Backends drive this with the same shape:
+//
+//      parseLoop: while true {
+//          switch codec.tryParse() {
+//          case .incomplete:          break parseLoop
+//          case .response(let r):     write(r); if !r.keepAlive { return }
+//          case .needsAsync:          let r = await codec.dispatchAsync()
+//                                     write(r); if !r.keepAlive { return }
+//          }
+//      }
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,8 +56,9 @@ final class HTTP1Codec: @unchecked Sendable {
     /// consumes this flag and returns a 413 response.
     private var overflowed: Bool = false
 
-    /// Cached route match from `tryParseSync()`, used by
-    /// `dispatchAsync()` to avoid matching the route twice.
+    /// Cached route match from `tryParse()` when the matched handler
+    /// is async. Consumed by the next `dispatchAsync()` call.
+    /// `nil` outside of the `.needsAsync → dispatchAsync()` window.
     private var pendingMatch: (handler: HandlerKind, params: Params)?
 
     init(handler: @escaping HTTPHandler, maxAccumulatorBytes: Int = 1 * 1024 * 1024) {
@@ -79,7 +96,7 @@ final class HTTP1Codec: @unchecked Sendable {
     }
 
     /// Feed raw bytes directly — avoids intermediate ByteBuffer allocation.
-    /// Used by the io_uring backend which reads into a raw buffer.
+    /// Used by the io_uring/epoll backends which read into a raw buffer.
     func feed(_ bytes: UnsafeBufferPointer<UInt8>) {
         let projected = self.accumulator.readableBytes + bytes.count
         if projected > self.maxAccumulatorBytes {
@@ -89,22 +106,35 @@ final class HTTP1Codec: @unchecked Sendable {
         self.accumulator.writeBytes(bytes)
     }
 
-    // MARK: - Parse + dispatch (called in a loop after feed)
+    // MARK: - Parse + dispatch (the single hot-path entry point)
 
     /// Result of a synchronous parse + dispatch attempt.
-    enum SyncParseResult {
-        case response(HTTPResponse)  // sync response ready
-        case incomplete              // need more data
-        case needsAsync              // handler is async — caller must await
+    enum ParseResult {
+        /// Sync handler completed — the response is ready to write.
+        case response(HTTPResponse)
+        /// Handler is async — caller must `await codec.dispatchAsync()`
+        /// to obtain the response.
+        case needsAsync
+        /// Accumulator doesn't yet contain a complete request — caller
+        /// must `feed(_:)` more bytes.
+        case incomplete
     }
 
-    /// Parse + dispatch **synchronously**. No async overhead — no
-    /// continuation, no Task allocation. Used by the io_uring backend.
+    /// Parse + dispatch **synchronously**. The single hot-path entry
+    /// point shared by all backends (epoll, io_uring, NIO).
     ///
-    /// For sync handlers: parses, dispatches, resets, returns the response.
-    /// For async handlers: parses, returns `.needsAsync` — caller must
-    /// then call `dispatchAsync()`.
-    func tryParseSync() -> SyncParseResult {
+    /// For sync handlers: parses, dispatches, resets, returns `.response`.
+    /// For async handlers: parses, caches the route match in
+    /// `pendingMatch`, returns `.needsAsync` — the caller must then
+    /// call `await dispatchAsync()` to actually run the handler.
+    /// If the accumulator doesn't yet hold a complete request,
+    /// returns `.incomplete` (caller should `feed(_:)` more bytes).
+    ///
+    /// All error paths (400 malformed, 413 too large, 404 not found,
+    /// 500 handler throw / misconfiguration) are centralised here and
+    /// in `dispatchAsync()` so backends cannot drift apart in how
+    /// they synthesise these responses.
+    func tryParse() -> ParseResult {
         switch self.parseAndExtract() {
         case .incomplete:
             return .incomplete
@@ -114,15 +144,12 @@ final class HTTP1Codec: @unchecked Sendable {
             break
         }
 
-        // Sync dispatch
+        // Dispatch the parsed request through the registered handler
+        // or router. The router path performs its own match + 404;
+        // the handler path skips routing.
         if let router = self.router {
             guard let m = router.match(method: self.ctx.method, path: self.ctx.path) else {
-                let r = HTTPResponse.plaintext(
-                    "404 Not Found: \(self.ctx.method) \(self.ctx.pathString)\n",
-                    status: HTTPStatus(404, reasonPhrase: "Not Found"),
-                    keepAlive: false,
-                    into: &self.ctx.responseBuffer
-                )
+                let r = self.notFoundResponse()
                 self.afterDispatch()
                 return .response(r)
             }
@@ -154,65 +181,49 @@ final class HTTP1Codec: @unchecked Sendable {
             self.afterDispatch()
             return .response(r)
         } else {
-            let r = HTTPResponse.plaintext(
-                "500 Internal Server Error\n",
-                status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
-                keepAlive: false,
-                into: &self.responseBuffer
-            )
+            // Neither router nor handler configured — construction-
+            // time bug. StarlightServer.start() pre-validates this,
+            // but we synthesise a 500 defensively rather than crash.
+            let r = self.internalErrorResponse()
             self.afterDispatch()
             return .response(r)
         }
     }
 
-    /// Async dispatch — used when `tryParseSync()` returned `.needsAsync`.
-    /// Must be called from an async context.
+    /// Async continuation — used when `tryParse()` returned `.needsAsync`.
+    /// Must be called from an async context, exactly once per
+    /// `.needsAsync` result.
     ///
-    /// Uses the cached route match from `tryParseSync()` to avoid
-    /// matching the route a second time.
+    /// Consumes the cached route match from `pendingMatch` and invokes
+    /// the async handler. The cache avoids a second `router.match()`
+    /// call (which would otherwise run twice — once to discover the
+    /// handler is async, once to dispatch).
     func dispatchAsync() async -> HTTPResponse {
-        let response: HTTPResponse
+        precondition(self.pendingMatch != nil,
+            "dispatchAsync() called without a preceding .needsAsync from tryParse()")
+        let cached = self.pendingMatch!
+        self.pendingMatch = nil
+        self.ctx.params = cached.params
 
-        if let cached = self.pendingMatch {
-            // Use cached match — avoids redundant router.match() call.
-            self.pendingMatch = nil
-            self.ctx.params = cached.params
-            do {
-                switch cached.handler {
-                case .sync(let fn):
-                    response = try fn(self.ctx)
-                case .async(let fn):
-                    response = try await fn(self.ctx)
-                }
-            } catch {
-                self.afterDispatch()
-                return self.synthesize500(error)
+        let response: HTTPResponse
+        do {
+            switch cached.handler {
+            case .sync(let fn):
+                // The handler was tagged async at compose time (e.g.
+                // async-only middleware promoted a sync handler).
+                response = try fn(self.ctx)
+            case .async(let fn):
+                response = try await fn(self.ctx)
             }
-        } else if let router = self.router {
-            do {
-                response = try await router.handle(&self.ctx)
-            } catch {
-                self.afterDispatch()
-                return self.synthesize500(error)
-            }
-        } else if let handler = self.handler {
-            do {
-                response = try handler(self.ctx)
-            } catch {
-                self.afterDispatch()
-                return self.synthesize500(error)
-            }
-        } else {
-            response = HTTPResponse.plaintext(
-                "500 Internal Server Error\n",
-                status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
-                keepAlive: false,
-                into: &self.responseBuffer
-            )
+        } catch {
+            self.afterDispatch()
+            return self.synthesize500(error)
         }
         self.afterDispatch()
         return response
     }
+
+    // MARK: - Shared helpers
 
     /// Reset state after dispatch (called by both sync and async paths).
     internal func afterDispatch() {
@@ -228,19 +239,22 @@ final class HTTP1Codec: @unchecked Sendable {
         self.accumulator.discardReadBytes()
     }
 
-    /// Synthesise a `500 Internal Server Error` response for an
-    /// uncaught handler error. The connection is closed after the
-    /// response is written (`keepAlive: false`) — a thrown error
-    /// may indicate corrupted state, so we don't trust the
-    /// connection to recover.
-    ///
-    /// The error itself is intentionally not logged at this layer:
-    /// stderr is global mutable state under Swift 6 strict
-    /// concurrency, and a logging strategy belongs in user-supplied
-    /// error-handling middleware (a future addition) rather than in
-    /// the codec. Production builds silently convert the throw to
-    /// 500; tests can verify the 500 status code.
-    internal func synthesize500(_ error: Error) -> HTTPResponse {
+    /// `404 Not Found` response for unmatched routes. Uses the
+    /// per-connection `ctx.responseBuffer` for zero-alloc error
+    /// responses on keep-alive connections.
+    internal func notFoundResponse() -> HTTPResponse {
+        return HTTPResponse.plaintext(
+            "404 Not Found: \(self.ctx.method) \(self.ctx.pathString)\n",
+            status: HTTPStatus(404, reasonPhrase: "Not Found"),
+            keepAlive: false,
+            into: &self.ctx.responseBuffer
+        )
+    }
+
+    /// `500 Internal Server Error` response for misconfiguration
+    /// (no router/handler wired up) — defensively returned rather
+    /// than crashing when StarlightServer's precondition is bypassed.
+    internal func internalErrorResponse() -> HTTPResponse {
         return HTTPResponse.plaintext(
             "500 Internal Server Error\n",
             status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
@@ -249,47 +263,22 @@ final class HTTP1Codec: @unchecked Sendable {
         )
     }
 
-    /// Try to parse and dispatch one complete request from the
-    /// accumulator. Returns the response, or `nil` if the
-    /// accumulator doesn't have a complete request yet.
-    func tryParse() async -> HTTPResponse? {
-        switch self.parseAndExtract() {
-        case .incomplete:
-            return nil
-        case .errorResponse(let r):
-            return r
-        case .parsed:
-            break
-        }
-
-        // Invoke the user handler (or the router).
-        let response: HTTPResponse
-        if let router = self.router {
-            do {
-                response = try await router.handle(&self.ctx)
-            } catch {
-                response = self.synthesize500(error)
-            }
-        } else if let handler = self.handler {
-            do {
-                response = try handler(self.ctx)
-            } catch {
-                response = self.synthesize500(error)
-            }
-        } else {
-            response = HTTPResponse.plaintext(
-                "500 Internal Server Error\n",
-                status: HTTPStatus(500, reasonPhrase: "Internal Server Error"),
-                keepAlive: false,
-                into: &self.responseBuffer
-            )
-        }
-
-        self.afterDispatch()
-        return response
+    /// `500 Internal Server Error` response for an uncaught handler
+    /// error. The connection is closed after the response is written
+    /// (`keepAlive: false`) — a thrown error may indicate corrupted
+    /// state, so we don't trust the connection to recover.
+    ///
+    /// The error itself is intentionally not logged at this layer:
+    /// `stderr` is global mutable state under Swift 6 strict
+    /// concurrency, and a logging strategy belongs in user-supplied
+    /// error-handling middleware (a future addition) rather than in
+    /// the codec. Production builds silently convert the throw to
+    /// 500; tests can verify the 500 status code.
+    internal func synthesize500(_ error: Error) -> HTTPResponse {
+        return self.internalErrorResponse()
     }
 
-    // MARK: - Internal: shared parsing logic
+    // MARK: - Internal: parsing phase
 
     /// Internal result of the parsing phase.
     private enum ParseState {
@@ -301,8 +290,6 @@ final class HTTP1Codec: @unchecked Sendable {
     /// Parse one request from the accumulator. Extracts zero-copy
     /// path/body slices and advances the reader index. On error or
     /// incomplete input, resets state appropriately.
-    ///
-    /// Shared between `tryParse()` (async) and `tryParseSync()`.
     private func parseAndExtract() -> ParseState {
         // DoS defence — flag was set by feed() when the incoming
         // chunk would have exceeded maxAccumulatorBytes.
@@ -371,9 +358,8 @@ final class HTTP1Codec: @unchecked Sendable {
 
         // Note: query string is copied into `ctx.query` directly by
         // the parser inside `feed()` — same encapsulation pattern as
-        // headers (`ctx.headers.copyBlock`). The codec only needs
-        // `parser.queryLength` here as a sanity check, but performs
-        // no copy itself.
+        // headers (`ctx.headers.copyBlock`). The codec performs no
+        // query copy itself.
 
         // Extract body as a zero-copy COW ByteBuffer slice.
         let bodyLen = self.parser.bodyLength

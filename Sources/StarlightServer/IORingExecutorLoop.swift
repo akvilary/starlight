@@ -296,7 +296,7 @@ final class IORingExecutorLoop: @unchecked Sendable {
         var needsRead = true
         while true {
             parseLoop: while true {
-                let result = codec.tryParseSync()
+                let result = codec.tryParse()
                 switch result {
                 case .incomplete:
                     needsRead = true

@@ -31,7 +31,7 @@ struct HandlerThrowsTests {
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
 
-        let response = await codec.tryParse()
+        let response = await codec.parseAndDispatch()
         #expect(response != nil)
         #expect(response!.keepAlive == false)
 
@@ -54,7 +54,7 @@ struct HandlerThrowsTests {
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
 
-        let response = await codec.tryParse()
+        let response = await codec.parseAndDispatch()
         #expect(response != nil)
         #expect(response!.keepAlive == false)
 
@@ -95,7 +95,7 @@ struct HandlerThrowsTests {
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
 
-        let response = await codec.tryParse()
+        let response = await codec.parseAndDispatch()
         #expect(response != nil)
         #expect(response!.keepAlive == true)
     }
@@ -110,22 +110,22 @@ struct HandlerThrowsTests {
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
 
-        let response = await codec.tryParse()
+        let response = await codec.parseAndDispatch()
         #expect(response != nil)
         #expect(response!.keepAlive == true)
     }
 
     // MARK: - Sync dispatch path (io_uring / epoll backend)
 
-    @Test("tryParseSync handles throwing sync handler → 500")
-    func tryParseSyncThrowingHandler() {
+    @Test("tryParse handles throwing sync handler → 500")
+    func tryParseThrowingSyncHandler() {
         let codec = HTTP1Codec(handler: { _ in throw TestError(message: "sync boom") })
 
         var bytes = ByteBufferAllocator().buffer(capacity: 64)
         bytes.writeString("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
 
-        let result = codec.tryParseSync()
+        let result = codec.tryParse()
         if case .response(let response) = result {
             #expect(response.keepAlive == false)
             let body = response.headerBuffer.getString(

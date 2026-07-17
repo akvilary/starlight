@@ -430,23 +430,49 @@ extension StarlightServer {
                 for try await bytes in inbound {
                     _ = stats.bytesReceived.add(Int64(bytes.readableBytes))
                     codec.feed(bytes)
-                    while let response = await codec.tryParse() {
-                        if let bodyBuf = response.bodyBuffer {
-                            _ = stats.bytesSent.add(Int64(
-                                response.headerBuffer.readableBytes &+ bodyBuf.readableBytes))
-                            try await outbound.write(contentsOf: [
-                                response.headerBuffer, bodyBuf,
-                            ])
-                        } else {
-                            _ = stats.bytesSent.add(Int64(response.headerBuffer.readableBytes))
-                            try await outbound.write(response.headerBuffer)
-                        }
-                        if !response.keepAlive {
-                            return
+                    // Drive the codec with the same tryParse() +
+                    // dispatchAsync() loop used by the epoll and
+                    // io_uring backends. All three backends share
+                    // the exact same dispatch logic — only the I/O
+                    // surface differs.
+                    parseLoop: while true {
+                        switch codec.tryParse() {
+                        case .incomplete:
+                            break parseLoop
+                        case .response(let response):
+                            try await Self.writeResponse(
+                                response, into: outbound, stats: stats
+                            )
+                            if !response.keepAlive { return }
+                        case .needsAsync:
+                            let response = await codec.dispatchAsync()
+                            try await Self.writeResponse(
+                                response, into: outbound, stats: stats
+                            )
+                            if !response.keepAlive { return }
                         }
                     }
                 }
             }
         } catch {}
+    }
+
+    /// Write an HTTPResponse to a NIO outbound channel and update the
+    /// stats counters. Shared between the sync and async dispatch
+    /// paths of `handleHTTPConnection`.
+    private static func writeResponse(
+        _ response: HTTPResponse,
+        into outbound: NIOAsyncChannelOutboundWriter<ByteBuffer>,
+        stats: ServerStats
+    ) async throws {
+        if let bodyBuf = response.bodyBuffer {
+            _ = stats.bytesSent.add(Int64(
+                response.headerBuffer.readableBytes &+ bodyBuf.readableBytes
+            ))
+            try await outbound.write(contentsOf: [response.headerBuffer, bodyBuf])
+        } else {
+            _ = stats.bytesSent.add(Int64(response.headerBuffer.readableBytes))
+            try await outbound.write(response.headerBuffer)
+        }
     }
 }

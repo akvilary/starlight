@@ -28,14 +28,14 @@ struct HTTP1CodecTests {
         codec.feed(bytes)
 
         // First call: should return one 400 response.
-        let response1 = await codec.tryParse()
+        let response1 = await codec.parseAndDispatch()
         #expect(response1 != nil)
         #expect(response1!.keepAlive == false)
 
         // Second call: accumulator was cleared → must return nil.
         // Before the fix this returned another 400, then another,
         // forever — the "idle loop".
-        let response2 = await codec.tryParse()
+        let response2 = await codec.parseAndDispatch()
         #expect(response2 == nil)
     }
 
@@ -46,11 +46,11 @@ struct HTTP1CodecTests {
         bytes.writeString("GET / HTTP/2.0\r\n\r\n")
         codec.feed(bytes)
 
-        let response1 = await codec.tryParse()
+        let response1 = await codec.parseAndDispatch()
         #expect(response1 != nil)
         #expect(response1!.keepAlive == false)
 
-        let response2 = await codec.tryParse()
+        let response2 = await codec.parseAndDispatch()
         #expect(response2 == nil)
     }
 
@@ -61,11 +61,11 @@ struct HTTP1CodecTests {
         bytes.writeString("GET / HTTP/1.1\r\nNoColonHereJustText\r\n\r\n")
         codec.feed(bytes)
 
-        let response1 = await codec.tryParse()
+        let response1 = await codec.parseAndDispatch()
         #expect(response1 != nil)
         #expect(response1!.keepAlive == false)
 
-        let response2 = await codec.tryParse()
+        let response2 = await codec.parseAndDispatch()
         #expect(response2 == nil)
     }
 
@@ -81,12 +81,12 @@ struct HTTP1CodecTests {
         bytes.writeBytes([UInt8](repeating: 0x41, count: 100))
         codec.feed(bytes)
 
-        let response1 = await codec.tryParse()
+        let response1 = await codec.parseAndDispatch()
         #expect(response1 != nil)
         #expect(response1!.keepAlive == false)
 
         // Accumulator was cleared, parser was reset → nil.
-        let response2 = await codec.tryParse()
+        let response2 = await codec.parseAndDispatch()
         #expect(response2 == nil)
     }
 
@@ -101,7 +101,7 @@ struct HTTP1CodecTests {
         small.writeString("GET / HTTP/1.1\r\n\r\n")
         codec.feed(small)
         // This should parse fine.
-        let ok = await codec.tryParse()
+        let ok = await codec.parseAndDispatch()
         #expect(ok != nil)
         #expect(ok!.keepAlive == true)
 
@@ -111,7 +111,7 @@ struct HTTP1CodecTests {
         huge.writeBytes([UInt8](repeating: 0x41, count: 100))
         codec.feed(huge)
 
-        let resp = await codec.tryParse()
+        let resp = await codec.parseAndDispatch()
         #expect(resp != nil)
         #expect(resp!.keepAlive == false)
 
@@ -119,7 +119,7 @@ struct HTTP1CodecTests {
         var good = ByteBufferAllocator().buffer(capacity: 64)
         good.writeString("GET /ok HTTP/1.1\r\n\r\n")
         codec.feed(good)
-        let recovered = await codec.tryParse()
+        let recovered = await codec.parseAndDispatch()
         #expect(recovered != nil)
         #expect(recovered!.keepAlive == true)
     }
@@ -134,7 +134,7 @@ struct HTTP1CodecTests {
         var bad = ByteBufferAllocator().buffer(capacity: 64)
         bad.writeString("GARBAGE\r\n\r\n")
         codec.feed(bad)
-        let errResponse = await codec.tryParse()
+        let errResponse = await codec.parseAndDispatch()
         #expect(errResponse != nil)
         #expect(errResponse!.keepAlive == false)
 
@@ -144,7 +144,7 @@ struct HTTP1CodecTests {
         var good = ByteBufferAllocator().buffer(capacity: 128)
         good.writeString("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
         codec.feed(good)
-        let okResponse = await codec.tryParse()
+        let okResponse = await codec.parseAndDispatch()
         #expect(okResponse != nil)
         #expect(okResponse!.keepAlive == true)
     }
@@ -158,13 +158,13 @@ struct HTTP1CodecTests {
         bytes.writeString("GET /first HTTP/1.1\r\n\r\nGET /second HTTP/1.1\r\n\r\n")
         codec.feed(bytes)
 
-        let r1 = await codec.tryParse()
+        let r1 = await codec.parseAndDispatch()
         #expect(r1 != nil)
 
-        let r2 = await codec.tryParse()
+        let r2 = await codec.parseAndDispatch()
         #expect(r2 != nil)
 
-        let r3 = await codec.tryParse()
+        let r3 = await codec.parseAndDispatch()
         #expect(r3 == nil)
     }
 
@@ -180,7 +180,7 @@ struct HTTP1CodecTests {
         bytes.writeString("GET /hello HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
 
-        let response = await codec.tryParse()
+        let response = await codec.parseAndDispatch()
         #expect(response != nil)
         #expect(response!.keepAlive == true)
     }
@@ -199,7 +199,7 @@ struct HTTP1CodecTests {
         bytes.writeString("GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes)
 
-        let response = await codec.tryParse()
+        let response = await codec.parseAndDispatch()
         #expect(response != nil)
         #expect(response!.keepAlive == true)
 
@@ -220,14 +220,14 @@ struct HTTP1CodecTests {
         var bytes1 = ByteBufferAllocator().buffer(capacity: 64)
         bytes1.writeString("GET /ok HTTP/1.1\r\nHost: x\r\n\r\n")
         codec.feed(bytes1)
-        let r1 = await codec.tryParse()
+        let r1 = await codec.parseAndDispatch()
         #expect(r1 != nil)
 
         // Request 2: malformed → 400 Bad Request.
         var bytes2 = ByteBufferAllocator().buffer(capacity: 64)
         bytes2.writeString("GARBAGE\r\n\r\n")
         codec.feed(bytes2)
-        let r2 = await codec.tryParse()
+        let r2 = await codec.parseAndDispatch()
         #expect(r2 != nil)
         let body2 = r2!.headerBuffer.getString(at: 0, length: r2!.headerBuffer.readableBytes) ?? ""
         #expect(body2.contains("400 Bad Request"))
