@@ -110,29 +110,6 @@ public struct HeaderView: Sendable {
         }
     }
 
-    /// Zero-copy header lookup. Returns the value as a byte buffer
-    /// pointing directly into the header block — no `String`
-    /// allocation. Use this in performance-critical handlers that
-    /// need to inspect header values without paying for String
-    /// construction.
-    ///
-    /// The returned pointer is valid until the next `removeAll()` or
-    /// `copyBlock(...)` call.
-    ///
-    /// - Complexity: O(blockLen) byte comparisons.
-    public func bytes(for name: String) -> UnsafeBufferPointer<UInt8>? {
-        guard self.block.readableBytes > 0 else { return nil }
-        return self.block.withUnsafeReadableBytes { rawBytes -> UnsafeBufferPointer<UInt8>? in
-            rawBytes.withMemoryRebound(to: UInt8.self) { typedBytes -> UnsafeBufferPointer<UInt8>? in
-                guard let base = typedBytes.baseAddress else { return nil }
-                guard let (start, len) = HeaderView.findBytes(
-                    name: name, in: base, length: typedBytes.count
-                ) else { return nil }
-                return UnsafeBufferPointer(start: base.advanced(by: start), count: len)
-            }
-        }
-    }
-
     /// Case-insensitive comparison of a header value against an
     /// expected ASCII string, without allocating a `String` for the
     /// header value. Returns `true` if the header exists and matches.

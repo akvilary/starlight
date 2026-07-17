@@ -29,7 +29,10 @@ import Glibc
 // MARK: - Shared types
 
 /// Connection counters for stats, padded to avoid false sharing.
-public final class ServerStats: @unchecked Sendable {
+/// All fields are `let`-bound atomics (`PaddedAtomicInt64: Sendable`),
+/// so the compiler derives `Sendable` for free — no `@unchecked`
+/// escape hatch needed.
+public final class ServerStats: Sendable {
     public let connectionsAccepted = PaddedAtomicInt64()
     public let bytesReceived = PaddedAtomicInt64()
     public let bytesSent = PaddedAtomicInt64()
