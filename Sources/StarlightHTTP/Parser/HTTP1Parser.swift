@@ -89,6 +89,18 @@ public struct HTTP1Parser: ~Copyable {
     /// Valid after the request line has been parsed.
     public private(set) var pathLength: Int = 0
 
+    /// Offset into the input buffer where the query string begins
+    /// (immediately after the `?` separator). Zero when there is no
+    /// query component. The codec uses this together with
+    /// `queryLength` to copy the (still URL-encoded) bytes into
+    /// `RequestContext.query` via `QueryView.copyBlock`.
+    public private(set) var queryStart: Int = 0
+
+    /// Length of the URL query string in the input buffer. Zero when
+    /// there is no query component. Valid after the request line has
+    /// been parsed.
+    public private(set) var queryLength: Int = 0
+
     /// Offset into the input buffer where the header section begins.
     private var headerBlockStart: Int = 0
 
@@ -145,6 +157,8 @@ public struct HTTP1Parser: ~Copyable {
         self.bodyStart = 0
         self.pathStart = 0
         self.pathLength = 0
+        self.queryStart = 0
+        self.queryLength = 0
     }
 
     /// Feed bytes from an accumulated buffer. The parser reads from
@@ -252,11 +266,41 @@ public struct HTTP1Parser: ~Copyable {
         guard pLen >= 1 else {
             state = .error; throw HTTP1ParseError.malformedRequestLine
         }
-        // Strip query string here (once per request) so the router's
-        // match() doesn't need to scan for '?' on every call.
+        // Split path and query string. The query (RFC 3986 §3.4) is
+        // everything after the first `?` up to the SP that ends the
+        // request target. We remember both halves here, once per
+        // request, so:
+        //   - the router's match() doesn't need to scan for `?` on
+        //     every call (it sees only the path slice);
+        //   - the codec can extract the query slice into
+        //     `RequestContext.query` so handlers can read URL
+        //     parameters without re-parsing the request line.
+        //
+        // SWAR-accelerated byte search — same primitive the rest of
+        // the parser uses for `\n`, `:`, etc. For paths with no `?`
+        // (the common case) this is a single chunked scan; the tail
+        // loop handles the last <8 bytes byte-by-byte.
         var actualPathLen = pLen
-        for i in 0..<pLen {
-            if buffer[pStart + i] == 0x3F { actualPathLen = i; break }
+        if let q = SearchAlgorithm.findByte(0x3F, in: buffer, from: pStart, to: sp2) {
+            actualPathLen = q - pStart
+            self.queryStart = q + 1
+            self.queryLength = sp2 - (q + 1)
+            // Copy the query bytes into `ctx.query` now, while we hold
+            // a borrow on the input buffer. Same encapsulation pattern
+            // as `ctx.headers.copyBlock` at end-of-headers: the parser
+            // owns the byte view, the context owns the decoded state.
+            // Copying (vs. storing an offset+length) is required
+            // because the codec compacts the accumulator via
+            // `discardReadBytes()` between keep-alive requests — an
+            // offset-based view would dangle.
+            ctx.query.copyBlock(
+                from: buffer,
+                offset: self.queryStart,
+                count: self.queryLength
+            )
+        } else {
+            self.queryStart = 0
+            self.queryLength = 0
         }
         self.pathStart = pStart
         self.pathLength = actualPathLen

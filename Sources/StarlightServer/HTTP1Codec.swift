@@ -313,6 +313,12 @@ final class HTTP1Codec: @unchecked Sendable {
             ) ?? self.ctx.path
         }
 
+        // Note: query string is copied into `ctx.query` directly by
+        // the parser inside `feed()` — same encapsulation pattern as
+        // headers (`ctx.headers.copyBlock`). The codec only needs
+        // `parser.queryLength` here as a sanity check, but performs
+        // no copy itself.
+
         // Extract body as a zero-copy COW ByteBuffer slice.
         let bodyLen = self.parser.bodyLength
         if bodyLen > 0 {

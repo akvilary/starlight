@@ -49,6 +49,14 @@ public struct RequestContext: ~Copyable {
     /// handlers use `params` for dynamic segments).
     public var path: ByteBuffer
 
+    /// URL query string (e.g. `foo=bar&baz=1` from `/path?foo=bar&baz=1`).
+    /// Stored as a COW `ByteBuffer` slice inside `QueryView` —
+    /// zero-copy until the handler actually reads a parameter via
+    /// subscript, at which point the matched value is materialised
+    /// (and URL-decoded) as a `String`. Routes whose handlers never
+    /// read query parameters pay zero allocation.
+    public var query: QueryView
+
     /// Path parameters extracted by the router from dynamic segments
     /// (e.g. `:id` in `/users/:id` → `params["id"] == "42"`).
     ///
@@ -87,6 +95,7 @@ public struct RequestContext: ~Copyable {
         self.method = .other(raw: "")
         self.status = .ok
         self.path = ByteBufferAllocator().buffer(capacity: 0)
+        self.query = QueryView()
         self.params = Params()
         self.headers = HeaderView()
         self.body = nil
@@ -95,19 +104,24 @@ public struct RequestContext: ~Copyable {
 
     /// Reset the context between keep-alive requests on the same connection.
     ///
-    /// Restores `method`, `status`, `path`, `params`, `headers`, `body`
-    /// to their defaults. ByteBuffer storage is retained (COW) so the
-    /// next request reuses it without allocation.
+    /// Restores `method`, `status`, `path`, `query`, `params`, `headers`,
+    /// `body` to their defaults. ByteBuffer storage is retained (COW)
+    /// so the next request reuses it without allocation.
     ///
     /// - Complexity: O(params.count + headers.count). Independent of
     ///   request size.
     public mutating func reset() {
         self.method = .other(raw: "")
         self.status = .ok
-        self.path.clear()
+        // Drop COW references that share `path`'s storage BEFORE
+        // clearing `path` itself — otherwise `path.clear()` would
+        // trigger copy-on-write (the storage is shared with
+        // `params.backingBuffer`, set during route matching).
         self.params.removeAll()
         self.headers.removeAll()
+        self.query.removeAll()
         self.body = nil
+        self.path.clear()
         // Note: responseBuffer is intentionally NOT cleared here.
         // It is cleared by HTTPResponse.plaintext(_:into:) when the
         // next response is written. If no response writes into it,
