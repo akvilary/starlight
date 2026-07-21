@@ -77,6 +77,19 @@ public actor Worker {
     var inFlightConns: Int = 0
     let maxConnectionsPerWorker: Int
 
+    /// Set by `initiateShutdown()`. While `true`, `handleAccept()`
+    /// stops draining the accept queue — no new connections are
+    /// accepted, but in-flight Tasks are allowed to complete.
+    ///
+    /// Stored as a plain `var` — only mutated from inside the actor
+    /// (which means: only from the loop thread, via assumeIsolated).
+    var isShuttingDown: Bool = false
+
+    /// Continuation resumed when `inFlightConns` reaches 0 (or when
+    /// the drain timeout fires). Set by `waitForDrain(...)`, cleared
+    /// when resumed. `nil` outside an active drain.
+    var drainContinuation: CheckedContinuation<Void, Never>?
+
     // MARK: - Init
 
     public init(
@@ -116,8 +129,13 @@ public actor Worker {
     // MARK: - Accept
 
     /// Drain the accept queue. Called from the listener's watch
-    /// callback (loop thread, via assumeIsolated).
+    /// callback (loop thread, via assumeIsolated). Stops draining
+    /// once `isShuttingDown` is set — incoming connections are
+    /// still TCP-accepted by the kernel (they sit in the listener's
+    /// backlog) but `accept4` is not called, so they wait until the
+    /// process exits or the listener fd is closed.
     func handleAccept() {
+        if isShuttingDown { return }
         while true {
             let fd = sl_accept4(listenerFd)
             if fd < 0 { break }  // EAGAIN — drained
@@ -170,8 +188,45 @@ public actor Worker {
     }
 
     /// Called when a connection Task exits. Decrements the counter.
+    /// If a drain is in progress and the counter reaches 0, resumes
+    /// the drain continuation — the worker can now exit cleanly.
     func connectionClosed() {
         inFlightConns &-= 1
+        if inFlightConns == 0, let cont = drainContinuation {
+            drainContinuation = nil
+            cont.resume()
+        }
+    }
+
+    // MARK: - Graceful shutdown
+
+    /// Stop accepting new connections. Existing per-conn Tasks are
+    /// allowed to finish naturally. Called from the serve() shutdown
+    /// monitor Task — must be async because it crosses into the
+    /// actor from outside.
+    public func initiateShutdown() {
+        isShuttingDown = true
+        // No immediate effect on the listener fd — handleAccept's
+        // next invocation will return early. The listener stays
+        // open until eventLoop.run() returns.
+    }
+
+    /// Wait for all in-flight connections to complete. Returns
+    /// immediately if there are none. Resumes when `inFlightConns`
+    /// hits 0 OR when `forceShutdown()` is called externally
+    /// (timeout path).
+    public func waitForDrain() async {
+        if inFlightConns == 0 { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            drainContinuation = cont
+        }
+    }
+
+    /// Force-shutdown: stop the eventLoop. In-flight per-conn Tasks
+    /// have their continuations resumed with errors by
+    /// `PollEventLoop.recoverOrphanedContinuations()`.
+    public nonisolated func forceShutdown() {
+        eventLoop.shutdown()
     }
 
     // MARK: - Per-connection driver (non-isolated)

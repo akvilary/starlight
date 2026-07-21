@@ -31,21 +31,29 @@ import CLinuxExt
 /// axum analogue:
 ///
 /// ```swift
-/// let router = Router(state: AppState())
-///     .get("/") { _ in .plain("hello") }
-///     .get("/users/:id") { (p: Path<User>) in ... }
-/// try await serve(router, on: "0.0.0.0", port: 8080)
+/// installShutdownSignalHandlers()
+/// try await serve(
+///     router,
+///     on: "0.0.0.0", port: 8080,
+///     onShutdown: { await waitForShutdownSignal() }
+/// )
 /// ```
 public func serve<S: Service>(
     _ service: S,
     on host: String = "0.0.0.0",
     port: Int = 8080,
-    loopCount: Int = ProcessInfo.processInfo.activeProcessorCount
+    loopCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+    drainTimeout: Duration = .seconds(30),
+    onShutdown: @escaping @Sendable () async -> Void = {
+        await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+    }
 ) async throws where S.Request == HTTP.Request<Body>,
                       S.Response == HTTP.Response<Body> {
     try await StarlightServer.serve(
         host: host, port: port,
         service: service,
-        loopCount: loopCount
+        loopCount: loopCount,
+        drainTimeout: drainTimeout,
+        onShutdown: onShutdown
     )
 }
