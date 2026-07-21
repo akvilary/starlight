@@ -360,5 +360,6 @@ type system or runtime model doesn't allow a literal port.
 | 2 | 2026-07-21 | ROADMAP dropped, reference axum directly. `aaf682f`. |
 | 3 | 2026-07-21 | Extracted `../http` + `../hyper` packages. `f9bc525`. |
 | 4 | 2026-07-21 | Working HTTP server, Worker actor, 136K req/s. `5bec2ed`. |
-| 5 | 2026-07-21 | Phase 1.1 done: graceful shutdown via SIGINT/SIGTERM + drain timeout. |
-| 6 | — | _Phase 1.2 start (Streaming bodies)_ |
+| 5 | 2026-07-21 | Phase 1.1: graceful shutdown via SIGINT/SIGTERM + drain timeout. `280c554`. |
+| 6 | 2026-07-21 | Phase 1.2: streaming bodies + chunked TE (in + out). `8d917f3`. |
+| 7 | — | _Phase 1.3 start (Router.nest + layer)_ |
