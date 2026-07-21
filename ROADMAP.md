@@ -28,6 +28,7 @@ doesn't allow a literal port.
 | Handler closure ergonomics | ✅ |
 | Tier 1 bug fixes (B1-B5) | ✅ |
 | Tier 2 API parity (with_state, Handler4-6, IntoResponseParts) | ✅ |
+| Tier 3 axum parity (Sse, DefaultBodyLimit, Host) | ✅ |
 | Бенчмарк | ~234K req/s (release, 12-core, wrk -t12 -c100 -d3s) |
 | CompressionLayer | ❌ |
 | Sse<Stream> structured helper | ❌ |
@@ -88,36 +89,11 @@ doesn't allow a literal port.
 
 ---
 
-## Next — Tier 3: Remaining axum parity
+## Done — Tier 3: Remaining axum parity
 
-### 3.1 Sse<Stream> structured helper
-
-**Референс:** `axum::response::Sse`.
-
-- [ ] `Sse<S: AsyncSequence>` response type
-- [ ] `KeepAlive` configuration
-- [ ] Event formatting (data/event/id/retry fields)
-
-**Время:** ~3 часа.
-
-### 3.2 DefaultBodyLimit
-
-**Референс:** `axum::extract::DefaultBodyLimit`.
-
-- [ ] Layer that sets max body size via extensions
-- [ ] `Body.collect(maxBytes:)` respects the limit
-- [ ] 413 Payload Too Large on excess
-
-**Время:** ~2 часа.
-
-### 3.3 Host extractor
-
-**Референс:** `axum::extract::Host`.
-
-- [ ] Extract Host header as typed `Host` struct
-- [ ] Forwarded/X-Forwarded-Host support
-
-**Время:** ~1 час.
+- [x] **3.1** Sse<Stream> + SseEvent (structured SSE response)
+- [x] **3.2** DefaultBodyLimit (layer + extension-based limit)
+- [x] **3.3** Host extractor (Forwarded / X-Forwarded-Host / Host)
 
 ---
 
@@ -224,4 +200,5 @@ doesn't allow a literal port.
 | 17 | 2026-07-21 | Full audit: 5 bugs, 24 missing, 12 deviations identified |
 | 18 | 2026-07-21 | Tier 1 fixes: B1-B5 (ConnectInfo, Json status, Router init, CORS, shutdown) |
 | 19 | 2026-07-21 | Tier 2: with_state + HandlerService4-6 + IntoResponseParts |
-| 20 | — | _Next_ |
+| 20 | 2026-07-21 | Tier 3: Sse<Stream> + DefaultBodyLimit + Host extractor |
+| 21 | — | _Next: Phase 4 (Compression / WebSocket / TLS / Static files)_ |
