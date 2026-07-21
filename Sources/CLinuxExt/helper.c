@@ -22,6 +22,10 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/sendfile.h>
+#include <zlib.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 int sl_accept4(int fd) {
     return accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
@@ -94,6 +98,37 @@ int sl_bind_listener(const char *host, int port) {
         return -errno;
     }
     return fd;
+}
+
+// ── sendfile(2) zero-copy file→socket transfer ──────────────────
+long sl_sendfile(int out_fd, int in_fd, long offset, long count) {
+    off_t off = (off_t)offset;
+    ssize_t n = sendfile(out_fd, in_fd, &off, (size_t)count);
+    return (long)n;
+}
+
+// ── gzip compression via zlib ────────────────────────────────────
+long sl_gzip_compress(const unsigned char *input, long input_len,
+                      unsigned char *output, long output_len, int level) {
+    z_stream stream;
+    memset(&stream, 0, sizeof(stream));
+
+    // 15 + 16 = gzip encoding (window bits + gzip header)
+    int ret = deflateInit2(&stream, level, Z_DEFLATED,
+                           15 + 16, 8, Z_DEFAULT_STRATEGY);
+    if (ret != Z_OK) return -1;
+
+    stream.next_in = (Bytef *)input;
+    stream.avail_in = (uInt)input_len;
+    stream.next_out = (Bytef *)output;
+    stream.avail_out = (uInt)output_len;
+
+    ret = deflate(&stream, Z_FINISH);
+    long total = (long)stream.total_out;
+    deflateEnd(&stream);
+
+    if (ret != Z_STREAM_END) return -1;
+    return total;
 }
 
 #endif /* __linux__ */

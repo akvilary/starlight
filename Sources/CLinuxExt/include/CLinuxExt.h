@@ -33,6 +33,15 @@ void sl_pin_to_cpu(int cpu);
 /// INADDR_ANY); `port` is the port number.
 int sl_bind_listener(const char *host, int port);
 
+/// Zero-copy file→socket transfer. Wrapper around sendfile(2).
+/// Returns bytes sent, or -1 on error.
+long sl_sendfile(int out_fd, int in_fd, long offset, long count);
+
+/// Compress data using gzip (zlib). Returns compressed size, or -1 on error.
+/// `output` must be at least `input_len + 64` bytes.
+long sl_gzip_compress(const unsigned char *input, long input_len,
+                      unsigned char *output, long output_len, int level);
+
 #ifdef __cplusplus
 }
 #endif

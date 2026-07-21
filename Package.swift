@@ -112,7 +112,8 @@ let package = Package(
         .target(
             name: "CLinuxExt",
             path: "Sources/CLinuxExt",
-            publicHeadersPath: "include"
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("z")]  // zlib for gzip compression
         ),
 
         // ── StarlightPoll — tokio::runtime analog. ────────────────
@@ -207,6 +208,7 @@ let package = Package(
             dependencies: [
                 "StarlightCore",
                 "StarlightExtractors",
+                "CLinuxExt",
                 .product(name: "HTTP", package: "http"),
                 "StarlightTower",
             ],
