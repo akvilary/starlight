@@ -16,7 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import StarlightHTTP
+import HTTP
 import StarlightTower
 
 /// Errors surfaced by the handler dispatcher when extraction fails.
@@ -31,7 +31,7 @@ public enum HandlerError: Error, Sendable {
     case bodyAlreadyConsumed
     /// Rejection from an extractor — already wrapped in its
     /// `intoResponse()` form so the dispatcher just returns it.
-    case rejection(StarlightHTTP.Response<Body>)
+    case rejection(HTTP.Response<Body>)
 }
 
 /// Zero-extractor handler — `() -> IntoResponse`.
@@ -49,10 +49,8 @@ where Fn: Sendable, S: Sendable, Out: IntoResponse {
 }
 
 extension HandlerService0: Service {
-    public typealias Request = StarlightHTTP.Request<Body>
-    public typealias Response = StarlightHTTP.Response<Body>
 
-    public func call(_ request: consuming StarlightHTTP.Request<Body>) async throws -> StarlightHTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
         try await f(state).intoResponse()
     }
 }
@@ -74,10 +72,8 @@ where E0: FromRequestParts, Fn: Sendable, S: Sendable, Out: IntoResponse,
 }
 
 extension HandlerService1: Service {
-    public typealias Request = StarlightHTTP.Request<Body>
-    public typealias Response = StarlightHTTP.Response<Body>
 
-    public func call(_ request: consuming StarlightHTTP.Request<Body>) async throws -> StarlightHTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
         var parts = RequestParts<Body>(request)
         let e0: E0
         do {
@@ -105,10 +101,8 @@ where E0: FromRequestParts, E1: FromRequest, Fn: Sendable, S: Sendable,
 }
 
 extension HandlerService2: Service {
-    public typealias Request = StarlightHTTP.Request<Body>
-    public typealias Response = StarlightHTTP.Response<Body>
 
-    public func call(_ request: consuming StarlightHTTP.Request<Body>) async throws -> StarlightHTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
         var parts = RequestParts<Body>(request)
         let e0: E0
         do {
@@ -119,7 +113,7 @@ extension HandlerService2: Service {
         guard let remainingBody = parts.body else {
             throw HandlerError.bodyAlreadyConsumed
         }
-        let remaining = StarlightHTTP.Request<Body>(
+        let remaining = HTTP.Request<Body>(
             method: parts.method, uri: parts.uri, version: parts.version,
             headers: parts.headers, body: remainingBody,
             extensions: parts.extensions
@@ -151,10 +145,8 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequest,
 }
 
 extension HandlerService3: Service {
-    public typealias Request = StarlightHTTP.Request<Body>
-    public typealias Response = StarlightHTTP.Response<Body>
 
-    public func call(_ request: consuming StarlightHTTP.Request<Body>) async throws -> StarlightHTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
         var parts = RequestParts<Body>(request)
         let e0: E0
         let e1: E1
@@ -171,7 +163,7 @@ extension HandlerService3: Service {
         guard let remainingBody = parts.body else {
             throw HandlerError.bodyAlreadyConsumed
         }
-        let remaining = StarlightHTTP.Request<Body>(
+        let remaining = HTTP.Request<Body>(
             method: parts.method, uri: parts.uri, version: parts.version,
             headers: parts.headers, body: remainingBody,
             extensions: parts.extensions

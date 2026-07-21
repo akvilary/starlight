@@ -15,7 +15,7 @@ import CLinuxExt
 #endif
 
 import Foundation
-import StarlightHTTP
+import HTTP
 import StarlightPoll
 import StarlightTower
 

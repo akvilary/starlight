@@ -18,7 +18,7 @@
 
 import Foundation
 import StarlightCore
-import StarlightHTTP
+import HTTP
 import StarlightTower
 
 /// Per-method handler dispatch for a single path.
@@ -113,4 +113,4 @@ public struct MethodRouter<S: Sendable>: Sendable {
 
 /// Type-erased `Service<Request<Body>, Response = Response<Body>>` —
 /// what a route handler becomes after passing through `Router<S>.get(_:)`.
-public typealias HandlerEndpoint = BoxService<StarlightHTTP.Request<Body>, StarlightHTTP.Response<Body>>
+public typealias HandlerEndpoint = BoxService<Request<Body>, Response<Body>>

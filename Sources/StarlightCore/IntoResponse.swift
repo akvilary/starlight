@@ -9,7 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import StarlightHTTP
+import HTTP
 
 /// Anything convertible to an HTTP response.
 ///
@@ -26,53 +26,53 @@ import StarlightHTTP
 /// conformance is the bridge between handler return values and the
 /// `Response<Body>` that the HTTP codec writes to the wire.
 public protocol IntoResponse {
-    func intoResponse() -> StarlightHTTP.Response<Body>
+    func intoResponse() -> Response<Body>
 }
 
 // ── Concrete conformences ──────────────────────────────────────────
 
-extension StarlightHTTP.Response: IntoResponse where B == Body {
+extension Response: IntoResponse where B == Body {
     @inlinable
-    public func intoResponse() -> StarlightHTTP.Response<Body> { self }
+    public func intoResponse() -> Response<Body> { self }
 }
 
 extension StatusCode: IntoResponse {
-    public func intoResponse() -> StarlightHTTP.Response<Body> {
+    public func intoResponse() -> Response<Body> {
         var headers = HeaderMap()
         headers.insert(.contentLength, "0")
-        return StarlightHTTP.Response<Body>(status: self, headers: headers, body: Body())
+        return Response<Body>(status: self, headers: headers, body: Body())
     }
 }
 
 extension String: IntoResponse {
-    public func intoResponse() -> StarlightHTTP.Response<Body> {
+    public func intoResponse() -> Response<Body> {
         .plain(self)
     }
 }
 
 extension StaticString: IntoResponse {
-    public func intoResponse() -> StarlightHTTP.Response<Body> {
+    public func intoResponse() -> Response<Body> {
         let s = withUTF8Buffer { Array($0) }
         return .plain(String(decoding: s, as: UTF8.self))
     }
 }
 
 extension Substring: IntoResponse {
-    public func intoResponse() -> StarlightHTTP.Response<Body> {
+    public func intoResponse() -> Response<Body> {
         .plain(String(self))
     }
 }
 
 extension Unit: IntoResponse {
-    public func intoResponse() -> StarlightHTTP.Response<Body> {
+    public func intoResponse() -> Response<Body> {
         var headers = HeaderMap()
         headers.insert(.contentLength, "0")
-        return StarlightHTTP.Response<Body>(status: .ok, headers: headers, body: Body())
+        return Response<Body>(status: .ok, headers: headers, body: Body())
     }
 }
 
 extension Result: IntoResponse where Success: IntoResponse, Failure: IntoResponse {
-    public func intoResponse() -> StarlightHTTP.Response<Body> {
+    public func intoResponse() -> Response<Body> {
         switch self {
         case .success(let value): return value.intoResponse()
         case .failure(let error): return error.intoResponse()

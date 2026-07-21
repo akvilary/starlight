@@ -31,15 +31,15 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import StarlightHTTP
+import HTTP
 import StarlightTower
 
 /// Thrown by extractors on a 4xx rejection. Carries the `Response`
 /// that should be returned to the client.
 public struct ExtractionRejection: Error, Sendable {
-    public let response: StarlightHTTP.Response<Body>
+    public let response: Response<Body>
 
-    @inlinable public init(_ response: StarlightHTTP.Response<Body>) {
+    @inlinable public init(_ response: Response<Body>) {
         self.response = response
     }
 
@@ -47,7 +47,7 @@ public struct ExtractionRejection: Error, Sendable {
         _ reason: String,
         status: StatusCode = .badRequest
     ) {
-        self.response = StarlightHTTP.Response<Body>.plain(reason, status: status)
+        self.response = Response<Body>.plain(reason, status: status)
     }
 }
 
@@ -70,7 +70,7 @@ public struct RequestParts<B: Sendable>: Sendable {
     public var body: B?
 
     @inlinable
-    public init(_ request: consuming StarlightHTTP.Request<B>) {
+    public init(_ request: consuming Request<B>) {
         self.method = request.method
         self.uri = request.uri
         self.version = request.version
@@ -114,7 +114,7 @@ public protocol FromRequest: Sendable {
     /// Extract from the full request, consuming the body if needed.
     /// Throws `ExtractionRejection` on a 4xx rejection.
     static func fromRequest(
-        _ request: consuming StarlightHTTP.Request<Body>,
+        _ request: consuming Request<Body>,
         state: borrowing State
     ) async throws -> Self
 }
@@ -168,7 +168,7 @@ extension Body: FromRequest {
 
     @inlinable
     public static func fromRequest(
-        _ request: consuming StarlightHTTP.Request<Body>,
+        _ request: consuming Request<Body>,
         state: borrowing AnySendable
     ) async throws -> Body {
         request.body
@@ -180,7 +180,7 @@ extension String: FromRequest {
     public typealias State = AnySendable
 
     public static func fromRequest(
-        _ request: consuming StarlightHTTP.Request<Body>,
+        _ request: consuming Request<Body>,
         state: borrowing AnySendable
     ) async throws -> String {
         String(decoding: request.body.bytes, as: UTF8.self)

@@ -73,9 +73,6 @@ let package = Package(
         // tower analogue.
         .library(name: "StarlightTower", targets: ["StarlightTower"]),
 
-        // http + hyper types analogue.
-        .library(name: "StarlightHTTP", targets: ["StarlightHTTP"]),
-
         // hyper::server + tokio::net analogue.
         .library(name: "StarlightServer", targets: ["StarlightServer"]),
 
@@ -96,6 +93,14 @@ let package = Package(
         // Token/Interest/Ready/Event/Events/Waker). Swift port of
         // Rust's mio. https://github.com/akvilary/mio
         .package(url: "https://github.com/akvilary/mio.git", from: "0.1.1"),
+        // http — pure HTTP message types (Request/Response/Method/
+        // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
+        // Rust `http` crate. https://github.com/akvilary/http
+        .package(path: "../http"),
+        // hyper — HTTP/1.1 codec + connection driver (Conn/Decoder/
+        // Dispatcher/Encoder). Swift port of the Rust `hyper` crate.
+        // https://github.com/akvilary/hyper
+        .package(path: "../hyper"),
     ],
     targets: [
         // ── C wrappers for GNU-extension syscalls (accept4,
@@ -133,25 +138,11 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── StarlightHTTP — http + hyper types. ───────────────────
-        //
-        // Pure value types: `Request`, `Response`, `Body`, `HeaderMap`,
-        // `HeaderName`, `HeaderValue`, `Method`, `StatusCode`,
-        // `Version`, `Uri`. No I/O, no async — just the HTTP message
-        // model.
-        .target(
-            name: "StarlightHTTP",
-            dependencies: [],
-            path: "Sources/StarlightHTTP",
-            swiftSettings: baseSwiftSettings
-        ),
-
         // ── StarlightServer — hyper::server + tokio::net analog. ──
         //
         // `TcpListener` (SO_REUSEPORT, multi-loop), `TcpStream` (async
-        // read/write via PollEventLoop), HTTP/1.1 codec, connection
-        // driver (`Conn`). The HTTP server infrastructure on which
-        // `axum::serve` is built.
+        // read/write via PollEventLoop), and a `serve(listener:service:)`
+        // entry point that wraps hyper's HTTP1Builder.
         .target(
             name: "StarlightServer",
             dependencies: serverDependencies,
@@ -167,7 +158,7 @@ let package = Package(
         .target(
             name: "StarlightCore",
             dependencies: [
-                "StarlightHTTP",
+                .product(name: "HTTP", package: "http"),
                 "StarlightTower",
             ],
             path: "Sources/StarlightCore",
@@ -183,7 +174,7 @@ let package = Package(
             name: "StarlightRouting",
             dependencies: [
                 "StarlightCore",
-                "StarlightHTTP",
+                .product(name: "HTTP", package: "http"),
                 "StarlightTower",
             ],
             path: "Sources/StarlightRouting",
@@ -198,7 +189,7 @@ let package = Package(
             name: "StarlightExtractors",
             dependencies: [
                 "StarlightCore",
-                "StarlightHTTP",
+                .product(name: "HTTP", package: "http"),
             ],
             path: "Sources/StarlightExtractors",
             swiftSettings: baseSwiftSettings
@@ -212,7 +203,7 @@ let package = Package(
             name: "StarlightMiddleware",
             dependencies: [
                 "StarlightCore",
-                "StarlightHTTP",
+                .product(name: "HTTP", package: "http"),
                 "StarlightTower",
             ],
             path: "Sources/StarlightMiddleware",
@@ -227,7 +218,8 @@ let package = Package(
             name: "Starlight",
             dependencies: [
                 "StarlightCore",
-                "StarlightHTTP",
+                .product(name: "HTTP", package: "http"),
+                .product(name: "Hyper", package: "hyper"),
                 "StarlightTower",
                 "StarlightServer",
                 "StarlightRouting",
@@ -244,12 +236,6 @@ let package = Package(
             name: "StarlightTowerTests",
             dependencies: ["StarlightTower"],
             path: "Tests/StarlightTowerTests",
-            swiftSettings: baseSwiftSettings
-        ),
-        .testTarget(
-            name: "StarlightHTTPTests",
-            dependencies: ["StarlightHTTP"],
-            path: "Tests/StarlightHTTPTests",
             swiftSettings: baseSwiftSettings
         ),
         .testTarget(
@@ -303,7 +289,8 @@ var pollDependencies: [Target.Dependency] {
 #if os(Linux)
 var serverDependencies: [Target.Dependency] {
     [
-        "StarlightHTTP",
+        .product(name: "HTTP", package: "http"),
+        .product(name: "Hyper", package: "hyper"),
         "StarlightPoll",
         "CLinuxExt",
     ]
@@ -311,7 +298,8 @@ var serverDependencies: [Target.Dependency] {
 #else
 var serverDependencies: [Target.Dependency] {
     [
-        "StarlightHTTP",
+        .product(name: "HTTP", package: "http"),
+        .product(name: "Hyper", package: "hyper"),
         "StarlightPoll",
     ]
 }

@@ -13,7 +13,7 @@ import Glibc
 #endif
 
 import Foundation
-import StarlightHTTP
+import HTTP
 import StarlightPoll
 
 /// An async TCP stream — the connection side of a `TcpListener::accept`.

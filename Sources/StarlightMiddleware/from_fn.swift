@@ -13,7 +13,7 @@
 
 import Foundation
 import StarlightCore
-import StarlightHTTP
+import HTTP
 import StarlightTower
 
 /// The function shape `from_fn` accepts.
@@ -26,15 +26,15 @@ import StarlightTower
 /// ```
 public struct FromFn: Sendable {
     public let run: @Sendable (
-        StarlightHTTP.Request<Body>,
+        Request<Body>,
         Next
-    ) async throws -> StarlightHTTP.Response<Body>
+    ) async throws -> Response<Body>
 
     @inlinable
     public init(_ run: @Sendable @escaping (
-        StarlightHTTP.Request<Body>,
+        Request<Body>,
         Next
-    ) async throws -> StarlightHTTP.Response<Body>) {
+    ) async throws -> Response<Body>) {
         self.run = run
     }
 }
@@ -43,15 +43,15 @@ public struct FromFn: Sendable {
 /// closure. axum calls this `Next`; it is the inner service wrapped
 /// in a callable.
 public struct Next: Sendable {
-    @usableFromInline internal let inner: BoxService<StarlightHTTP.Request<Body>, StarlightHTTP.Response<Body>>
+    @usableFromInline internal let inner: BoxService<Request<Body>, Response<Body>>
 
     @inlinable
-    public init(_ inner: BoxService<StarlightHTTP.Request<Body>, StarlightHTTP.Response<Body>>) {
+    public init(_ inner: BoxService<Request<Body>, Response<Body>>) {
         self.inner = inner
     }
 
     @inlinable
-    public func run(_ request: consuming StarlightHTTP.Request<Body>) async throws -> StarlightHTTP.Response<Body> {
+    public func run(_ request: consuming Request<Body>) async throws -> Response<Body> {
         try await inner.call(request)
     }
 }
@@ -61,10 +61,10 @@ public struct Next: Sendable {
 /// supplied closure around every call.
 public func from_fn(
     _ run: @Sendable @escaping (
-        StarlightHTTP.Request<Body>,
+        Request<Body>,
         Next
-    ) async throws -> StarlightHTTP.Response<Body>
-) -> Layer<StarlightHTTP.Request<Body>, StarlightHTTP.Response<Body>> {
+    ) async throws -> Response<Body>
+) -> Layer<Request<Body>, Response<Body>> {
     Layer { inner in
         // Capture the FromFn by value so the closure is self-contained.
         let middleware = FromFn(run)

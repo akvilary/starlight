@@ -9,7 +9,7 @@
 
 import Foundation
 import StarlightCore
-import StarlightHTTP
+import HTTP
 
 /// Extractor for a JSON request body, plus a response wrapper.
 ///
@@ -28,7 +28,7 @@ extension Json: FromRequest where T: Decodable {
     public typealias State = AnySendable
 
     public static func fromRequest(
-        _ request: consuming StarlightHTTP.Request<Body>,
+        _ request: consuming Request<Body>,
         state: borrowing AnySendable
     ) async throws -> Json<T> {
         do {
@@ -41,13 +41,13 @@ extension Json: FromRequest where T: Decodable {
 }
 
 extension Json: IntoResponse where T: Encodable {
-    public func intoResponse() -> StarlightHTTP.Response<Body> {
+    public func intoResponse() -> Response<Body> {
         do {
             let data = try JSONEncoder().encode(value)
             var headers = HeaderMap()
             headers.insert(.contentType, "application/json; charset=utf-8")
             headers.insert(.contentLength, String(data.count))
-            return StarlightHTTP.Response<Body>(
+            return Response<Body>(
                 status: .ok, headers: headers, body: Body(Array(data))
             )
         } catch {

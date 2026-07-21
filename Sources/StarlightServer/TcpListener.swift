@@ -14,7 +14,7 @@ import CLinuxExt
 #endif
 
 import Foundation
-import StarlightHTTP
+import HTTP
 import StarlightPoll
 
 /// A TCP listener bound to a `(host, port)`.

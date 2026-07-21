@@ -9,7 +9,7 @@
 
 import Foundation
 import StarlightCore
-import StarlightHTTP
+import HTTP
 
 /// Extractor for URL path parameters captured by the route pattern.
 ///

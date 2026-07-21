@@ -12,7 +12,7 @@ import Foundation
 
 @_exported import StarlightCore
 @_exported import StarlightExtractors
-@_exported import StarlightHTTP
+@_exported import HTTP
 @_exported import StarlightMiddleware
 @_exported import StarlightPoll
 @_exported import StarlightRouting
@@ -41,8 +41,8 @@ public func serve<S: Service>(
     on host: String = "0.0.0.0",
     port: Int = 8080,
     loopCount: Int = ProcessInfo.processInfo.activeProcessorCount
-) async throws where S.Request == StarlightHTTP.Request<Body>,
-                      S.Response == StarlightHTTP.Response<Body> {
+) async throws where S.Request == Request<Body>,
+                      S.Response == Response<Body> {
     let listener = try TcpListener.bind(host: host, port: port)
     try await StarlightServer.serve(
         listener: listener,

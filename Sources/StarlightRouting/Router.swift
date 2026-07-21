@@ -7,14 +7,14 @@
 //
 //  The main entry point of the framework: holds a list of
 //  `(PathPattern, MethodRouter<S>)` plus a fallback. Conforms to
-//  `Service<Request<Body>, Response = Response<Body>>` so it can
+//  `Service<HTTP.Request<Body>, Response = HTTP.Response<Body>>` so it can
 //  be served via `StarlightServer.serve(service:)`.
 //
 //===----------------------------------------------------------------------===//
 
 import Foundation
 import StarlightCore
-import StarlightHTTP
+import HTTP
 import StarlightTower
 
 /// The axum `Router<S>` port.
@@ -144,14 +144,14 @@ public struct Router<S: Sendable>: Sendable {
 
 // MARK: - Service conformance
 //
-// `Router<S>` is `Service<Request<Body>, Response = Response<Body>>`
+// `Router<S>` is `Service<HTTP.Request<Body>, Response = HTTP.Response<Body>>`
 // — this is the central contract that lets axum pass a `Router` to
 // `axum::serve`.
 extension Router: Service {
-    public typealias Request = StarlightHTTP.Request<Body>
-    public typealias Response = StarlightHTTP.Response<Body>
+    public typealias Request = HTTP.Request<Body>
+    public typealias Response = HTTP.Response<Body>
 
-    public func call(_ request: consuming StarlightHTTP.Request<Body>) async throws -> StarlightHTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
         let path = Array(request.uri.pathBytes)
 
         // 1. Static routes — linear scan, fast path for typical apps.
@@ -178,9 +178,9 @@ extension Router: Service {
     @inline(__always)
     private func dispatch(
         _ methodRouter: MethodRouter<S>,
-        request: consuming StarlightHTTP.Request<Body>,
+        request: consuming HTTP.Request<Body>,
         params: PathParams
-    ) async throws -> StarlightHTTP.Response<Body> {
+    ) async throws -> HTTP.Response<Body> {
         // Stash captured params in the request extensions for the
         // `Path<T>` extractor to read.
         var req = request
@@ -193,11 +193,11 @@ extension Router: Service {
         var headers = HeaderMap()
         let allow = methodRouter.allowedMethods().map(\.description).joined(separator: ", ")
         headers.insert(.allow, allow)
-        return StarlightHTTP.Response(status: .methodNotAllowed, headers: headers, body: Body())
+        return HTTP.Response(status: .methodNotAllowed, headers: headers, body: HTTP.Body())
     }
 
     @inline(__always)
-    private static func defaultNotFound() -> StarlightHTTP.Response<Body> {
-        StarlightHTTP.Response<Body>.plain("Not Found", status: .notFound)
+    private static func defaultNotFound() -> HTTP.Response<Body> {
+        HTTP.Response<Body>.plain("Not Found", status: .notFound)
     }
 }
