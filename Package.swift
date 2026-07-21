@@ -259,6 +259,7 @@ let package = Package(
                 "StarlightRouting",
                 "StarlightCore",
                 "StarlightExtractors",
+                "StarlightMiddleware",
                 "StarlightTower",
                 .product(name: "HTTP", package: "http"),
             ],
