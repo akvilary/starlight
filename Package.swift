@@ -87,6 +87,9 @@ let package = Package(
 
         // tokio::runtime analogue (epoll reactor on top of mio).
         .library(name: "StarlightPoll", targets: ["StarlightPoll"]),
+
+        // Hello-world example executable (smoke test for the server).
+        .executable(name: "hello-world", targets: ["HelloWorld"]),
     ],
     dependencies: [
         // mio — epoll-backed readiness I/O primitives (Poll/Registry/
@@ -248,6 +251,24 @@ let package = Package(
             name: "StarlightPollTests",
             dependencies: ["StarlightPoll"],
             path: "Tests/StarlightPollTests",
+            swiftSettings: baseSwiftSettings
+        ),
+        .testTarget(
+            name: "StarlightServerTests",
+            dependencies: [
+                "Starlight",
+                .product(name: "HTTP", package: "http"),
+                .product(name: "Hyper", package: "hyper"),
+            ],
+            path: "Tests/StarlightServerTests",
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── Hello-world executable (smoke test) ────────────────────
+        .executableTarget(
+            name: "HelloWorld",
+            dependencies: ["Starlight"],
+            path: "Sources/HelloWorld",
             swiftSettings: baseSwiftSettings
         ),
     ]

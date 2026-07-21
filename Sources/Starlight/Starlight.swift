@@ -26,7 +26,7 @@ import CLinuxExt
 // Convenience top-level helpers — equivalent to axum's `axum::serve`
 // shortcut. Most users will call `Router.serve(...)` directly.
 
-/// Bind a TCP listener and serve `router` on every accepted connection.
+/// Bind N worker actors to `(host, port)` and serve `router`.
 ///
 /// axum analogue:
 ///
@@ -41,11 +41,10 @@ public func serve<S: Service>(
     on host: String = "0.0.0.0",
     port: Int = 8080,
     loopCount: Int = ProcessInfo.processInfo.activeProcessorCount
-) async throws where S.Request == Request<Body>,
-                      S.Response == Response<Body> {
-    let listener = try TcpListener.bind(host: host, port: port)
+) async throws where S.Request == HTTP.Request<Body>,
+                      S.Response == HTTP.Response<Body> {
     try await StarlightServer.serve(
-        listener: listener,
+        host: host, port: port,
         service: service,
         loopCount: loopCount
     )

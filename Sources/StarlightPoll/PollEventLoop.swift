@@ -487,25 +487,40 @@ public final class PollEventLoop: @unchecked Sendable {
 
     // MARK: Job queue (SerialExecutor)
 
+    /// Drain all queued jobs until both queues are empty.
+    ///
+    /// MUST be a `while` loop (not a single-pass snapshot) because
+    /// running a job can enqueue more jobs — most notably the body
+    /// of a freshly-spawned `Task { ... }` is enqueued as a separate
+    /// job after the Task's setup job runs. A single-pass drain would
+    /// leave the body job in `loopJobs` until the next drainJobs()
+    /// call (after the next poll.poll() round-trip), which with
+    /// blocking epoll_wait means "forever".
     private func drainJobs() {
-        var jobs = loopJobs
-        loopJobs.removeAll(keepingCapacity: true)
+        while true {
+            var jobs = loopJobs
+            loopJobs.removeAll(keepingCapacity: true)
 
-        if !poolJobs.isEmpty {
-            pthread_spin_lock(&jobLock)
-            jobs.append(contentsOf: poolJobs)
-            poolJobs.removeAll(keepingCapacity: true)
-            pthread_spin_unlock(&jobLock)
-        }
+            if !poolJobs.isEmpty {
+                pthread_spin_lock(&jobLock)
+                jobs.append(contentsOf: poolJobs)
+                poolJobs.removeAll(keepingCapacity: true)
+                pthread_spin_unlock(&jobLock)
+            }
+            if jobs.isEmpty { return }
+            if jobs.count > 1 {
+            }
 
-        for job in jobs {
-            job.runSynchronously(on: cachedExecutor)
+            for job in jobs {
+                job.runSynchronously(on: cachedExecutor)
+            }
         }
     }
 
     private func enqueueJob(_ job: UnownedJob) {
         let tid = loopThreadId.load(ordering: .acquiring)
-        if UInt(pthread_self()) == tid {
+        let cur = UInt(pthread_self())
+        if cur == tid {
             loopJobs.append(job)
         } else {
             pthread_spin_lock(&jobLock)
@@ -527,6 +542,26 @@ extension PollEventLoop: SerialExecutor {
 
     public func asUnownedSerialExecutor() -> UnownedSerialExecutor {
         cachedExecutor
+    }
+
+    /// Verify we're on the loop thread. Used by `Actor.assumeIsolated`
+    /// to check isolation when an actor's `unownedExecutor` returns
+    /// this loop.
+    ///
+    /// The default `SerialExecutor` implementation checks the current
+    /// Task's executor — which fails when the call site is a sync
+    /// context (e.g., inside `run()`'s watch callback). For our
+    /// thread-per-core model, "executing on this loop" means
+    /// "executing on the loop's OS thread" — verifiable via
+    /// `pthread_self()` against the stored `loopThreadId`.
+    public func checkIsolated() {
+        let expected = loopThreadId.load(ordering: .acquiring)
+        let current = UInt(pthread_self())
+        if current != expected {
+            fatalError(
+                "PollEventLoop isolation violation: current thread \(current) is not the loop thread \(expected)"
+            )
+        }
     }
 
     public func isSameExclusiveExecutionContext(other: PollEventLoop) -> Bool {
