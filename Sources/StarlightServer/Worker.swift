@@ -249,36 +249,25 @@ public actor Worker {
             eventLoop.cancelChannel(channelId)
         }
 
-        // Per-conn read buffer — reused across keep-alive requests.
-        let readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
-        defer { readBuffer.deallocate() }
-
+        // Per-conn write buffer — reused for response encoding.
         var writeBuffer: [UInt8] = []
         writeBuffer.reserveCapacity(2048)
 
         connLoop: while true {
-            // 1. Async read. Suspends the Task until readable.
+            // 1. Zero-copy read: read DIRECTLY into the decoder's
+            //    ReadBuffer writable tail. No intermediate buffer,
+            //    no memcpy. The decoder's buffer IS the read target.
+            //    Mirrors hyper's BytesMut::chunk_mut() + advance_mut().
+            conn.decoder.buffer.ensureCapacity(readBufferSize)
             let n = await eventLoop.read(
                 channelId: channelId,
                 fd: fd,
-                into: UnsafeMutableRawBufferPointer(
-                    start: UnsafeMutableRawPointer(readBuffer),
-                    count: readBufferSize
-                )
+                into: conn.decoder.buffer.writableTail
             )
             if n <= 0 { return }
 
-            // 2. Feed the decoder.
-            do {
-                let bytes = UnsafeBufferPointer(start: readBuffer, count: n)
-                try conn.decoder.feed(bytes)
-            } catch {
-                writeErrorAndClose(
-                    fd: fd, writeBuffer: &writeBuffer,
-                    status: .badRequest, message: "Bad Request: \(error)"
-                )
-                return
-            }
+            // 2. Commit the read bytes to the decoder's buffer.
+            conn.decoder.buffer.advanceWritePosition(n)
 
             // 3. Parse + dispatch all complete requests from this read.
             reqLoop: while true {
