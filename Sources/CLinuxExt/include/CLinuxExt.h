@@ -27,6 +27,12 @@ int sl_accept4(int fd);
 /// Pin the calling thread to CPU `cpu`. Wrapper around sched_setaffinity(2).
 void sl_pin_to_cpu(int cpu);
 
+/// Bind a TCP listener on `(host, port)` with SO_REUSEADDR | SO_REUSEPORT
+/// and listen(2). Returns the listening fd (≥ 0) on success, or -errno on
+/// failure. `host` is a NUL-terminated C string (may be NULL for
+/// INADDR_ANY); `port` is the port number.
+int sl_bind_listener(const char *host, int port);
+
 #ifdef __cplusplus
 }
 #endif

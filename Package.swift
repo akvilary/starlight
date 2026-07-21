@@ -1,159 +1,267 @@
 // swift-tools-version: 6.2
-// The swift-tools-version declares the minimum version of Swift required to build this package.
-import PackageDescription
+//
+//  Starlight — high-performance HTTP framework for Swift 6.2+
+//
+//  Architectural mirror of the Rust `axum` workspace, ported to Swift:
+//
+//    ┌──────────────────────┬─────────────────────────────────────┐
+//    │ Swift module         │ Rust analogue                       │
+//    ├──────────────────────┼─────────────────────────────────────┤
+//    │ StarlightPoll        │ tokio::runtime (reactor) — wraps    │
+//    │                      │ the mio package (epoll primitives)  │
+//    │ StarlightTower       │ tower::{Service, Layer}             │
+//    │ StarlightHTTP        │ http + hyper types (Request,        │
+//    │                      │ Response, HeaderMap, Method, …)     │
+//    │ StarlightServer      │ hyper::server + tokio::net          │
+//    │                      │ (TcpListener, TcpStream, HTTP codec)│
+//    │ StarlightCore        │ axum-core (Handler, IntoResponse,   │
+//    │                      │ FromRequest, FromRequestParts)      │
+//    │ StarlightRouting     │ axum::routing (Router<S>,           │
+//    │                      │ MethodRouter, Route, Fallback)      │
+//    │ StarlightExtractors  │ axum::extract (State, Path, Query,  │
+//    │                      │ Json, Form, Bytes, …)               │
+//    │ StarlightMiddleware  │ axum::middleware + tower-http       │
+//    │                      │ (from_fn, Compression, …)           │
+//    │ Starlight            │ axum umbrella + serve()             │
+//    │ CLinuxExt            │ libc wrappers (accept4,             │
+//    │                      │ sched_setaffinity)                  │
+//    └──────────────────────┴─────────────────────────────────────┘
+//
+//  Foundation dependencies kept from the previous design:
+//
+//    • MIO (https://github.com/akvilary/mio) — Swift port of Rust mio
+//      (epoll primitives: Poll/Registry/Token/Interest/Events/Waker).
+//      Identical role to the mio crate in the tokio ecosystem.
+//
+//  Dropped on this branch:
+//
+//    • StarlightIORing / SystemPackage.IORing — io_uring backend.
+//      axum uses epoll via mio; we mirror that decision. io_uring
+//      complexity is not justified vs. a well-tuned epoll loop.
+//
+//  Compiler features required (Swift 6.2+):
+//
+//    • NonisolatedNonsendingByDefault (SE-0466) — nonisolated `async`
+//      functions stay on the caller's executor. This is what makes
+//      thread-per-core actually work — without it every `await` on
+//      a connection handler pinned to a PollEventLoop would defeat
+//      the pinning.
+//
+//    • Lifetimes (experimental) — required for Span/MutableSpan
+//      (SE-0447/0467), which underpins zero-copy request parsing.
+//
+//    • StrictMemorySafety (experimental) — surfaces unsafe
+//      constructs as errors in the hot path.
 
-// Starlight — high-performance HTTP framework for Swift 6.2+
-// Built on SystemPackage.IORing (Linux) / SwiftNIO (macOS),
-// thread-per-core model inspired by H2O, with the ownership discipline
-// of Rust/Tokio and COW ByteBuffer reuse for zero-alloc-per-request
-// header / body / response handling.
+import PackageDescription
 
 let package = Package(
     name: "Starlight",
     platforms: [
-        // stdlib `Synchronization.Atomic` (SE-0433), `~Copyable` ownership
-        // (SE-0390) and ` borrowing`/`consuming` (SE-0377) all require Swift
-        // 6.2+. Span/InlineArray (SE-0447/0453/0485) are available for a
-        // future zero-copy body view (Phase 3).
         .macOS(.v15),
         .iOS(.v18),
         .tvOS(.v18),
         .watchOS(.v11),
     ],
     products: [
+        // Public umbrella (the `axum` crate analogue).
         .library(name: "Starlight", targets: ["Starlight"]),
+
+        // axum-core analogue.
         .library(name: "StarlightCore", targets: ["StarlightCore"]),
-        .library(name: "StarlightIORing", targets: ["StarlightIORing"]),
-        .library(name: "StarlightPoll", targets: ["StarlightPoll"]),
+
+        // tower analogue.
+        .library(name: "StarlightTower", targets: ["StarlightTower"]),
+
+        // http + hyper types analogue.
         .library(name: "StarlightHTTP", targets: ["StarlightHTTP"]),
-        .library(name: "StarlightRouting", targets: ["StarlightRouting"]),
+
+        // hyper::server + tokio::net analogue.
         .library(name: "StarlightServer", targets: ["StarlightServer"]),
-        .executable(name: "starlight-benchmark", targets: ["StarlightBenchmark"]),
+
+        // axum::routing analogue.
+        .library(name: "StarlightRouting", targets: ["StarlightRouting"]),
+
+        // axum::extract analogue.
+        .library(name: "StarlightExtractors", targets: ["StarlightExtractors"]),
+
+        // axum::middleware + tower-http analogue.
+        .library(name: "StarlightMiddleware", targets: ["StarlightMiddleware"]),
+
+        // tokio::runtime analogue (epoll reactor on top of mio).
+        .library(name: "StarlightPoll", targets: ["StarlightPoll"]),
     ],
     dependencies: [
-        // I/O substrate — io_uring on Linux (via SystemPackage.IORing),
-        // epoll/kqueue fallback via SwiftNIO on all platforms.
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.79.0"),
-        // Apple SystemPackage — provides IORing (~Copyable ring management),
-        // FileDescriptor, Errno. IORing requires main branch (unreleased).
-        .package(url: "https://github.com/apple/swift-system.git", branch: "main"),
-        // mio — epoll-backed readiness I/O primitives (Poll/Registry/Token/
-        // Interest/Ready/Event/Events/Waker), a Swift port of Rust's mio.
-        // Extracted into its own package: https://github.com/akvilary/mio
-        .package(url: "https://github.com/akvilary/mio.git", from: "0.1.0"),
+        // mio — epoll-backed readiness I/O primitives (Poll/Registry/
+        // Token/Interest/Ready/Event/Events/Waker). Swift port of
+        // Rust's mio. https://github.com/akvilary/mio
+        .package(url: "https://github.com/akvilary/mio.git", from: "0.1.1"),
     ],
     targets: [
-        // ── C wrappers for GNU-extension syscalls (accept4, eventfd, …) ────
+        // ── C wrappers for GNU-extension syscalls (accept4,
+        //    sched_setaffinity). Kept from the previous design —
+        //    Swift's Glibc module does not re-export them. ─────────
         .target(
             name: "CLinuxExt",
             path: "Sources/CLinuxExt",
             publicHeadersPath: "include"
         ),
 
-        // ── Core: synchronization primitives ─────────────────────────────────
-        .target(
-            name: "StarlightCore",
-            dependencies: [],
-            swiftSettings: baseSwiftSettings
-        ),
-
-        // ── io_uring event loop (Linux only — generic async I/O) ─────────────
-        .target(
-            name: "StarlightIORing",
-            dependencies: ioringDependencies,
-            swiftSettings: baseSwiftSettings
-        ),
-
-        // ── epoll-based mio analog (Linux only — generic async I/O) ──────────
-        //    Low-level `Poll`/`Registry`/`Token`/`Interest`/`Events`/`Waker`
-        //    API mirroring mio (rust), plus a high-level `PollEventLoop`
-        //    that conforms to `SerialExecutor` and provides the same
-        //    async read/write surface as `IORingEventLoop`. This is the
-        //    default Linux backend — more portable than io_uring
-        //    (works under gVisor, old Docker, kernel <5.7) and the
-        //    substrate of `mio`/`tokio`'s battle-tested reactor.
+        // ── StarlightPoll — tokio::runtime analog. ────────────────
+        //
+        // High-level Swift Concurrency event loop driven by mio's
+        // `Poll`. Provides SerialExecutor + TaskExecutor + async
+        // read/write API. The reactor on top of which all higher
+        // layers are built. Depends on StarlightCore for
+        // `PaddedAtomicInt64` (cross-loop stats counters).
         .target(
             name: "StarlightPoll",
             dependencies: pollDependencies,
+            path: "Sources/StarlightPoll",
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── HTTP/1.1 codec (SWAR parser, headers, request, response) ─────────
+        // ── StarlightTower — tower::{Service, Layer} analog. ──────
+        //
+        // The `Service<Request> -> Response` trait abstraction that
+        // axum/hyper/tower are built around. Includes the type-erased
+        // `BoxService` (tower's `Service` trait object).
+        .target(
+            name: "StarlightTower",
+            dependencies: [],
+            path: "Sources/StarlightTower",
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── StarlightHTTP — http + hyper types. ───────────────────
+        //
+        // Pure value types: `Request`, `Response`, `Body`, `HeaderMap`,
+        // `HeaderName`, `HeaderValue`, `Method`, `StatusCode`,
+        // `Version`, `Uri`. No I/O, no async — just the HTTP message
+        // model.
         .target(
             name: "StarlightHTTP",
-            dependencies: [
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-            ],
+            dependencies: [],
+            path: "Sources/StarlightHTTP",
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── HTTP router with zero-copy path params ───────────────────────────
-        .target(
-            name: "StarlightRouting",
-            dependencies: [
-                "StarlightHTTP",
-                .product(name: "NIOCore", package: "swift-nio"),
-            ],
-            swiftSettings: baseSwiftSettings
-        ),
-
-        // ── Server bootstrap: SO_REUSEPORT per-loop, IORing/NIO ──────────────
+        // ── StarlightServer — hyper::server + tokio::net analog. ──
+        //
+        // `TcpListener` (SO_REUSEPORT, multi-loop), `TcpStream` (async
+        // read/write via PollEventLoop), HTTP/1.1 codec, connection
+        // driver (`Conn`). The HTTP server infrastructure on which
+        // `axum::serve` is built.
         .target(
             name: "StarlightServer",
             dependencies: serverDependencies,
+            path: "Sources/StarlightServer",
             swiftSettings: baseSwiftSettings
         ),
-        // ── Public umbrella (app entry point) ────────────────────────────────
+
+        // ── StarlightCore — axum-core analog. ─────────────────────
+        //
+        // The `Handler` protocol (function-like → Service adapter),
+        // `IntoResponse` (anything convertible to a `Response`), and
+        // the `FromRequest`/`FromRequestParts` extractor protocols.
+        .target(
+            name: "StarlightCore",
+            dependencies: [
+                "StarlightHTTP",
+                "StarlightTower",
+            ],
+            path: "Sources/StarlightCore",
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── StarlightRouting — axum::routing analog. ──────────────
+        //
+        // `Router<S>` (generic over app state), `MethodRouter<S>`,
+        // `Route<S>` (per-path service), `Fallback`. Path matching,
+        // method dispatch, route nesting.
+        .target(
+            name: "StarlightRouting",
+            dependencies: [
+                "StarlightCore",
+                "StarlightHTTP",
+                "StarlightTower",
+            ],
+            path: "Sources/StarlightRouting",
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── StarlightExtractors — axum::extract analog. ───────────
+        //
+        // Built-in extractors: `State<S>`, `Path<T>`, `Query<T>`,
+        // `Json<T>`, `Form<T>`, `Bytes`, `String`, `Request`.
+        .target(
+            name: "StarlightExtractors",
+            dependencies: [
+                "StarlightCore",
+                "StarlightHTTP",
+            ],
+            path: "Sources/StarlightExtractors",
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── StarlightMiddleware — axum::middleware + tower-http. ──
+        //
+        // `from_fn` style middleware builder, plus common middleware
+        // (compression, trace, auth, CORS). All built as `Layer`s.
+        .target(
+            name: "StarlightMiddleware",
+            dependencies: [
+                "StarlightCore",
+                "StarlightHTTP",
+                "StarlightTower",
+            ],
+            path: "Sources/StarlightMiddleware",
+            swiftSettings: baseSwiftSettings
+        ),
+
+        // ── Starlight — public umbrella. ──────────────────────────
+        //
+        // Re-exports every submodule and provides `serve(router:)`
+        // — the entry point matching `axum::serve`.
         .target(
             name: "Starlight",
             dependencies: [
                 "StarlightCore",
                 "StarlightHTTP",
-                "StarlightRouting",
+                "StarlightTower",
                 "StarlightServer",
+                "StarlightRouting",
+                "StarlightExtractors",
+                "StarlightMiddleware",
+                "StarlightPoll",
             ],
+            path: "Sources/Starlight",
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── Benchmark executable (TCP echo + HTTP + router) ──────────────────
-        .executableTarget(
-            name: "StarlightBenchmark",
-            dependencies: [
-                "Starlight",
-                "StarlightServer",
-                "StarlightHTTP",
-                "StarlightRouting",
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-            ],
+        // ── Tests ──────────────────────────────────────────────────
+        .testTarget(
+            name: "StarlightTowerTests",
+            dependencies: ["StarlightTower"],
+            path: "Tests/StarlightTowerTests",
             swiftSettings: baseSwiftSettings
         ),
-
-        // ── Tests ────────────────────────────────────────────────────────────
         .testTarget(
             name: "StarlightHTTPTests",
             dependencies: ["StarlightHTTP"],
+            path: "Tests/StarlightHTTPTests",
+            swiftSettings: baseSwiftSettings
+        ),
+        .testTarget(
+            name: "StarlightCoreTests",
+            dependencies: ["StarlightCore"],
+            path: "Tests/StarlightCoreTests",
             swiftSettings: baseSwiftSettings
         ),
         .testTarget(
             name: "StarlightPollTests",
             dependencies: ["StarlightPoll"],
-            swiftSettings: baseSwiftSettings
-        ),
-        .testTarget(
-            name: "StarlightRoutingTests",
-            dependencies: ["StarlightRouting"],
-            swiftSettings: baseSwiftSettings
-        ),
-        .testTarget(
-            name: "StarlightServerTests",
-            dependencies: [
-                "StarlightServer",
-                "StarlightHTTP",
-                "StarlightRouting",
-                .product(name: "NIOCore", package: "swift-nio"),
-            ],
+            path: "Tests/StarlightPollTests",
             swiftSettings: baseSwiftSettings
         ),
     ]
@@ -161,27 +269,7 @@ let package = Package(
 
 // Swift 6.2 settings shared by every Starlight target.
 //
-// These flags are the *core* of the framework's performance promise —
-// each one is a load-bearing architectural decision, not a stylistic preference:
-//
-//  - NonisolatedNonsendingByDefault (SE-0466 upcoming): nonisolated `async`
-//    functions run on the caller's executor by default instead of hopping to
-//    the global concurrent pool. This is what makes thread-per-core actually
-//    work — without it every `await` on a connection handler pinned to an
-//    IORing loop would defeat the pinning.
-//
-//  - Lifetimes (experimental): required by SystemPackage.IORing
-//    (`#if compiler(>=6.2) && $Lifetimes`). Enables `@_lifetime` annotations
-//    and Span/MutableSpan (SE-0447/0467).
-//
-//  - StrictMemorySafety (experimental): surfaces unsafe constructs as errors
-//    in the hot path. We lean on raw pointers and `~Copyable` types
-//    throughout (io_uring SQE/CQE, zero-copy header views, COW ByteBuffer);
-//    this flag keeps that surface audited.
-//
-// SPM applies `swiftSettings` only to our own targets, not to dependencies,
-// so NIO / swift-system keep their own settings — the flags police *our* code
-// only. swift-system already enables Lifetimes in its own Package.swift.
+// See the file header for the rationale — these are load-bearing.
 var baseSwiftSettings: [SwiftSetting] {
     [
         .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
@@ -192,31 +280,10 @@ var baseSwiftSettings: [SwiftSetting] {
 
 // ── Platform-conditional dependencies ────────────────────────────────────
 //
-// On Linux we use SystemPackage.IORing as the primary I/O backend, with
-// NIO as a runtime fallback (gVisor, old Docker, kernel <5.7).
-// On macOS NIO is the only backend.
-// Both sets of dependencies are available on all platforms so the code
-// compiles, but only the relevant path is executed.
+// StarlightPoll wraps the mio package. On non-Linux platforms the mio
+// module compiles to an empty shell (its sources are all #if os(Linux)),
+// so the dependency remains declared but produces no symbols.
 
-#if os(Linux)
-var ioringDependencies: [Target.Dependency] {
-    [
-        "StarlightCore",
-        "CLinuxExt",
-        .product(name: "CMIO", package: "mio"),   // eventfd wrapper
-        .product(name: "SystemPackage", package: "swift-system"),
-    ]
-}
-#else
-var ioringDependencies: [Target.Dependency] {
-    [
-        "StarlightCore",
-    ]
-}
-#endif
-
-// StarlightPoll wraps the mio package: it re-exports the low-level
-// primitives and adds the high-level `PollEventLoop` executor on top.
 #if os(Linux)
 var pollDependencies: [Target.Dependency] {
     [
@@ -228,6 +295,7 @@ var pollDependencies: [Target.Dependency] {
 var pollDependencies: [Target.Dependency] {
     [
         "StarlightCore",
+        .product(name: "MIO", package: "mio"),
     ]
 }
 #endif
@@ -235,25 +303,16 @@ var pollDependencies: [Target.Dependency] {
 #if os(Linux)
 var serverDependencies: [Target.Dependency] {
     [
-        "StarlightIORing",
-        "StarlightPoll",
-        "StarlightCore",
         "StarlightHTTP",
-        "StarlightRouting",
+        "StarlightPoll",
         "CLinuxExt",
-        .product(name: "SystemPackage", package: "swift-system"),
-        .product(name: "NIOCore", package: "swift-nio"),
-        .product(name: "NIOPosix", package: "swift-nio"),
     ]
 }
 #else
 var serverDependencies: [Target.Dependency] {
     [
-        "StarlightCore",
         "StarlightHTTP",
-        "StarlightRouting",
-        .product(name: "NIOCore", package: "swift-nio"),
-        .product(name: "NIOPosix", package: "swift-nio"),
+        "StarlightPoll",
     ]
 }
 #endif
