@@ -14,7 +14,7 @@ type system or runtime model doesn't allow a literal port.
 | `../hyper` package (port of `hyper::proto::h1`) | ✅ 7/7 tests |
 | `Starlight` (axum umbrella) — Tower/Core/Routing/Extractors/Middleware/Server | ✅ 10/10 tests |
 | HTTP/1.1 end-to-end pipeline | ✅ работает (`curl` отвечает) |
-| Бенчмарк | ~235K req/s release (loopback, 12-core AMD 5600H, wrk -t12 -c100 -d3s) |
+| Бенчмарк | ~233K req/s release (loopback, 12-core AMD 5600H, wrk -t12 -c100 -d3s) |
 | Graceful shutdown | ❌ |
 | Streaming bodies / chunked TE | ❌ |
 | Router nesting / layers | ❌ |
