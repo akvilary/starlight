@@ -254,6 +254,18 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
         .testTarget(
+            name: "StarlightRoutingTests",
+            dependencies: [
+                "StarlightRouting",
+                "StarlightCore",
+                "StarlightExtractors",
+                "StarlightTower",
+                .product(name: "HTTP", package: "http"),
+            ],
+            path: "Tests/StarlightRoutingTests",
+            swiftSettings: baseSwiftSettings
+        ),
+        .testTarget(
             name: "StarlightServerTests",
             dependencies: [
                 "Starlight",

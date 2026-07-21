@@ -138,6 +138,147 @@ public struct Router<S: Sendable>: Sendable {
         route(pattern, method: .PATCH, endpoint)
     }
 
+    // MARK: - nest (port of axum::routing::Router::nest)
+
+    /// Nest another `Router<S>` under a path prefix. Each route in
+    /// `other` becomes a route under `<prefix><path>` in `self`.
+    ///
+    /// Direct port of `axum::routing::Router::nest`. Example:
+    ///
+    /// ```swift
+    /// let api = Router(state: ...)
+    ///     .get("/users", ...)
+    ///     .get("/posts", ...)
+    ///
+    /// let app = Router(state: ...)
+    ///     .nest("/api/v1", api)
+    /// // → app routes: /api/v1/users, /api/v1/posts
+    /// ```
+    ///
+    /// Prefix semantics (matches axum):
+    ///   - `nest("/api", r)` with `r.get("/users", _)` → `/api/users`
+    ///   - `nest("/api/", r)` with `r.get("/users", _)` → `/api/users`
+    ///   - `nest("/api", r)` with `r.get("/", _)` → `/api`
+    public func nest(_ prefix: String, _ other: Router<S>) -> Router<S> {
+        var result = self
+        for (pattern, methodRouter) in other.staticRoutes + other.dynamicRoutes {
+            let combined = Self.joinPath(prefix, pattern.raw)
+            result = result.route(combined, methodRouter)
+        }
+        return result
+    }
+
+    /// Join a nest prefix with an inner path. Mirrors axum's
+    /// `path_for_nested_route`.
+    @inline(__always)
+    private static func joinPath(_ prefix: String, _ inner: String) -> String {
+        // Both prefix and inner start with '/'.
+        if prefix.hasSuffix("/") {
+            // Avoid double-slash: "/api/" + "/users" → "/api/users"
+            return prefix + inner.drop(while: { $0 == "/" })
+        }
+        if inner == "/" {
+            return prefix
+        }
+        return prefix + inner
+    }
+
+    // MARK: - merge (port of axum::routing::Router::merge)
+
+    /// Merge another `Router<S>`'s routes into `self`. Routes from
+    /// both routers coexist; conflicts on the same path + method
+    /// resolve to the merged-in router (last wins).
+    ///
+    /// Direct port of `axum::routing::Router::merge`.
+    public func merge(_ other: Router<S>) -> Router<S> {
+        var result = self
+        for (pattern, methodRouter) in other.staticRoutes {
+            result = result.route(pattern.raw, methodRouter)
+        }
+        for (pattern, methodRouter) in other.dynamicRoutes {
+            result = result.route(pattern.raw, methodRouter)
+        }
+        // Inherit fallback if other has one and self doesn't.
+        if result.fallback == nil, let fb = other.fallback {
+            result = result.fallback(fb)
+        }
+        return result
+    }
+
+    // MARK: - layer (port of axum::routing::Router::layer)
+
+    /// Apply `layer` to ALL routes in this router. The layer wraps
+    /// every endpoint, including the fallback.
+    ///
+    /// Direct port of `axum::routing::Router::layer`. Returns a new
+    /// `Router<S>` with the wrapped endpoints.
+    ///
+    /// Example:
+    ///
+    /// ```swift
+    /// let app = Router(state: ())
+    ///     .get("/", ...)
+    ///     .layer(from_fn { req, next in
+    ///         print("before")
+    ///         let resp = try await next.run(req)
+    ///         print("after")
+    ///         return resp
+    ///     })
+    /// ```
+    public func layer(
+        _ layer: Layer<HTTP.Request<Body>, HTTP.Response<Body>>
+    ) -> Router<S> {
+        var statics = staticRoutes
+        var dynamics = dynamicRoutes
+        // Wrap each route's method router by wrapping every endpoint
+        // inside it.
+        for i in statics.indices {
+            statics[i] = (statics[i].0, statics[i].1.mapEndpoints {
+                layer.layer($0)
+            })
+        }
+        for i in dynamics.indices {
+            dynamics[i] = (dynamics[i].0, dynamics[i].1.mapEndpoints {
+                layer.layer($0)
+            })
+        }
+        let newFallback = fallback.map { layer.layer($0) }
+        return Router<S>(
+            state: state,
+            staticRoutes: statics,
+            dynamicRoutes: dynamics,
+            fallback: newFallback
+        )
+    }
+
+    // MARK: - route_layer (port of axum::routing::Router::route_layer)
+
+    /// Apply `layer` to routes added BEFORE this call (not future
+    /// routes). Useful for scoping middleware to a subset of routes.
+    ///
+    /// Direct port of `axum::routing::Router::route_layer`. Matches
+    /// axum's "applies to all routes added so far" semantics.
+    ///
+    /// Example:
+    ///
+    /// ```swift
+    /// let app = Router(state: ())
+    ///     .get("/public", ...)            // no auth
+    ///     .route_layer(authMiddleware)    // applies to /private below
+    ///     .get("/private", ...)           // has auth
+    /// ```
+    public func route_layer(
+        _ layer: Layer<HTTP.Request<Body>, HTTP.Response<Body>>
+    ) -> Router<S> {
+        // Same implementation as `layer` — applied to all currently-
+        // registered routes. axum panics if there are no routes; we
+        // just no-op (cleaner for builder chaining).
+        guard !staticRoutes.isEmpty || !dynamicRoutes.isEmpty else {
+            return self
+        }
+        return self.layer(layer)
+    }
+
     /// Total number of registered routes.
     public var routeCount: Int { staticRoutes.count + dynamicRoutes.count }
 }

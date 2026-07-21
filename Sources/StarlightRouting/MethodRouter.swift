@@ -67,6 +67,29 @@ public struct MethodRouter<S: Sendable>: Sendable {
     /// Register a fallback when no method matches.
     public func fallback(_ svc: HandlerEndpoint) -> Self { mutate { $0.fallback = svc } }
 
+    /// Apply `transform` to every endpoint in this router. Used by
+    /// `Router.layer(_:)` to wrap each method-specific handler in
+    /// middleware.
+    ///
+    /// Direct port of axum's `MethodRouter::map` (internal) — the
+    /// public API is `Router::layer` which calls this.
+    public func mapEndpoints(
+        _ transform: @Sendable @escaping (HandlerEndpoint) -> HandlerEndpoint
+    ) -> MethodRouter<S> {
+        mutate {
+            if let v = $0.get     { $0.get     = transform(v) }
+            if let v = $0.put     { $0.put     = transform(v) }
+            if let v = $0.post    { $0.post    = transform(v) }
+            if let v = $0.delete  { $0.delete  = transform(v) }
+            if let v = $0.head    { $0.head    = transform(v) }
+            if let v = $0.options { $0.options = transform(v) }
+            if let v = $0.patch   { $0.patch   = transform(v) }
+            if let v = $0.trace   { $0.trace   = transform(v) }
+            if let v = $0.any     { $0.any     = transform(v) }
+            if let v = $0.fallback { $0.fallback = transform(v) }
+        }
+    }
+
     @usableFromInline
     internal func mutate(_ body: (inout Self) -> Void) -> Self {
         var copy = self
