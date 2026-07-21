@@ -314,23 +314,30 @@ public actor Worker {
                 }
 
                 writeBuffer.removeAll(keepingCapacity: true)
-                conn.encoder.encode(response, keepAlive: keepAlive, into: &writeBuffer)
-                #if canImport(Glibc)
-                let written = writeBuffer.withUnsafeBufferPointer { ptr -> Int in
-                    var remaining = ptr.count
-                    var offset = 0
-                    while remaining > 0 {
-                        let n = Glibc.write(
-                            fd, ptr.baseAddress!.advanced(by: offset), remaining
-                        )
-                        if n <= 0 { break }
-                        remaining -= n
-                        offset += n
-                    }
-                    return offset
+                let head = conn.encoder.encodeHead(
+                    response, keepAlive: keepAlive, into: &writeBuffer
+                )
+                // Flush head (+ buffered body if present).
+                if !writeBuffer.isEmpty {
+                    let written = writeAll(fd: fd, buffer: writeBuffer)
+                    if written < writeBuffer.count { return }
                 }
-                if written < writeBuffer.count { return }
-                #endif
+                // Streaming body — write chunks in chunked TE format.
+                if case .stream = head {
+                    do {
+                        for try await chunk in response.body.dataStream() {
+                            writeBuffer.removeAll(keepingCapacity: true)
+                            conn.encoder.encodeChunk(chunk, into: &writeBuffer)
+                            let written = writeAll(fd: fd, buffer: writeBuffer)
+                            if written < writeBuffer.count { return }
+                        }
+                    } catch {
+                        return  // stream errored — close conn
+                    }
+                    writeBuffer.removeAll(keepingCapacity: true)
+                    conn.encoder.encodeEndOfChunks(into: &writeBuffer)
+                    _ = writeAll(fd: fd, buffer: writeBuffer)
+                }
                 if !keepAlive { return }
             }
         }
@@ -347,11 +354,31 @@ public actor Worker {
     ) {
         let response = errorResponse(status: status, message: message)
         writeBuffer.removeAll(keepingCapacity: true)
-        H1Encoder().encode(response, keepAlive: false, into: &writeBuffer)
+        _ = H1Encoder().encodeHead(response, keepAlive: false, into: &writeBuffer)
+        _ = writeAll(fd: fd, buffer: writeBuffer)
+    }
+
+    /// Sync `write(2)` loop that handles partial writes. Returns the
+    /// total bytes written. Nonisolated + static so it can be called
+    /// from any context (the per-conn driver Task isn't in the actor).
+    @inline(__always)
+    private nonisolated static func writeAll(fd: CInt, buffer: [UInt8]) -> Int {
         #if canImport(Glibc)
-        _ = writeBuffer.withUnsafeBufferPointer { ptr in
-            Glibc.write(fd, ptr.baseAddress!, ptr.count)
+        return buffer.withUnsafeBufferPointer { ptr -> Int in
+            var remaining = ptr.count
+            var offset = 0
+            while remaining > 0 {
+                let n = Glibc.write(
+                    fd, ptr.baseAddress!.advanced(by: offset), remaining
+                )
+                if n <= 0 { break }
+                remaining -= n
+                offset += n
+            }
+            return offset
         }
+        #else
+        return 0
         #endif
     }
 

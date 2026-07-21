@@ -183,7 +183,8 @@ extension String: FromRequest {
         _ request: consuming Request<Body>,
         state: borrowing AnySendable
     ) async throws -> String {
-        String(decoding: request.body.bytes, as: UTF8.self)
+        let bytes = try await request.body.collect()
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
 

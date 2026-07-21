@@ -40,7 +40,7 @@ extension StatusCode: IntoResponse {
     public func intoResponse() -> Response<Body> {
         var headers = HeaderMap()
         headers.insert(.contentLength, "0")
-        return Response<Body>(status: self, headers: headers, body: Body())
+        return Response<Body>(status: self, headers: headers, body: .empty)
     }
 }
 
@@ -67,7 +67,7 @@ extension Unit: IntoResponse {
     public func intoResponse() -> Response<Body> {
         var headers = HeaderMap()
         headers.insert(.contentLength, "0")
-        return Response<Body>(status: .ok, headers: headers, body: Body())
+        return Response<Body>(status: .ok, headers: headers, body: .empty)
     }
 }
 

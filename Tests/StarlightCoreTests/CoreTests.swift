@@ -24,7 +24,11 @@ struct CoreTests {
         let response = "hello".intoResponse()
         #expect(response.status == .ok)
         #expect(response.headers.first(for: .contentType)?.description == "text/plain; charset=utf-8")
-        #expect(String(decoding: response.body.bytes, as: UTF8.self) == "hello")
+        if case .buffered(let bytes) = response.body {
+            #expect(String(decoding: bytes, as: UTF8.self) == "hello")
+        } else {
+            Issue.record("expected .buffered body")
+        }
     }
 
     @Test("Method extractor yields the request method")

@@ -32,7 +32,8 @@ extension Json: FromRequest where T: Decodable {
         state: borrowing AnySendable
     ) async throws -> Json<T> {
         do {
-            let decoded = try JSONDecoder().decode(T.self, from: Data(request.body.bytes))
+            let bytes = try await request.body.collect()
+            let decoded = try JSONDecoder().decode(T.self, from: Data(bytes))
             return Json(decoded)
         } catch {
             throw ExtractionRejection("json decode failed: \(error)", status: .unsupportedMediaType)
@@ -48,7 +49,7 @@ extension Json: IntoResponse where T: Encodable {
             headers.insert(.contentType, "application/json; charset=utf-8")
             headers.insert(.contentLength, String(data.count))
             return Response<Body>(
-                status: .ok, headers: headers, body: Body(Array(data))
+                status: .ok, headers: headers, body: .buffered(Array(data))
             )
         } catch {
             return .plain("json encode failed: \(error)", status: .internalServerError)
