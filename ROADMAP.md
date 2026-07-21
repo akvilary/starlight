@@ -30,8 +30,11 @@ doesn't allow a literal port.
 | Tier 2 API parity (with_state, Handler4-6, IntoResponseParts) | ✅ |
 | Tier 3 axum parity (Sse, DefaultBodyLimit, Host) | ✅ |
 | Бенчмарк | ~234K req/s (release, 12-core, wrk -t12 -c100 -d3s) |
-| CompressionLayer | ❌ |
-| Sse<Stream> structured helper | ❌ |
+| CompressionLayer (gzip via zlib) | ✅ |
+| Static file serving (ServeDir) | ✅ |
+| Sse<Stream> structured helper | ✅ |
+| Host extractor | ✅ |
+| DefaultBodyLimit | ✅ |
 | WebSocket | ❌ |
 | TLS | ❌ |
 | HTTP/2 | ❌ |
@@ -99,13 +102,11 @@ doesn't allow a literal port.
 
 ## Phase 4 — HTTP protocol features
 
-### 4.1 CompressionLayer (~6ч)
+### 4.1 CompressionLayer (~6ч) ✅
 
-**Референс:** `tower_http::compression`.
-
-- [ ] Gzip encoder via zlib
-- [ ] Auto-select по Accept-Encoding
-- [ ] Skip для < 256 bytes
+- [x] Gzip encoder via zlib (sl_gzip_compress in CLinuxExt)
+- [x] Auto-select по Accept-Encoding
+- [x] Skip для < 256 bytes
 
 ### 4.2 WebSocket (~6ч)
 
@@ -121,10 +122,11 @@ doesn't allow a literal port.
 - [ ] `TLSConfig` struct
 - [ ] HTTPS endpoint
 
-### 4.4 Static file serving (~4ч)
+### 4.4 Static file serving (~4ч) ✅
 
-- [ ] `sendfile(2)` zero-copy
-- [ ] ETag / Range / MIME
+- [x] ServeDir: file serving with MIME detection + ETag
+- [ ] sendfile(2) zero-copy (deferred to Phase 5)
+- [ ] Range requests (deferred)
 
 ---
 
@@ -201,4 +203,5 @@ doesn't allow a literal port.
 | 18 | 2026-07-21 | Tier 1 fixes: B1-B5 (ConnectInfo, Json status, Router init, CORS, shutdown) |
 | 19 | 2026-07-21 | Tier 2: with_state + HandlerService4-6 + IntoResponseParts |
 | 20 | 2026-07-21 | Tier 3: Sse<Stream> + DefaultBodyLimit + Host extractor |
-| 21 | — | _Next: Phase 4 (Compression / WebSocket / TLS / Static files)_ |
+| 21 | 2026-07-21 | Phase 4.1+4.4: CompressionLayer (gzip) + ServeDir (static files) |
+| 22 | — | _Next: WebSocket or Phase 6 (v0.1.0 release)_ |
