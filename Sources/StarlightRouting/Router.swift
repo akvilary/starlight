@@ -367,18 +367,17 @@ extension Router: Service {
         let path = Array(request.uri.pathBytes)
 
         // 1. Static routes — linear scan, fast path for typical apps.
-        // A radix trie lands in a later phase.
         var params = PathParams()
         for (pattern, methodRouter) in staticRoutes {
             if pattern.match(path, params: &params) {
-                return try await dispatch(methodRouter, request: request, params: params)
+                return try await dispatch(methodRouter, matchedPattern: pattern.raw, request: request, params: params)
             }
             params.removeAll(keepingCapacity: true)
         }
         // 2. Dynamic routes.
         for (pattern, methodRouter) in dynamicRoutes {
             if pattern.match(path, params: &params) {
-                return try await dispatch(methodRouter, request: request, params: params)
+                return try await dispatch(methodRouter, matchedPattern: pattern.raw, request: request, params: params)
             }
             params.removeAll(keepingCapacity: true)
         }
@@ -390,13 +389,15 @@ extension Router: Service {
     @inline(__always)
     private func dispatch(
         _ methodRouter: MethodRouter<S>,
+        matchedPattern: String,
         request: consuming HTTP.Request<Body>,
         params: PathParams
     ) async throws -> HTTP.Response<Body> {
-        // Stash captured params in the request extensions for the
-        // `Path<T>` extractor to read.
         var req = request
+        // axum-compatible extension insertions on every match:
         req.extensions.insert(MatchedPathParams(params))
+        req.extensions.insert(MatchedPath(matchedPattern))
+        req.extensions.insert(OriginalUri(req.uri))
 
         if let endpoint = methodRouter.dispatch(method: req.method) {
             return try await endpoint.call(req)
@@ -405,7 +406,7 @@ extension Router: Service {
         var headers = HeaderMap()
         let allow = methodRouter.allowedMethods().map(\.description).joined(separator: ", ")
         headers.insert(.allow, allow)
-        return HTTP.Response(status: .methodNotAllowed, headers: headers, body: HTTP.Body())
+        return HTTP.Response(status: .methodNotAllowed, headers: headers, body: .empty)
     }
 
     @inline(__always)
