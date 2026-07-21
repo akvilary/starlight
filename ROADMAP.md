@@ -14,7 +14,7 @@ type system or runtime model doesn't allow a literal port.
 | `../hyper` package (port of `hyper::proto::h1`) | ✅ 7/7 tests |
 | `Starlight` (axum umbrella) — Tower/Core/Routing/Extractors/Middleware/Server | ✅ 10/10 tests |
 | HTTP/1.1 end-to-end pipeline | ✅ работает (`curl` отвечает) |
-| Бенчмарк | 136K req/s baseline (loopback, 12-core) |
+| Бенчмарк | 264K req/s release (loopback, 12-core AMD 5600H, wrk -t12 -c100 -d4s) |
 | Graceful shutdown | ❌ |
 | Streaming bodies / chunked TE | ❌ |
 | Router nesting / layers | ❌ |
@@ -364,4 +364,5 @@ type system or runtime model doesn't allow a literal port.
 | 6 | 2026-07-21 | Phase 1.2: streaming bodies + chunked TE (in + out). `8d917f3`. |
 | 7 | 2026-07-21 | Phase 1.3: Router.nest + merge + layer + route_layer. `03cd521`. |
 | 8 | 2026-07-21 | Phase 1.4: Bytes + Form + ConnectInfo + RawRequest extractors. |
-| 9 | — | _Phase 1 complete — start Phase 2 (SWAR byte search)_ |
+| 9 | 2026-07-21 | Phase 2.1: SWAR byte search (hyper `ByteSearch.swift`). |
+| 10 | — | _Phase 2.2 start (Zero-copy accumulator)_ |
