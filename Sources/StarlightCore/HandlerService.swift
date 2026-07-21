@@ -177,3 +177,122 @@ extension HandlerService3: Service {
         return try await f(e0, e1, e2, state).intoResponse()
     }
 }
+
+// MARK: - HandlerService4 (4 extractors)
+
+/// Four-extractor handler — `(E0, E1, E2, E3) -> IntoResponse`.
+/// `E0-E2` are `FromRequestParts`; `E3` may be `FromRequest`.
+public struct HandlerService4<E0, E1, E2, E3, Fn, S, Out>: Sendable
+where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequest,
+      Fn: Sendable, S: Sendable, Out: IntoResponse,
+      E0.State == S, E1.State == S, E2.State == S, E3.State == S {
+    @usableFromInline internal let state: S
+    @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, S) async throws -> Out
+
+    @inlinable
+    public init(state: S, _ f: @Sendable @escaping (E0, E1, E2, E3, S) async throws -> Out) {
+        self.state = state
+        self.f = f
+    }
+}
+
+extension HandlerService4: Service {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
+        var parts = RequestParts<Body>(request)
+        let e0: E0, e1: E1, e2: E2
+        do { e0 = try await E0.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e1 = try await E1.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e2 = try await E2.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
+        let req = HTTP.Request<Body>(method: parts.method, uri: parts.uri,
+            version: parts.version, headers: parts.headers, body: body,
+            extensions: parts.extensions)
+        let e3: E3
+        do { e3 = try await E3.fromRequest(req, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        return try await f(e0, e1, e2, e3, state).intoResponse()
+    }
+}
+
+// MARK: - HandlerService5 (5 extractors)
+
+public struct HandlerService5<E0, E1, E2, E3, E4, Fn, S, Out>: Sendable
+where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequestParts, E4: FromRequest,
+      Fn: Sendable, S: Sendable, Out: IntoResponse,
+      E0.State == S, E1.State == S, E2.State == S, E3.State == S, E4.State == S {
+    @usableFromInline internal let state: S
+    @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, E4, S) async throws -> Out
+
+    @inlinable
+    public init(state: S, _ f: @Sendable @escaping (E0, E1, E2, E3, E4, S) async throws -> Out) {
+        self.state = state
+        self.f = f
+    }
+}
+
+extension HandlerService5: Service {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
+        var parts = RequestParts<Body>(request)
+        let e0: E0, e1: E1, e2: E2, e3: E3
+        do { e0 = try await E0.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e1 = try await E1.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e2 = try await E2.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e3 = try await E3.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
+        let req = HTTP.Request<Body>(method: parts.method, uri: parts.uri,
+            version: parts.version, headers: parts.headers, body: body,
+            extensions: parts.extensions)
+        let e4: E4
+        do { e4 = try await E4.fromRequest(req, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        return try await f(e0, e1, e2, e3, e4, state).intoResponse()
+    }
+}
+
+// MARK: - HandlerService6 (6 extractors)
+
+public struct HandlerService6<E0, E1, E2, E3, E4, E5, Fn, S, Out>: Sendable
+where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequestParts, E4: FromRequestParts, E5: FromRequest,
+      Fn: Sendable, S: Sendable, Out: IntoResponse,
+      E0.State == S, E1.State == S, E2.State == S, E3.State == S, E4.State == S, E5.State == S {
+    @usableFromInline internal let state: S
+    @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, E4, E5, S) async throws -> Out
+
+    @inlinable
+    public init(state: S, _ f: @Sendable @escaping (E0, E1, E2, E3, E4, E5, S) async throws -> Out) {
+        self.state = state
+        self.f = f
+    }
+}
+
+extension HandlerService6: Service {
+    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
+        var parts = RequestParts<Body>(request)
+        let e0: E0, e1: E1, e2: E2, e3: E3, e4: E4
+        do { e0 = try await E0.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e1 = try await E1.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e2 = try await E2.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e3 = try await E3.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e4 = try await E4.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
+        let req = HTTP.Request<Body>(method: parts.method, uri: parts.uri,
+            version: parts.version, headers: parts.headers, body: body,
+            extensions: parts.extensions)
+        let e5: E5
+        do { e5 = try await E5.fromRequest(req, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        return try await f(e0, e1, e2, e3, e4, e5, state).intoResponse()
+    }
+}

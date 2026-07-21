@@ -360,6 +360,31 @@ public struct Router<S: Sendable>: Sendable {
 
     /// Total number of registered routes.
     public var routeCount: Int { staticRoutes.count + dynamicRoutes.count }
+
+    // MARK: - with_state (port of axum::routing::Router::with_state)
+    //
+    // In axum, `with_state(s)` changes Router<S> → Router<()> by
+    // providing the "missing" state. Swift can't change generic
+    // parameters via methods, so this replaces the state VALUE
+    // while keeping the same type S. Practical effect is the same:
+    // late-bind state after route registration.
+    //
+    // ```swift
+    // let app = Router()
+    //     .get("/", handler)
+    //     .withState(AppState(db: ...))
+    // ```
+
+    /// Provide or replace state after route registration.
+    /// Direct port of `axum::routing::Router::with_state`.
+    public func withState(_ state: S) -> Router<S> {
+        Router<S>(
+            state: state,
+            staticRoutes: staticRoutes,
+            dynamicRoutes: dynamicRoutes,
+            fallback: fallback
+        )
+    }
 }
 
 // MARK: - Service conformance
