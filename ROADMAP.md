@@ -1,372 +1,229 @@
 # Starlight — Roadmap
 
 Direct port of Rust's [axum](https://github.com/tokio-rs/axum) to Swift.
-This file tracks what's done, what's next, and where we're heading.
-The single source of truth for any architectural decision is the axum
-source tree + hyper source tree; deviations happen only when Swift's
-type system or runtime model doesn't allow a literal port.
+The single source of truth is the axum source tree + hyper source tree.
+Deviations happen only when Swift's type system or runtime model
+doesn't allow a literal port.
 
 ## Текущее состояние
 
 | Компонент | Статус |
 |---|---|
-| `../http` package (port of `http` crate) | ✅ 5/5 tests |
-| `../hyper` package (port of `hyper::proto::h1`) | ✅ 7/7 tests |
-| `Starlight` (axum umbrella) — Tower/Core/Routing/Extractors/Middleware/Server | ✅ 10/10 tests |
-| HTTP/1.1 end-to-end pipeline | ✅ работает (`curl` отвечает) |
-| Бенчмарк | ~233K req/s release (loopback, 12-core AMD 5600H, wrk -t12 -c100 -d3s) |
-| Graceful shutdown | ❌ |
-| Streaming bodies / chunked TE | ❌ |
-| Router nesting / layers | ❌ |
+| `../http` package (port of `http` crate) | ✅ 5 tests |
+| `../hyper` package (port of `hyper::proto::h1`) | ✅ 18 tests |
+| `Starlight` (axum umbrella) | ✅ 39 tests |
+| HTTP/1.1 end-to-end | ✅ работает |
+| Graceful shutdown (auto SIGINT/SIGTERM) | ✅ |
+| Streaming bodies + chunked TE | ✅ |
+| Router (nest, merge, layer, route_layer) | ✅ |
+| Extractors (14 типов) | ✅ |
+| Middleware (Trace, Timeout, Cors, RateLimit) | ✅ |
+| SWAR byte search | ✅ |
+| Zero-copy ReadBuffer (port of BytesMut) | ✅ |
+| writev(2) multi-buffer output | ✅ |
+| Reusable HeaderMap + Extensions | ✅ |
+| Extension<T> + Redirect + MatchedPath + OriginalUri | ✅ |
+| Handler closure ergonomics | ✅ |
+| Tier 1 bug fixes (B1-B5) | ✅ |
+| Бенчмарк | ~231K req/s (release, 12-core, wrk -t12 -c100 -d3s) |
+| CompressionLayer | ❌ |
+| with_state() type-state pattern | ❌ |
+| HandlerService4+ (arity > 3) | ❌ |
+| IntoResponseParts + tuple responses | ❌ |
+| Option<T> / Result<T,E> extractors | ❌ |
+| Sse<Stream> structured helper | ❌ |
+| WebSocket | ❌ |
 | TLS | ❌ |
 | HTTP/2 | ❌ |
-| WebSocket | ❌ |
 
 ## Архитектурный фундамент (зафиксирован)
 
 - **8 модулей** mirror axum workspace 1:1
 - **`Worker` actor** (без `@unchecked Sendable`) с `unownedExecutor` → `PollEventLoop`
-- **Task-per-connection** (не per-accept, не per-request) — амортизируется по keep-alive
-- **`PollEventLoop.drainJobs()`** — `while` loop, не single-pass (Swift Task = 2 jobs: setup + body)
-- **`PollEventLoop.checkIsolated()`** — переопределён через `pthread_self == loopThreadId` для sync watch callbacks
+- **Task-per-connection** (не per-accept, не per-request)
+- **`PollEventLoop.drainJobs()`** — `while` loop (Swift Task = 2 jobs)
+- **`PollEventLoop.checkIsolated()`** — `pthread_self == loopThreadId`
+- **`ReadBuffer`** — Swift аналог `bytes::BytesMut` (zero-copy read)
+- **Reusable HeaderMap + Extensions** — 0 alloc/req после warmup
+- **writev(2)** — header + body в один syscall
+- **SO_REUSEPORT** — N listener fds, kernel-balanced
 
 ---
 
-## Phase 1 — Production HTTP/1.1
+## Done — Phase 1: Production HTTP/1.1
 
-**Цель:** Сервер, готовый к реальным deployment'ам.
+- [x] **1.1** Graceful shutdown (`280c554`)
+- [x] **1.2** Streaming bodies + chunked TE (`8d917f3`)
+- [x] **1.3** Router nest + merge + layer + route_layer (`03cd521`)
+- [x] **1.4** Extractors: Bytes, Form, ConnectInfo, Request
 
-**Время:** ~16 часов (4-5 сессий).
+## Done — Phase 2: Performance
 
-### 1.1 Graceful shutdown
+- [x] **2.1** SWAR byte search (`hyper/ByteSearch.swift`)
+- [x] **2.2** Zero-copy ReadBuffer (`hyper/ReadBuffer.swift`)
+- [x] **2.3** writev(2) multi-buffer output
+- [x] **2.4** Reusable HeaderMap + Extensions + @inlinable
 
-**Референс:** `axum::serve::WithGracefulShutdown`.
+## Done — Phase 3: Middleware
 
-**Задачи:**
-- [ ] Signal handler (SIGTERM / SIGINT) → drain in-flight requests.
-- [ ] `serve(...).withGracefulShutdown(signal)` API.
-- [ ] Timeout для drain (default 30s → force close).
-- [ ] Тест: shutdown под wrk нагрузкой, все in-flight запросы дорабатывают.
+- [x] **3.2** TraceLayer (configurable hooks, stderr opt-in)
+- [x] **3.3** CorsLayer (preflight, origin restriction, spec-compliant)
+- [x] **3.4** TimeoutLayer + RateLimitLayer
 
-**Acceptance:** `kill -TERM <pid>` не рвёт активные запросы.
+## Done — Extra axum parity
 
-**Время:** ~3 часа.
-
-### 1.2 Streaming bodies
-
-**Референс:** `hyper::body::Body` + `http_body::Frame`.
-
-**Задачи:**
-- [ ] `Body` enum: `.empty` / `.buffered([UInt8])` / `.stream(AsyncSequence)`.
-- [ ] Chunked Transfer-Encoding decoder (port of `hyper::proto::h1::decode::Decoder::chunked`).
-- [ ] Chunked Transfer-Encoding encoder.
-- [ ] `Response<Body>` умеет писать streaming bodies.
-- [ ] SSE endpoint example.
-
-**Acceptance:** Streaming echo endpoint корректно отдаёт chunks.
-
-**Время:** ~6 часов.
-
-### 1.3 Router: nesting + layers
-
-**Референс:** `axum::routing::Router::{nest, layer, route_layer, with_state}`.
-
-**Задачи:**
-- [ ] `Router.nest("/api", nestedRouter)` — merge routes under prefix.
-- [ ] `Router.layer(...)` — применить middleware ко всем routes.
-- [ ] `Router.route_layer(...)` — применить только к конкретным routes.
-- [ ] `Router.with_state(_:)` — конвертация `Router<S>` → `Router<S2>`.
-- [ ] Тесты: composition, ordering, nested state extraction.
-
-**Acceptance:** REST API example с nested routes и layer composition.
-
-**Время:** ~4 часа.
-
-### 1.4 Дополнительные extractors
-
-**Референс:** `axum::extract::{Bytes, Form, TypedHeader, ConnectInfo, Request, DefaultBodyLimit}`.
-
-**Задачи:**
-- [ ] `Bytes` — raw body bytes (без декодинга).
-- [ ] `Form<T>` — `application/x-www-form-urlencoded` → `T`.
-- [ ] `TypedHeader<T>` — typed header via protocol.
-- [ ] `ConnectInfo<Addr>` — peer address.
-- [ ] `Request<Body>` — whole request as extractor.
-- [ ] `DefaultBodyLimit` — ограничение размера тела.
-
-**Acceptance:** JSON API example со всеми extractors.
-
-**Время:** ~3 часа.
+- [x] Extension<T> (extractor + layer + response)
+- [x] Redirect (to/permanent/temporary/seeOther)
+- [x] MatchedPath + OriginalUri extractors
+- [x] Handler closure ergonomics (get/post/put/delete/patch)
+- [x] BoxService: Service conformance
+- [x] Tier 1 bug fixes (B1-B5)
 
 ---
 
-## Phase 2 — Performance parity
+## Next — Tier 2: axum API parity
 
-**Цель:** Догнать axum (Rust) по throughput на идентичных тестах.
+**Цель:** Покрыть оставшиеся важные API из audit'а.
 
-**Время:** ~12 часов (3-4 сессии).
+### 2.1 `with_state(_:)` — type-state pattern
 
-### 2.1 SWAR byte search
+**Референс:** `axum::routing::Router::with_state`.
 
-**Референс:** `hyper::proto::h1::io` uses `bytes::Find` (SWAR memchr).
+- [ ] `Router<S>.withState(_ state: S) -> Router<NoState>`
+- [ ] Handlers accessible after state provision
+- [ ] Тест: build router without state → provide → serve
 
-**Задачи:**
-- [ ] Port SWAR `findByte` для `\r`, `\n`, `:`, ` ` — 8 байт за итерацию.
-- [ ] Применить в `H1Decoder.findHeaderBlockEnd` + `findByte`.
-- [ ] Бенчмарк до/после.
+### 2.2 HandlerService4-6
 
-**Время:** ~3 часа.
+**Референс:** axum handlers with 4-6 extractors (covers 95% real handlers).
 
-### 2.2 Zero-copy accumulator
+- [ ] `HandlerService4<E0, E1, E2, E3, Fn, S, Out>`
+- [ ] `HandlerService5<E0, E1, E2, E3, E4, Fn, S, Out>`
+- [ ] `HandlerService6<E0, E1, E2, E3, E4, E5, Fn, S, Out>`
 
-**Референс:** hyper's per-conn `BytesMut` accumulator + `Bytes` views.
+### 2.3 IntoResponseParts + tuple responses
 
-**Задачи:**
-- [ ] Один byte buffer на соединение, переиспользуется через `discardReadBytes`.
-- [ ] `Request.body` — view (offset+length) над accumulator, не copy.
-- [ ] Бенчмарк alloc/req до/после.
+**Референс:** `axum::response::IntoResponseParts`.
 
-**Время:** ~4 часа.
+- [ ] Protocol `IntoResponseParts` (contributes headers/status)
+- [ ] `(StatusCode, T: IntoResponse)` as IntoResponse
+- [ ] `(StatusCode, HeaderMap, T)` as IntoResponse
+- [ ] `AppendHeaders([(name, value)])` helper
 
-### 2.3 writev multi-buffer output
+### 2.4 Option<T> / Result<T, E> extractors
 
-**Референс:** hyper's `writev(2)` coalescing of header + body buffers.
+**Референс:** `axum_core::extract::OptionalFromRequestParts`.
 
-**Задачи:**
-- [ ] Response: separate header + body ByteBuffers.
-- [ ] `writev(2)` через libc wrapper в `CLinuxExt`.
-- [ ] Бенчмарк: 1 syscall vs 2 syscalls per request.
+- [ ] `OptionalFromRequestParts` protocol
+- [ ] `Option<T: FromRequestParts>` extractor (returns nil, not reject)
+- [ ] Conformance for all existing extractors
 
-**Время:** ~3 часа.
+### 2.5 Sse<Stream> structured helper
 
-### 2.4 `~Copyable` + `@_specialize`
+**Референс:** `axum::response::Sse`.
 
-**Референс:** hyper's `Conn: !Clone` + tower's monomorphised services.
-
-**Задачи:**
-- [ ] `H1Decoder: ~Copyable`, `H1Encoder: ~Copyable`.
-- [ ] `@_specialize` на `BoxService.call` где компилятор может инлайнить.
-- [ ] Profile через `perf record`, найти hot indirect calls.
-- [ ] Цель: ≤ 10% gap vs axum на идентичной конфигурации.
-
-**Время:** ~2 часа.
-
----
-
-## Phase 3 — Tower middleware ecosystem
-
-**Цель:** Перенести основные middleware из `tower-http` + `axum::middleware`.
-
-**Время:** ~20 часов (5 сессий).
-
-### 3.1 CompressionLayer
-
-**Референс:** `tower_http::compression::*`.
-
-- [ ] Gzip / Deflate / Brotli encoders (zlib / libbz2).
-- [ ] Auto-select по `Accept-Encoding`.
-- [ ] Skip маленьких тел (< 256 bytes).
-- [ ] Тесты + benchmark overhead.
-
-**Время:** ~6 часов.
-
-### 3.2 TraceLayer
-
-**Референс:** `tower_http::trace::*`.
-
-- [ ] Request / response logging (method, path, status, duration).
-- [ ] Hooks: `on_request`, `on_response`, `on_failure`.
-- [ ] Span IDs для distributed tracing.
-
-**Время:** ~4 часа.
-
-### 3.3 CorsLayer
-
-**Референс:** `tower_http::cors::*`.
-
-- [ ] Preflight (`OPTIONS`) handling.
-- [ ] `Access-Control-Allow-*` headers.
-- [ ] Config: allowed origins, methods, headers, max-age.
-
-**Время:** ~3 часа.
-
-### 3.4 TimeoutLayer + RateLimitLayer
-
-**Референс:** `tower::timeout::Timeout` + `tower::limit::rate`.
-
-- [ ] Per-request timeout (default 30s) → 504.
-- [ ] Token bucket per-IP → 429.
-- [ ] Cleanup отменённых Tasks.
-
-**Время:** ~7 часов.
+- [ ] `Sse<S: AsyncSequence>` response type
+- [ ] `KeepAlive` configuration
+- [ ] Event formatting (data/event/id/retry fields)
 
 ---
 
 ## Phase 4 — HTTP protocol features
 
-**Цель:** Полная поддержка современных HTTP фичей.
+### 4.1 CompressionLayer (~6ч)
 
-**Время:** ~24 часа (6-8 сессий).
+**Референс:** `tower_http::compression`.
 
-### 4.1 HTTP/2
+- [ ] Gzip encoder via zlib
+- [ ] Auto-select по Accept-Encoding
+- [ ] Skip для < 256 bytes
 
-**Референс:** `hyper::proto::h2`.
-
-- [ ] HPACK header compression.
-- [ ] Stream multiplexing.
-- [ ] Server push (deprecated but supported).
-- [ ] ALPN negotiation (через TLS backend).
-
-**Время:** ~12 часов.
-
-### 4.2 WebSocket
+### 4.2 WebSocket (~6ч)
 
 **Референс:** `axum::extract::ws` + `tungstenite`.
 
-- [ ] RFC 6455 framing.
-- [ ] `ws://` upgrade via `Connection: Upgrade`.
-- [ ] `WebSocket` extractor.
-- [ ] Ping/pong, close frames.
+- [ ] RFC 6455 framing
+- [ ] `ws://` upgrade
+- [ ] `WebSocket` extractor
 
-**Время:** ~6 часов.
+### 4.3 TLS (~6ч)
 
-### 4.3 TLS
+- [ ] NIOSSL / BoringSSL integration
+- [ ] `TLSConfig` struct
+- [ ] HTTPS endpoint
 
-**Референс:** `hyper-util::rt::TLS` + `rustls`.
+### 4.4 Static file serving (~4ч)
 
-- [ ] NIOSSL или BoringSSL integration.
-- [ ] `TLSConfig` struct (PEM files).
-- [ ] ALPN для HTTP/2 negotiation.
-- [ ] HTTPS endpoint example.
-
-**Время:** ~6 часов.
-
-### 4.4 Static file serving
-
-**Референс:** `tower-http::services::ServeDir` + `tokio::fs`.
-
-- [ ] `sendfile(2)` zero-copy.
-- [ ] `ETag`, `Last-Modified`.
-- [ ] `Range` requests.
-- [ ] MIME type detection.
-
-**Время:** ~4 часа (максимально после HTTP/1.x features).
+- [ ] `sendfile(2)` zero-copy
+- [ ] ETag / Range / MIME
 
 ---
 
 ## Phase 5 — Advanced performance
 
-**Цель:** Догнать и превзойти Rust axum где позволяет Swift runtime.
+### 5.1 Radix trie router (~8ч)
 
-**Время:** ~17 часов (4-5 сессий).
+- [ ] Port matchit path trie
+- [ ] O(path-length) matching
 
-### 5.1 Radix trie router
+### 5.2 SIMD HTTP parser (~6ч)
 
-**Референс:** axum's use of [`matchit`](https://github.com/ibraheemdev/matchit).
-
-- [ ] Port matchit path trie.
-- [ ] Static + dynamic segments in one tree.
-- [ ] Benchmark: linear vs trie на 3/10/50/100 routes.
-
-**Время:** ~8 часов.
-
-### 5.2 SIMD HTTP parser
-
-**Референс:** `simdjson` / `picohttpparser` SWAR+SIMD paths.
-
-- [ ] Profile через `perf record`: % CPU в byte search.
-- [ ] Если > 15%: SIMD128 path через `SIMD16<UInt8>`.
-- [ ] Бенчмарк SWAR vs SIMD.
-
-**Время:** ~6 часов.
-
-### 5.3 Connection pooling + HTTP keepalive tuning
-
-**Референс:** hyper's `pool` module.
-
-- [ ] Per-host connection pool для outbound clients.
-- [ ] Idle connection timeout.
-- [ ] Max connections per host.
-
-**Время:** ~3 часа.
+- [ ] SIMD16<UInt8> byte search
+- [ ] Profile-driven optimization
 
 ---
 
 ## Phase 6 — Ecosystem & v0.1.0
 
-**Цель:** Готовый к production v0.1.0 release.
-
-**Время:** ~16 часов (4-5 сессий).
-
-### 6.1 Documentation
-
-- [ ] Doc comments на всех public API.
-- [ ] DocC catalog с tutorials.
-- [ ] Hosted docs на GitHub Pages.
-
-**Время:** ~4 часа.
-
-### 6.2 Examples (как `axum/examples/`)
-
-- [ ] `Examples/hello-world/` — minimal.
-- [ ] `Examples/rest-api/` — CRUD with JSON.
-- [ ] `Examples/middleware/` — from_fn + layers.
-- [ ] `Examples/sse/` — Server-Sent Events.
-- [ ] `Examples/websocket/` — chat.
-- [ ] `Examples/file-upload/` — multipart.
-
-**Время:** ~6 часов.
-
-### 6.3 TestClient
-
-**Референс:** `axum::test::TestClient`.
-
-- [ ] `TestClient` — `router.get("/").expect(.ok)` ergonomics.
-- [ ] Mock TCP / in-memory transport для unit-тестов.
-- [ ] `swift test` запускает все examples.
-
-**Время:** ~3 часа.
-
-### 6.4 v0.1.0 release
-
-- [ ] README с quickstart + benchmarks.
-- [ ] CHANGELOG.md.
-- [ ] CI на GitHub Actions (Linux + macOS).
-- [ ] Tag `v0.1.0` на git.
-- [ ] Announcement.
-
-**Время:** ~3 часа.
+- [ ] README + quickstart + benchmarks
+- [ ] Examples (hello-world, rest-api, middleware, sse)
+- [ ] TestClient utility
+- [ ] DocC documentation
+- [ ] CI (GitHub Actions)
+- [ ] Tag `v0.1.0`
 
 ---
 
-## Принципы
+## Known deviations from axum (justified)
 
-1. **axum 1:1** — каждая абстракция имеет соответствие в axum source.
-   Если в axum нет — не добавляем без сильной причины.
-2. **Hot path — zero-allocation** после первого keep-alive запроса.
-3. **Swift idioms где Rust literal не переносится** — `throws` вместо
-   `Result`, `~Copyable` где это покупает производительность, `actor`
-   для state isolation.
-4. **Tower-compatible** — любой middleware под `Service` / `Layer`
-   работает без HTTP-specific shortcut'ов.
-5. **Тесты обязательны** для каждого PR в Phase 1-3.
-6. **Benchmarks после каждой фазы** — regression если > 5% drop.
+| Deviation | Reason |
+|---|---|
+| `throws ExtractionRejection` вместо `Result<Self, Rejection: IntoResponse>` | Swift `Result.Failure: Error` конфликтует с `IntoResponse` |
+| SO_REUSEPORT multi-listener (не single) | Swift не имеет work-stealing runtime |
+| `Router<S>` state at init (не `with_state` post-registration) | Будет исправлено в Tier 2.1 |
+| HandlerService0-3 (не variadic generics 0-16) | Swift не имеет variadic async closures |
+| `ReadBuffer` class (ARC) вместо `BytesMut` value type | Swift `~Copyable` + `Sendable` конфликтуют |
+| `Body` enum (не `BoxBody` trait object) | Swift не имеет trait objects |
+
+## Principles
+
+1. **axum 1:1** — каждая абстракция имеет соответствие в axum source
+2. **Hot path — zero-allocation** после первого keep-alive запроса
+3. **Swift idioms** где Rust literal не переносится
+4. **Tower-compatible** — Service/Layer работает без HTTP-specific shortcuts
+5. **Тесты обязательны**
+6. **Benchmarks после каждого коммита** — regression если > 5% drop
 
 ## Session log
 
 | # | Дата | Что сделано |
 |---|---|---|
-| 1 | 2026-07-21 | Skeleton: 8 axum modules, protocols, 15 tests. `729c5a6`. |
-| 2 | 2026-07-21 | ROADMAP dropped, reference axum directly. `aaf682f`. |
-| 3 | 2026-07-21 | Extracted `../http` + `../hyper` packages. `f9bc525`. |
-| 4 | 2026-07-21 | Working HTTP server, Worker actor, 136K req/s. `5bec2ed`. |
-| 5 | 2026-07-21 | Phase 1.1: graceful shutdown via SIGINT/SIGTERM + drain timeout. `280c554`. |
-| 6 | 2026-07-21 | Phase 1.2: streaming bodies + chunked TE (in + out). `8d917f3`. |
-| 7 | 2026-07-21 | Phase 1.3: Router.nest + merge + layer + route_layer. `03cd521`. |
-| 8 | 2026-07-21 | Phase 1.4: Bytes + Form + ConnectInfo + RawRequest extractors. |
-| 9 | 2026-07-21 | Phase 2.1: SWAR byte search (hyper `ByteSearch.swift`). |
-| 10 | 2026-07-21 | Phase 3.1-3.5: TraceLayer + TimeoutLayer + CorsLayer + RateLimitLayer. |
-| 11 | 2026-07-21 | Extension<T> + Redirect (axum::Extension, axum::response::Redirect). |
-| 12 | 2026-07-21 | Handler ergonomics: closure-based route registration. |
-| 13 | 2026-07-21 | MatchedPath + OriginalUri extractors (axum::extract). |
-| 14 | — | _Next_ |
+| 1 | 2026-07-21 | Skeleton: 8 axum modules, protocols, 15 tests |
+| 2 | 2026-07-21 | Reference axum source directly (no look-back at old impl) |
+| 3 | 2026-07-21 | Extracted `../http` + `../hyper` as standalone packages |
+| 4 | 2026-07-21 | Working HTTP server: Worker actor, Task-per-conn, 136K req/s |
+| 5 | 2026-07-21 | Graceful shutdown (SIGINT/SIGTERM, drain timeout) |
+| 6 | 2026-07-21 | Streaming bodies + chunked TE (request + response) |
+| 7 | 2026-07-21 | Router nest + merge + layer + route_layer |
+| 8 | 2026-07-21 | Extractors: Bytes, Form, ConnectInfo, Request |
+| 9 | 2026-07-21 | SWAR byte search in hyper |
+| 10 | 2026-07-21 | TraceLayer + TimeoutLayer + CorsLayer + RateLimitLayer |
+| 11 | 2026-07-21 | Extension<T> + Redirect (axum::Extension, axum::response::Redirect) |
+| 12 | 2026-07-21 | Handler closure ergonomics (axum-style get/post/...) |
+| 13 | 2026-07-21 | MatchedPath + OriginalUri extractors |
+| 14 | 2026-07-21 | Zero-copy ReadBuffer (port of bytes::BytesMut) |
+| 15 | 2026-07-21 | writev(2) multi-buffer output |
+| 16 | 2026-07-21 | Reusable HeaderMap + Extensions + @inlinable (+2.2%) |
+| 17 | 2026-07-21 | Full audit: 5 bugs, 24 missing, 12 deviations identified |
+| 18 | 2026-07-21 | Tier 1 fixes: B1-B5 (ConnectInfo, Json status, Router init, CORS, default shutdown) |
+| 19 | — | _Next: Tier 2 (with_state, HandlerService4+, IntoResponseParts, Option<T>)_ |
