@@ -38,9 +38,10 @@ public final class TcpStream: @unchecked Sendable {
     }
 
     /// Read into the buffer; returns bytes read (0 on EOF, negative
-    /// on error).
-    public func read(into buffer: UnsafeMutableRawBufferPointer) async -> Int {
-        await eventLoop.read(channelId: channelId, fd: fd, into: buffer)
+    /// on error). Uses eventLoop's internal buffer — caller accesses
+    /// bytes via `eventLoop.getReadView`.
+    public func read() async -> Int {
+        await eventLoop.read(channelId: channelId, fd: fd)
     }
 
     /// Write from the buffer; returns bytes written (negative on error).

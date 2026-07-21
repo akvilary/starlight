@@ -262,20 +262,24 @@ public actor Worker {
         writeBuffer.reserveCapacity(2048)
 
         connLoop: while true {
-            // 1. Zero-copy read: read DIRECTLY into the decoder's
-            //    ReadBuffer writable tail. No intermediate buffer,
-            //    no memcpy. The decoder's buffer IS the read target.
-            //    Mirrors hyper's BytesMut::chunk_mut() + advance_mut().
-            conn.decoder.buffer.ensureCapacity(readBufferSize)
-            let n = await eventLoop.read(
-                channelId: channelId,
-                fd: fd,
-                into: conn.decoder.buffer.writableTail
-            )
+            // 1. Async read — eventLoop reads into its internal buffer.
+            //    No external buffer pointer crosses the await boundary.
+            //    Eliminates @unchecked on H1Decoder + ConnState.
+            let n = await eventLoop.read(channelId: channelId, fd: fd)
             if n <= 0 { return }
 
-            // 2. Commit the read bytes to the decoder's buffer.
-            conn.decoder.buffer.advanceWritePosition(n)
+            // 2. Feed decoder — copy ~100 bytes from eventLoop's buffer
+            //    into decoder's [UInt8]. One memcpy (~10ns).
+            let readView = eventLoop.getReadView(channelId: channelId, count: n)
+            do {
+                try conn.decoder.feed(readView)
+            } catch {
+                writeErrorAndClose(
+                    fd: fd, writeBuffer: &writeBuffer,
+                    status: .badRequest, message: "Bad Request: \(error)"
+                )
+                return
+            }
 
             // 3. Parse + dispatch all complete requests from this read.
             reqLoop: while true {

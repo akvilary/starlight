@@ -35,18 +35,16 @@ struct PollEventLoopTests {
         init(_ executor: UnownedSerialExecutor) { self._executor = executor }
         nonisolated var unownedExecutor: UnownedSerialExecutor { _executor }
 
-        /// Allocate, read, copy out, deallocate — all inside the actor
-        /// so no `UnsafeMutableRawBufferPointer` crosses actor
-        /// boundaries (StrictMemorySafety).
+        /// Read via eventLoop's internal buffer, copy out to [UInt8].
         func runRead(loop: PollEventLoop, channelId: UInt32,
                      fd: CInt, capacity: Int) async -> (Int, [UInt8]) {
-            let buf = UnsafeMutableRawBufferPointer.allocate(
-                byteCount: capacity, alignment: 8)
-            defer { buf.deallocate() }
-            let n = await loop.read(channelId: channelId, fd: fd, into: buf)
+            let n = await loop.read(channelId: channelId, fd: fd)
             var out = [UInt8](repeating: 0, count: max(0, n))
-            for i in 0..<out.count {
-                out[i] = buf.load(fromByteOffset: i, as: UInt8.self)
+            if n > 0 {
+                let view = loop.getReadView(channelId: channelId, count: n)
+                for i in 0..<out.count {
+                    out[i] = view[i]
+                }
             }
             return (n, out)
         }
@@ -66,20 +64,20 @@ struct PollEventLoopTests {
             payload.withUnsafeBufferPointer { src in
                 writeBuf.copyMemory(from: UnsafeRawBufferPointer(src))
             }
-            let readBuf = UnsafeMutableRawBufferPointer.allocate(
-                byteCount: 8, alignment: 8)
-            defer { readBuf.deallocate() }
 
             // Write first, then read — both on the loop thread.
             let writeN = await loop.write(
                 channelId: writerCh, fd: a,
                 from: UnsafeRawBufferPointer(writeBuf))
-            let readN = await loop.read(
-                channelId: readerCh, fd: b, into: readBuf)
-
+            // New API: eventLoop reads into its internal buffer.
+            // Caller accesses via getReadView.
+            let readN = await loop.read(channelId: readerCh, fd: b)
             var out = [UInt8](repeating: 0, count: max(0, readN))
-            for i in 0..<out.count {
-                out[i] = readBuf.load(fromByteOffset: i, as: UInt8.self)
+            if readN > 0 {
+                let view = loop.getReadView(channelId: readerCh, count: readN)
+                for i in 0..<out.count {
+                    out[i] = view[i]
+                }
             }
             return (writeN, readN, out)
         }

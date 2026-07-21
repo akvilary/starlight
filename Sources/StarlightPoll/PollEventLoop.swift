@@ -66,9 +66,14 @@ import Glibc
 internal struct PollChannelState {
     var fd: CInt
     var registered: Bool = false
-    var pendingRead: (CheckedContinuation<Int, Never>, UnsafeMutableRawBufferPointer)?
+    var pendingRead: CheckedContinuation<Int, Never>?
     var pendingWrite: (CheckedContinuation<Int, Never>, UnsafeRawBufferPointer)?
     var watch: (@Sendable (Ready) -> Void)?
+    /// Per-channel read buffer — pre-allocated, reused across
+    /// keep-alive requests. Owned by the eventLoop (NOT by the
+    /// decoder). Eliminates @unchecked on H1Decoder + ConnState.
+    var readBuffer: UnsafeMutablePointer<UInt8>?
+    var readCapacity: Int = 8192
 }
 
 // MARK: - PollEventLoop
@@ -229,10 +234,14 @@ public final class PollEventLoop: @unchecked Sendable {
 
     /// Allocate a fresh, unique channelId. Use the returned id with
     /// `read`/`write`/`cancelChannel`. The id is never reused, which
-    /// prevents fd-recycling misattribution.
+    /// prevents fd-recycling misattribution. Allocates a per-channel
+    /// read buffer (8KB, reused across keep-alive requests).
     public func registerChannel() -> UInt32 {
         let id = nextChannelId
         nextChannelId &+= 1
+        var state = PollChannelState(fd: -1)
+        state.readBuffer = .allocate(capacity: state.readCapacity)
+        channels[id] = state
         return id
     }
 
@@ -270,54 +279,51 @@ public final class PollEventLoop: @unchecked Sendable {
     /// Also valid for a watch channel: its handler closure is released
     /// when the entry is removed.
     public func cancelChannel(_ channelId: UInt32) {
-        // Atomically remove + retrieve — no write-back needed because
-        // the entry is gone after this call. `state` is a let-constant
-        // extracted from the removed slot.
         guard let state = channels.removeValue(forKey: channelId) else { return }
-        if let (cont, _) = state.pendingRead  { cont.resume(returning: -1) }
+        if let cont = state.pendingRead  { cont.resume(returning: -1) }
         if let (cont, _) = state.pendingWrite { cont.resume(returning: -1) }
         if state.registered { try? registry.deregister(fd: state.fd) }
+        // Free per-channel read buffer.
+        if let buf = state.readBuffer { buf.deallocate() }
     }
 
     // MARK: Async read
 
-    /// Await readability on `(channelId, fd)`, then perform a single
-    /// `read(2)` into `buffer`. Returns the number of bytes read (0 on
-    /// EOF, negative on error). The fd MUST be non-blocking — under
-    /// level-triggered + oneshot the read will not return EAGAIN in
-    /// practice, but if it does the negative result is surfaced.
+    /// Await readability on `(channelId, fd)`, then read into the
+    /// eventLoop's internal per-channel buffer. Returns bytes read
+    /// (0 on EOF, negative on error).
     ///
-    /// - Precondition: the caller MUST ensure no other `read` is
-    ///   in flight on the same `channelId`. Two overlapping reads
-    ///   would overwrite `state.pendingRead` and leak the previous
-    ///   continuation (its Task would hang forever with a "leaking
-    ///   continuation!" runtime warning). The standard HTTP
-    ///   connection loop (`httpLoop`) honours this naturally —
-    ///   reads are strictly sequential per channel.
-    public func read(
-        channelId: UInt32, fd: CInt,
-        into buffer: UnsafeMutableRawBufferPointer
-    ) async -> Int {
+    /// The buffer is owned by the eventLoop — callers access it via
+    /// `getReadView(channelId:count:)` after this returns. This
+    /// eliminates the need for the caller to own a raw buffer (and
+    /// thus the need for @unchecked Sendable on decoder/conn types).
+    public func read(channelId: UInt32, fd: CInt) async -> Int {
         return await withCheckedContinuation { cont in
-            armRead(channelId: channelId, fd: fd, cont: cont, buffer: buffer)
+            armRead(channelId: channelId, fd: fd, cont: cont)
         }
+    }
+
+    /// Get a view into the per-channel read buffer after `read()`
+    /// returns. The pointer is valid until the next `read()` call
+    /// on the same channel. Called from the loop thread only.
+    public func getReadView(channelId: UInt32, count: Int) -> UnsafeBufferPointer<UInt8> {
+        guard let state = channels[channelId], let buf = state.readBuffer else {
+            return UnsafeBufferPointer(start: nil, count: 0)
+        }
+        return UnsafeBufferPointer(start: buf, count: Swift.min(count, state.readCapacity))
     }
 
     @inline(__always)
     private func armRead(
         channelId: UInt32, fd: CInt,
-        cont: CheckedContinuation<Int, Never>,
-        buffer: UnsafeMutableRawBufferPointer
+        cont: CheckedContinuation<Int, Never>
     ) {
         var state = channels[channelId] ?? PollChannelState(fd: fd)
         state.fd = fd
         precondition(state.pendingRead == nil,
-            "PollEventLoop: overlapping read on channelId=\(channelId) — previous continuation would leak")
-        state.pendingRead = (cont, buffer)
+            "PollEventLoop: overlapping read on channelId=\(channelId)")
+        state.pendingRead = cont
         rearm(channelId: channelId, state: &state)
-        // Single write-back after rearm — safe because rearm does not
-        // read from the dict; any resumed continuations are enqueued,
-        // not run synchronously.
         channels[channelId] = state
     }
 
@@ -395,7 +401,7 @@ public final class PollEventLoop: @unchecked Sendable {
             // EBADF / ENOMEM / ENOMEM: surface as immediate error to the
             // caller(s) by resuming with -1. The channels dict stays
             // consistent.
-            if let (cont, _) = state.pendingRead {
+            if let cont = state.pendingRead {
                 state.pendingRead = nil
                 cont.resume(returning: -1)
             }
@@ -425,10 +431,10 @@ public final class PollEventLoop: @unchecked Sendable {
 
         let fd = state.fd
 
-        // Read readiness: issue read(2) and resume the waiter.
-        if event.isReadable, let (cont, buf) = state.pendingRead {
+        // Read readiness: issue read(2) into internal buffer, resume waiter.
+        if event.isReadable, let cont = state.pendingRead {
             state.pendingRead = nil
-            let n = Glibc.read(fd, buf.baseAddress!, buf.count)
+            let n = Glibc.read(fd, state.readBuffer!, state.readCapacity)
             cont.resume(returning: Int(n))
         }
 
@@ -443,7 +449,7 @@ public final class PollEventLoop: @unchecked Sendable {
         // surfaced as a 0-byte read (mirrors io_uring recv on a closed
         // socket). EPOLLERR surfaces as -1 to any remaining waiter.
         if event.ready.isError {
-            if let (cont, _) = state.pendingRead {
+            if let cont = state.pendingRead {
                 state.pendingRead = nil
                 cont.resume(returning: -1)
             }
@@ -452,7 +458,7 @@ public final class PollEventLoop: @unchecked Sendable {
                 cont.resume(returning: -1)
             }
         } else if event.ready.isReadClosed,
-                  let (cont, _) = state.pendingRead {
+                  let cont = state.pendingRead {
             // Peer closed write side (EPOLLRDHUP) or hung up without
             // data: deliver EOF.
             state.pendingRead = nil
@@ -470,7 +476,7 @@ public final class PollEventLoop: @unchecked Sendable {
 
     private func recoverOrphanedContinuations() {
         for (_, var state) in channels {
-            if let (cont, _) = state.pendingRead {
+            if let cont = state.pendingRead {
                 state.pendingRead = nil
                 cont.resume(returning: -1)
             }
