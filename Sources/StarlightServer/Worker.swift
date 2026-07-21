@@ -44,6 +44,7 @@ import Foundation
 import HTTP
 import Hyper
 import StarlightPoll
+import StarlightExtractors   // ConnectInfo
 import StarlightTower
 
 /// Per-connection state. Owned by the per-conn Task frame.
@@ -52,6 +53,10 @@ struct ConnState: Sendable {
     let channelId: UInt32
     var decoder: H1Decoder
     let encoder: H1Encoder
+    /// Peer address string (e.g. "127.0.0.1:54321"). Obtained via
+    /// getpeername(2) at accept time. Inserted into every request's
+    /// extensions as `ConnectInfo` for extractors + RateLimitLayer.
+    let peerAddress: String
 }
 
 /// One HTTP worker. Bound to a `PollEventLoop` via `unownedExecutor`,
@@ -153,11 +158,13 @@ public actor Worker {
         inFlightConns &+= 1
 
         let channelId = eventLoop.registerChannel()
+        let peerAddress = Self.getPeerAddress(fd: fd)
         let conn = ConnState(
             fd: fd,
             channelId: channelId,
             decoder: H1Decoder(),
-            encoder: H1Encoder()
+            encoder: H1Encoder(),
+            peerAddress: peerAddress
         )
 
         // Spawn a Task to drive this connection's lifecycle.
@@ -242,6 +249,7 @@ public actor Worker {
         var conn = initialConn
         let fd = conn.fd
         let channelId = conn.channelId
+        let peerAddress = conn.peerAddress
         defer {
             #if canImport(Glibc)
             _ = Glibc.close(fd)
@@ -281,9 +289,12 @@ public actor Worker {
                     )
                     return
                 }
-                guard case .complete(let request) = parseResult else {
+                guard case .complete(var request) = parseResult else {
                     break reqLoop
                 }
+
+                // B1 FIX: populate ConnectInfo for extractors + RateLimitLayer.
+                request.extensions.insert(ConnectInfo(peerAddress: peerAddress))
 
                 let keepAlive = shouldKeepAlive(
                     version: request.version,
@@ -422,6 +433,30 @@ public actor Worker {
         }
         #else
         return 0
+        #endif
+    }
+
+    /// Get peer socket address via getpeername(2). Called once per
+    /// connection (amortised over keep-alive requests).
+    @inline(__always)
+    private nonisolated static func getPeerAddress(fd: CInt) -> String {
+        #if canImport(Glibc)
+        var addr = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let rc = withUnsafeMutablePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Glibc.getpeername(fd, sa, &len)
+            }
+        }
+        guard rc == 0 else { return "unknown" }
+        var ipBuf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        Glibc.inet_ntop(
+            AF_INET, &addr.sin_addr, &ipBuf, socklen_t(INET6_ADDRSTRLEN)
+        )
+        let port = UInt16(bigEndian: addr.sin_port)
+        return "\(String(cString: ipBuf)):\(port)"
+        #else
+        return "unknown"
         #endif
     }
 

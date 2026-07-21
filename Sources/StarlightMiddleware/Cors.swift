@@ -117,13 +117,25 @@ public struct CorsLayer: Sendable {
         headers: inout HeaderMap
     ) {
         let origin = request.headers.first(for: .origin)?.description ?? ""
-        if config.allowedOrigins.contains("*") {
-            headers.insert(.accessControlAllowOrigin, "*")
-        } else if config.allowedOrigins.contains(origin) {
-            headers.insert(.accessControlAllowOrigin, origin)
+
+        // B4 FIX: per CORS spec, Access-Control-Allow-Origin: * is
+        // NOT compatible with Access-Control-Allow-Credentials: true.
+        // When credentials are enabled, must echo the specific origin.
+        if config.allowCredentials {
+            // Must echo specific origin.
+            if config.allowedOrigins.contains("*") || config.allowedOrigins.contains(origin) {
+                if !origin.isEmpty {
+                    headers.insert(.accessControlAllowOrigin, origin)
+                }
+            }
+        } else {
+            // Without credentials, '*' is fine.
+            if config.allowedOrigins.contains("*") {
+                headers.insert(.accessControlAllowOrigin, "*")
+            } else if config.allowedOrigins.contains(origin) {
+                headers.insert(.accessControlAllowOrigin, origin)
+            }
         }
-        // If origin not allowed, don't add the header — browser will
-        // block the response.
     }
 }
 

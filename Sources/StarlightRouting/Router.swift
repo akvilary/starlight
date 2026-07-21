@@ -36,10 +36,18 @@ public struct Router<S: Sendable>: Sendable {
     /// App state.
     @usableFromInline internal let state: S
 
+    /// Initialiser for stateless routers. Only available when S == NoState.
     @inlinable
-    public init(state: S = NoState() as! S) {
-        // `as! S` is a hack: this convenience is only called with
-        // `S == NoState`. Real callers go through `Router<S>.init(state:)`.
+    public init() where S == NoState {
+        self.staticRoutes = []
+        self.dynamicRoutes = []
+        self.fallback = nil
+        self.state = NoState()
+    }
+
+    /// Initialiser with explicit state.
+    @inlinable
+    public init(state: S) {
         self.staticRoutes = []
         self.dynamicRoutes = []
         self.fallback = nil

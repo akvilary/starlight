@@ -31,12 +31,25 @@ extension Json: FromRequest where T: Decodable {
         _ request: consuming Request<Body>,
         state: borrowing AnySendable
     ) async throws -> Json<T> {
+        // B2 FIX: Content-Type check BEFORE decode.
+        // Missing/wrong Content-Type → 415 Unsupported Media Type.
+        // Decode failure → 400 Bad Request.
+        let ct = request.headers.first(for: .contentType)?.description ?? ""
+        if !ct.lowercased().hasPrefix("application/json") {
+            throw ExtractionRejection(
+                "expected application/json, got \(ct.isEmpty ? "missing" : ct)",
+                status: .unsupportedMediaType  // 415
+            )
+        }
+        let bytes = try await request.body.collect()
         do {
-            let bytes = try await request.body.collect()
             let decoded = try JSONDecoder().decode(T.self, from: Data(bytes))
             return Json(decoded)
         } catch {
-            throw ExtractionRejection("json decode failed: \(error)", status: .unsupportedMediaType)
+            throw ExtractionRejection(
+                "json decode failed: \(error)",
+                status: .badRequest  // 400 — NOT 415
+            )
         }
     }
 }

@@ -64,9 +64,12 @@ public func serve<S: Service>(
     loopCount: Int = ProcessInfo.processInfo.activeProcessorCount,
     drainTimeout: Duration = .seconds(30),
     onShutdown: @escaping @Sendable () async -> Void = {
-        // Default: wait forever — preserves the old "blocks until
-        // killed" semantics if the caller doesn't supply a signal.
-        await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+        // B5 FIX: install signal handlers by default so Ctrl-C / kill
+        // always triggers graceful shutdown — matching axum's default
+        // behaviour where the server responds to SIGINT/SIGTERM without
+        // any explicit user setup.
+        installShutdownSignalHandlers()
+        await waitForShutdownSignal()
     }
 ) async throws where S.Request == Request<Body>, S.Response == Response<Body> {
     // Wrap the user-provided Service in a BoxService so all worker

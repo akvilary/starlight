@@ -148,7 +148,7 @@ let package = Package(
         // entry point that wraps hyper's HTTP1Builder.
         .target(
             name: "StarlightServer",
-            dependencies: serverDependencies,
+            dependencies: serverDependencies + ["StarlightExtractors"],
             path: "Sources/StarlightServer",
             swiftSettings: baseSwiftSettings
         ),
