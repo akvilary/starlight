@@ -66,7 +66,9 @@ final class IORingExecutorLoop: @unchecked Sendable {
     /// fd → channelId of every active connection. Used by shutdown's
     /// drainConnections() to cancel channels. Mutated only on the loop
     /// thread.
-    private var connections: [CInt: IORingConnectionState] = [:]
+    ///
+    /// `internal` for direct unit testing (see P0.3 regression test).
+    internal var connections: [CInt: IORingConnectionState] = [:]
     private var connectionCount: Int = 0
     private var newConnQueue: [CInt] = []
     private var newConnLock = pthread_spinlock_t()
@@ -243,9 +245,22 @@ final class IORingExecutorLoop: @unchecked Sendable {
         }
     }
 
-    private func drainConnections() {
-        for (_, state) in connections {
+    /// `internal` for direct unit testing (see P0.3 regression test).
+    internal func drainConnections() {
+        // Close every connection fd unconditionally. See the matching
+        // comment in `EpollExecutorLoop.drainConnections` for the full
+        // rationale — the same shutdown ordering and Task-park edge
+        // cases apply here.
+        //
+        // For io_uring, any in-flight SQEs that still reference these
+        // fds will complete with `-EBADF` once the kernel observes the
+        // close; `resumeRead`/`resumeWrite` drop those CQEs silently
+        // (the channel has already been removed from `readWaiters`/
+        // `writeWaiters` by `recoverOrphanedContinuations` or the
+        // `cancelChannel` call below).
+        for (fd, state) in connections {
             eventLoop.cancelChannel(state.channelId)
+            Glibc.close(fd)
         }
         connections.removeAll()
         connectionCount = 0

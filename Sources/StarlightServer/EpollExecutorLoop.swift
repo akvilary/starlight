@@ -75,7 +75,12 @@ final class EpollExecutorLoop: @unchecked Sendable {
     /// drainConnections() to cancel channels and close fds. Mutated
     /// only on the loop thread (handleAccept, closeConnection,
     /// drainConnections all run there).
-    private var connections: [CInt: EpollConnectionState] = [:]
+    ///
+    /// `internal` rather than `private` so the P0.3 regression test can
+    /// inject fds and verify `drainConnections` closes them — the test
+    /// cannot easily produce the leak scenario (Tasks not parked on
+    /// I/O at shutdown time) end-to-end without flakiness.
+    internal var connections: [CInt: EpollConnectionState] = [:]
     private var connectionCount: Int = 0
 
     // MARK: Init
@@ -249,13 +254,32 @@ final class EpollExecutorLoop: @unchecked Sendable {
         }
     }
 
-    private func drainConnections() {
-        for (_, state) in connections {
+    /// `internal` for direct unit testing (see P0.3 regression test).
+    internal func drainConnections() {
+        // Close every connection fd unconditionally. This runs on the
+        // loop thread after `eventLoop.run()` has returned, so no
+        // further Task continuations will be drained — `connections`
+        // is stable.
+        //
+        // The final `recoverOrphanedContinuations()` + `drainJobs()`
+        // inside `PollEventLoop.run()` lets Tasks parked on
+        // `eventLoop.read`/`write` at shutdown time resume and call
+        // `closeConnection(fd:)` themselves (those entries are then
+        // already gone from `connections`). But Tasks parked on
+        // anything else (e.g. an in-flight async handler, a child Task
+        // completion whose continuation was enqueued mid-`drainJobs`,
+        // or re-parked on I/O after the final drain) never get their
+        // cleanup code to run — their fd would leak forever without
+        // this close.
+        //
+        // Safe against double-close: `closeConnection` removes the
+        // entry from `connections` before closing, so any fd still
+        // present here is closed exactly once. A Task that later
+        // (somehow) calls `closeConnection` on the same fd finds the
+        // entry missing and is a no-op.
+        for (fd, state) in connections {
             eventLoop.cancelChannel(state.channelId)
-            // fd is closed by the connection Task on its exit (via
-            // closeConnection or by returning from the loop). Here we
-            // only cancel the channel — the Task will observe the
-            // cancelled read/write and exit.
+            Glibc.close(fd)
         }
         connections.removeAll()
         connectionCount = 0
