@@ -138,6 +138,77 @@ public struct Router<S: Sendable>: Sendable {
         route(pattern, method: .PATCH, endpoint)
     }
 
+    // MARK: - Closure-based handler overloads (axum ergonomics)
+    //
+    // These overloads let you register handlers without explicitly
+    // wrapping in BoxService — matching axum's ergonomics:
+    //
+    //   router.get("/") { _ in .plain("hello") }
+    //   router.get("/") { .plain("no args needed") }
+    //
+    // The closure receives the whole Request<Body> for manual
+    // extraction. For typed extractors (Path<T>, Query<T>, etc.)
+    // use HandlerService1/2/3 explicitly — they're more verbose but
+    // provide compile-time extraction + rejection.
+
+    /// Register a GET handler that receives the whole request.
+    /// Matches axum's `get(|req| async { ... })`.
+    public func get(
+        _ pattern: String,
+        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+    ) -> Router<S> {
+        get(pattern, BoxService(handler))
+    }
+
+    /// Register a GET handler with no arguments.
+    /// Matches axum's `get(|| async { ... })`.
+    public func get(
+        _ pattern: String,
+        _ handler: @Sendable @escaping () async throws -> HTTP.Response<Body>
+    ) -> Router<S> {
+        get(pattern, BoxService { _ in try await handler() })
+    }
+
+    /// Register a POST handler that receives the whole request.
+    public func post(
+        _ pattern: String,
+        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+    ) -> Router<S> {
+        post(pattern, BoxService(handler))
+    }
+
+    /// Register a POST handler with no arguments.
+    public func post(
+        _ pattern: String,
+        _ handler: @Sendable @escaping () async throws -> HTTP.Response<Body>
+    ) -> Router<S> {
+        post(pattern, BoxService { _ in try await handler() })
+    }
+
+    /// Register a PUT handler that receives the whole request.
+    public func put(
+        _ pattern: String,
+        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+    ) -> Router<S> {
+        put(pattern, BoxService(handler))
+    }
+
+    /// Register a DELETE handler that receives the whole request.
+    public func delete(
+        _ pattern: String,
+        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+    ) -> Router<S> {
+        delete(pattern, BoxService(handler))
+    }
+
+    /// Register a PATCH handler that receives the whole request.
+    public func patch(
+        _ pattern: String,
+        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+    ) -> Router<S> {
+        patch(pattern, BoxService(handler))
+    }
+
     // MARK: - nest (port of axum::routing::Router::nest)
 
     /// Nest another `Router<S>` under a path prefix. Each route in

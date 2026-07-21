@@ -58,47 +58,36 @@ struct SSESource: AsyncSequence, Sendable {
     }
 }
 
-// MARK: - Application service
+// MARK: - Application
 
-struct AppService: Service {
-    typealias Request = HTTP.Request<Body>
-    typealias Response = HTTP.Response<Body>
-
-    func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        switch (request.method, request.uri.pathString) {
-        case (.GET, "/"):
-            // Buffered body — most common case.
-            return .plain("Hello, World!\n")
-
-        case (.GET, "/health"):
-            // JSON response (manual construction).
-            let json = """
-            {"status":"ok","uptime":"running"}
-            """
-            var headers = HeaderMap()
-            headers.insert(.contentType, "application/json; charset=utf-8")
-            headers.insert(.contentLength, String(json.utf8.count))
-            return HTTP.Response<Body>(
-                status: .ok, headers: headers, body: .buffered(Array(json.utf8))
-            )
-
-        case (.GET, "/stream"):
-            // Streaming body — SSE endpoint.
-            return .stream(
-                SSESource(eventCount: 5, intervalMs: 500),
-                status: .ok,
-                contentType: "text/event-stream"
-            )
-
-        default:
-            // 404 for unknown paths.
-            return .plain(
-                "404 Not Found: \(request.method) \(request.uri.pathString)\n",
-                status: .notFound
-            )
-        }
+// Build a Router with axum-style handler closures — no BoxService wrapping needed.
+let app = Router(state: NoState())
+    .get("/") { _ in
+        // GET / — buffered body
+        .plain("Hello, World!\n")
     }
-}
+    .get("/health") {
+        // GET /health — JSON response
+        let json = #"{"status":"ok","uptime":"running"}"#
+        var headers = HeaderMap()
+        headers.insert(.contentType, "application/json; charset=utf-8")
+        headers.insert(.contentLength, String(json.utf8.count))
+        return HTTP.Response<Body>(
+            status: .ok, headers: headers, body: .buffered(Array(json.utf8))
+        )
+    }
+    .get("/old") {
+        // GET /old — redirect
+        Redirect.to("/").intoResponse()
+    }
+    .get("/stream") { _ in
+        // GET /stream — SSE streaming body
+        .stream(
+            SSESource(eventCount: 5, intervalMs: 500),
+            status: .ok,
+            contentType: "text/event-stream"
+        )
+    }
 
 // MARK: - Main
 
@@ -110,29 +99,17 @@ Starlight HTTP server listening on http://0.0.0.0:\(port)
 
   GET /         — buffered 'Hello, World!'
   GET /health   — JSON health check
+  GET /old      — 302 redirect to /
   GET /stream   — SSE stream (chunked TE)
   GET /unknown  — 404 Not Found
 
-Middleware: TraceLayer (request logging) + TimeoutLayer (30s cap)
 Press Ctrl-C to shut down gracefully
 """)
 
 installShutdownSignalHandlers()
 
-// Middleware is available but NOT applied by default — each layer
-// adds per-request overhead (closure indirection, and for TimeoutLayer
-// a task-group race). Apply selectively where needed:
-//
-//   let app = ServiceBuilder<HTTP.Request<Body>, HTTP.Response<Body>>()
-//       .layer(TraceLayer(config: .stderr).asLayer())  // request logging
-//       .layer(TimeoutLayer(duration: .seconds(30)).asLayer())  // slow-loris defence
-//       .layer(CorsLayer().asLayer())  // browser CORS
-//       .service(AppService())
-//
-// For maximum throughput (260K+ req/s) serve the raw service:
-
 try await serve(
-    AppService(),
+    app,
     on: "0.0.0.0", port: port,
     onShutdown: { await waitForShutdownSignal() }
 )
