@@ -306,13 +306,19 @@ public actor Worker {
                 let head = conn.encoder.encodeHead(
                     response, keepAlive: keepAlive, into: &writeBuffer
                 )
-                // Flush head (+ buffered body if present).
-                if !writeBuffer.isEmpty {
-                    let written = writeAll(fd: fd, buffer: writeBuffer)
-                    if written < writeBuffer.count { return }
-                }
-                // Streaming body — write chunks in chunked TE format.
-                if case .stream = head {
+                // Write header (+ body via writev) in one syscall.
+                switch head {
+                case .noBody:
+                    _ = writeAll(fd: fd, buffer: writeBuffer)
+                case .buffered:
+                    if case .buffered(let bodyBytes) = response.body, !bodyBytes.isEmpty {
+                        _ = writevHeaderBody(fd: fd, header: writeBuffer, body: bodyBytes)
+                    } else {
+                        _ = writeAll(fd: fd, buffer: writeBuffer)
+                    }
+                case .stream:
+                    // Write header first, then stream chunks.
+                    _ = writeAll(fd: fd, buffer: writeBuffer)
                     do {
                         for try await chunk in response.body.dataStream() {
                             writeBuffer.removeAll(keepingCapacity: true)
@@ -320,9 +326,7 @@ public actor Worker {
                             let written = writeAll(fd: fd, buffer: writeBuffer)
                             if written < writeBuffer.count { return }
                         }
-                    } catch {
-                        return  // stream errored — close conn
-                    }
+                    } catch { return }
                     writeBuffer.removeAll(keepingCapacity: true)
                     conn.encoder.encodeEndOfChunks(into: &writeBuffer)
                     _ = writeAll(fd: fd, buffer: writeBuffer)
@@ -347,9 +351,7 @@ public actor Worker {
         _ = writeAll(fd: fd, buffer: writeBuffer)
     }
 
-    /// Sync `write(2)` loop that handles partial writes. Returns the
-    /// total bytes written. Nonisolated + static so it can be called
-    /// from any context (the per-conn driver Task isn't in the actor).
+    /// Sync `write(2)` loop that handles partial writes.
     @inline(__always)
     private nonisolated static func writeAll(fd: CInt, buffer: [UInt8]) -> Int {
         #if canImport(Glibc)
@@ -365,6 +367,58 @@ public actor Worker {
                 offset += n
             }
             return offset
+        }
+        #else
+        return 0
+        #endif
+    }
+
+    /// Write header + body via `writev(2)` — one syscall, zero
+    /// concatenation. Direct port of hyper's vectorised write path.
+    ///
+    /// Falls back to sequential writes if writev returns partial.
+    @inline(__always)
+    private nonisolated static func writevHeaderBody(
+        fd: CInt, header: [UInt8], body: [UInt8]
+    ) -> Int {
+        #if canImport(Glibc)
+        return header.withUnsafeBufferPointer { hPtr in
+            body.withUnsafeBufferPointer { bPtr in
+                var iovs: [iovec] = [
+                    iovec(
+                        iov_base: UnsafeMutableRawPointer(mutating: hPtr.baseAddress!),
+                        iov_len: hPtr.count
+                    ),
+                    iovec(
+                        iov_base: UnsafeMutableRawPointer(mutating: bPtr.baseAddress!),
+                        iov_len: bPtr.count
+                    ),
+                ]
+                let totalExpected = hPtr.count + bPtr.count
+                let n = writev(fd, &iovs, 2)
+                if n >= totalExpected {
+                    return n  // everything written in one syscall
+                }
+                if n <= 0 {
+                    return 0  // error
+                }
+                // Partial write — fall back to individual writes for
+                // the remaining bytes. Rare for small responses.
+                var written = n
+                var headerConsumed = min(n, hPtr.count)
+                let bodyConsumed = max(0, n - hPtr.count)
+                if headerConsumed < hPtr.count {
+                    let remaining = hPtr.count - headerConsumed
+                    let w = Glibc.write(fd, hPtr.baseAddress!.advanced(by: headerConsumed), remaining)
+                    written += max(0, w)
+                }
+                if bodyConsumed < bPtr.count {
+                    let remaining = bPtr.count - bodyConsumed
+                    let w = Glibc.write(fd, bPtr.baseAddress!.advanced(by: bodyConsumed), remaining)
+                    written += max(0, w)
+                }
+                return written
+            }
         }
         #else
         return 0
