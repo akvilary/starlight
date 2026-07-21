@@ -365,4 +365,6 @@ type system or runtime model doesn't allow a literal port.
 | 7 | 2026-07-21 | Phase 1.3: Router.nest + merge + layer + route_layer. `03cd521`. |
 | 8 | 2026-07-21 | Phase 1.4: Bytes + Form + ConnectInfo + RawRequest extractors. |
 | 9 | 2026-07-21 | Phase 2.1: SWAR byte search (hyper `ByteSearch.swift`). |
-| 10 | — | _Phase 2.2 start (Zero-copy accumulator)_ |
+| 10 | 2026-07-21 | Phase 3.1-3.3: TraceLayer + TimeoutLayer + CorsLayer. |
+| 11 | 2026-07-21 | Phase 3.5: RateLimitLayer (token bucket per-IP, 429). |
+| 12 | — | _Next: REST API example or TestClient_ |

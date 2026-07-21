@@ -21,7 +21,7 @@ fileprivate func fixed(_ s: String) -> HandlerEndpoint {
     BoxService { _ in .plain(s) }
 }
 
-@Suite("Middleware: Trace / Timeout / Cors")
+@Suite("Middleware: Trace / Timeout / Cors / RateLimit")
 struct MiddlewareTests {
 
     // MARK: - TraceLayer
@@ -131,6 +131,47 @@ struct MiddlewareTests {
         let req2 = HTTP.Request<Body>(method: .GET, uri: Uri("/api"), headers: headers2)
         let resp2 = try await service.call(req2)
         #expect(resp2.headers.first(for: .accessControlAllowOrigin) == nil)
+    }
+
+    // MARK: - RateLimitLayer
+
+    @Test("RateLimiter allows up to maxRequests then blocks")
+    func rateLimitAllowsThenBlocks() {
+        let limiter = RateLimiter(maxRequests: 3, windowDuration: .seconds(60))
+        #expect(limiter.allow("ip1"))  // 1
+        #expect(limiter.allow("ip1"))  // 2
+        #expect(limiter.allow("ip1"))  // 3
+        #expect(!limiter.allow("ip1")) // 4 — blocked
+    }
+
+    @Test("RateLimiter tracks keys independently")
+    func rateLimitIndependentKeys() {
+        let limiter = RateLimiter(maxRequests: 1)
+        #expect(limiter.allow("ip1"))
+        #expect(!limiter.allow("ip1"))
+        #expect(limiter.allow("ip2"))  // different IP — own bucket
+        #expect(!limiter.allow("ip2"))
+    }
+
+    @Test("RateLimitLayer returns 429 when exceeded")
+    func rateLimitLayerReturns429() async throws {
+        let limiter = RateLimiter(maxRequests: 2)
+        let router = Router(state: NoState()).get("/", fixed("ok"))
+        let service = RateLimitLayer(
+            limiter: limiter,
+            keyExtractor: { _ in "test-key" }
+        ).asLayer().layer(BoxService(router))
+
+        // First two requests OK
+        let req = HTTP.Request<Body>(method: .GET, uri: Uri("/"))
+        let resp1 = try await service.call(req)
+        #expect(resp1.status == StatusCode.ok)
+        let resp2 = try await service.call(req)
+        #expect(resp2.status == StatusCode.ok)
+
+        // Third — blocked
+        let resp3 = try await service.call(req)
+        #expect(resp3.status == StatusCode.tooManyRequests)
     }
 }
 

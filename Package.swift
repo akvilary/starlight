@@ -206,6 +206,7 @@ let package = Package(
             name: "StarlightMiddleware",
             dependencies: [
                 "StarlightCore",
+                "StarlightExtractors",
                 .product(name: "HTTP", package: "http"),
                 "StarlightTower",
             ],
