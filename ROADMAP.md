@@ -12,11 +12,13 @@ doesn't allow a literal port.
 | `../http` package (port of `http` crate) | ✅ 5 tests |
 | `../hyper` package (port of `hyper::proto::h1`) | ✅ 18 tests |
 | `Starlight` (axum umbrella) | ✅ 39 tests |
-| HTTP/1.1 end-to-end | ✅ работает |
+| HTTP/1.1 end-to-end pipeline | ✅ работает |
 | Graceful shutdown (auto SIGINT/SIGTERM) | ✅ |
 | Streaming bodies + chunked TE | ✅ |
-| Router (nest, merge, layer, route_layer) | ✅ |
+| Router (nest, merge, layer, route_layer, withState) | ✅ |
+| HandlerService0-6 (arity up to 6 extractors) | ✅ |
 | Extractors (14 типов) | ✅ |
+| IntoResponseParts + tuple responses | ✅ |
 | Middleware (Trace, Timeout, Cors, RateLimit) | ✅ |
 | SWAR byte search | ✅ |
 | Zero-copy ReadBuffer (port of BytesMut) | ✅ |
@@ -25,16 +27,14 @@ doesn't allow a literal port.
 | Extension<T> + Redirect + MatchedPath + OriginalUri | ✅ |
 | Handler closure ergonomics | ✅ |
 | Tier 1 bug fixes (B1-B5) | ✅ |
-| Бенчмарк | ~231K req/s (release, 12-core, wrk -t12 -c100 -d3s) |
+| Tier 2 API parity (with_state, Handler4-6, IntoResponseParts) | ✅ |
+| Бенчмарк | ~234K req/s (release, 12-core, wrk -t12 -c100 -d3s) |
 | CompressionLayer | ❌ |
-| with_state() type-state pattern | ❌ |
-| HandlerService4+ (arity > 3) | ❌ |
-| IntoResponseParts + tuple responses | ❌ |
-| Option<T> / Result<T,E> extractors | ❌ |
 | Sse<Stream> structured helper | ❌ |
 | WebSocket | ❌ |
 | TLS | ❌ |
 | HTTP/2 | ❌ |
+| Static file serving | ❌ |
 
 ## Архитектурный фундамент (зафиксирован)
 
@@ -52,9 +52,9 @@ doesn't allow a literal port.
 
 ## Done — Phase 1: Production HTTP/1.1
 
-- [x] **1.1** Graceful shutdown (`280c554`)
-- [x] **1.2** Streaming bodies + chunked TE (`8d917f3`)
-- [x] **1.3** Router nest + merge + layer + route_layer (`03cd521`)
+- [x] **1.1** Graceful shutdown
+- [x] **1.2** Streaming bodies + chunked TE
+- [x] **1.3** Router nest + merge + layer + route_layer
 - [x] **1.4** Extractors: Bytes, Form, ConnectInfo, Request
 
 ## Done — Phase 2: Performance
@@ -62,7 +62,7 @@ doesn't allow a literal port.
 - [x] **2.1** SWAR byte search (`hyper/ByteSearch.swift`)
 - [x] **2.2** Zero-copy ReadBuffer (`hyper/ReadBuffer.swift`)
 - [x] **2.3** writev(2) multi-buffer output
-- [x] **2.4** Reusable HeaderMap + Extensions + @inlinable
+- [x] **2.4** Reusable HeaderMap + Extensions + @inlinable (+2.2%)
 
 ## Done — Phase 3: Middleware
 
@@ -77,54 +77,47 @@ doesn't allow a literal port.
 - [x] MatchedPath + OriginalUri extractors
 - [x] Handler closure ergonomics (get/post/put/delete/patch)
 - [x] BoxService: Service conformance
-- [x] Tier 1 bug fixes (B1-B5)
+- [x] Tier 1 bug fixes (B1-B5: ConnectInfo, Json status, Router init, CORS, default shutdown)
+
+## Done — Tier 2: axum API parity
+
+- [x] **2.1** `Router.withState(_:)` — late-bind state
+- [x] **2.2** HandlerService4, 5, 6 — arity up to 6 extractors
+- [x] **2.3** IntoResponseParts + `Response(.created, from: Json(x))`
+- [~] **2.4** ~~Option<T> extractors~~ — SKIPPED (не Swift-idiomatic)
 
 ---
 
-## Next — Tier 2: axum API parity
+## Next — Tier 3: Remaining axum parity
 
-**Цель:** Покрыть оставшиеся важные API из audit'а.
-
-### 2.1 `with_state(_:)` — type-state pattern
-
-**Референс:** `axum::routing::Router::with_state`.
-
-- [ ] `Router<S>.withState(_ state: S) -> Router<NoState>`
-- [ ] Handlers accessible after state provision
-- [ ] Тест: build router without state → provide → serve
-
-### 2.2 HandlerService4-6
-
-**Референс:** axum handlers with 4-6 extractors (covers 95% real handlers).
-
-- [ ] `HandlerService4<E0, E1, E2, E3, Fn, S, Out>`
-- [ ] `HandlerService5<E0, E1, E2, E3, E4, Fn, S, Out>`
-- [ ] `HandlerService6<E0, E1, E2, E3, E4, E5, Fn, S, Out>`
-
-### 2.3 IntoResponseParts + tuple responses
-
-**Референс:** `axum::response::IntoResponseParts`.
-
-- [ ] Protocol `IntoResponseParts` (contributes headers/status)
-- [ ] `(StatusCode, T: IntoResponse)` as IntoResponse
-- [ ] `(StatusCode, HeaderMap, T)` as IntoResponse
-- [ ] `AppendHeaders([(name, value)])` helper
-
-### 2.4 Option<T> / Result<T, E> extractors
-
-**Референс:** `axum_core::extract::OptionalFromRequestParts`.
-
-- [ ] `OptionalFromRequestParts` protocol
-- [ ] `Option<T: FromRequestParts>` extractor (returns nil, not reject)
-- [ ] Conformance for all existing extractors
-
-### 2.5 Sse<Stream> structured helper
+### 3.1 Sse<Stream> structured helper
 
 **Референс:** `axum::response::Sse`.
 
 - [ ] `Sse<S: AsyncSequence>` response type
 - [ ] `KeepAlive` configuration
 - [ ] Event formatting (data/event/id/retry fields)
+
+**Время:** ~3 часа.
+
+### 3.2 DefaultBodyLimit
+
+**Референс:** `axum::extract::DefaultBodyLimit`.
+
+- [ ] Layer that sets max body size via extensions
+- [ ] `Body.collect(maxBytes:)` respects the limit
+- [ ] 413 Payload Too Large on excess
+
+**Время:** ~2 часа.
+
+### 3.3 Host extractor
+
+**Референс:** `axum::extract::Host`.
+
+- [ ] Extract Host header as typed `Host` struct
+- [ ] Forwarded/X-Forwarded-Host support
+
+**Время:** ~1 час.
 
 ---
 
@@ -163,8 +156,10 @@ doesn't allow a literal port.
 
 ### 5.1 Radix trie router (~8ч)
 
+**Референс:** [`matchit`](https://github.com/ibraheemdev/matchit).
+
 - [ ] Port matchit path trie
-- [ ] O(path-length) matching
+- [ ] O(path-length) matching (vs current O(routes × path))
 
 ### 5.2 SIMD HTTP parser (~6ч)
 
@@ -188,12 +183,14 @@ doesn't allow a literal port.
 
 | Deviation | Reason |
 |---|---|
-| `throws ExtractionRejection` вместо `Result<Self, Rejection: IntoResponse>` | Swift `Result.Failure: Error` конфликтует с `IntoResponse` |
-| SO_REUSEPORT multi-listener (не single) | Swift не имеет work-stealing runtime |
-| `Router<S>` state at init (не `with_state` post-registration) | Будет исправлено в Tier 2.1 |
-| HandlerService0-3 (не variadic generics 0-16) | Swift не имеет variadic async closures |
-| `ReadBuffer` class (ARC) вместо `BytesMut` value type | Swift `~Copyable` + `Sendable` конфликтуют |
-| `Body` enum (не `BoxBody` trait object) | Swift не имеет trait objects |
+| `throws ExtractionRejection` instead of `Result<Self, Rejection>` | Swift `Result.Failure: Error` conflicts with `IntoResponse` |
+| SO_REUSEPORT multi-listener (not single) | Swift has no work-stealing runtime |
+| `withState` replaces state value (not type parameter) | Swift methods can't change generic parameter |
+| HandlerService0-6 (not variadic generics 0-16) | Swift has no variadic async closures |
+| `ReadBuffer` class (ARC) instead of `BytesMut` value type | Swift `~Copyable` + `Sendable` conflict |
+| `Body` enum (not `BoxBody` trait object) | Swift has no trait objects |
+| `Option<T>` extractors skipped | Not Swift-idiomatic; Swift uses `if let` |
+| `Response(.created, from: Json(x))` instead of tuple `(StatusCode, T)` | Swift tuples can't conform to protocols |
 
 ## Principles
 
@@ -225,5 +222,6 @@ doesn't allow a literal port.
 | 15 | 2026-07-21 | writev(2) multi-buffer output |
 | 16 | 2026-07-21 | Reusable HeaderMap + Extensions + @inlinable (+2.2%) |
 | 17 | 2026-07-21 | Full audit: 5 bugs, 24 missing, 12 deviations identified |
-| 18 | 2026-07-21 | Tier 1 fixes: B1-B5 (ConnectInfo, Json status, Router init, CORS, default shutdown) |
-| 19 | — | _Next: Tier 2 (with_state, HandlerService4+, IntoResponseParts, Option<T>)_ |
+| 18 | 2026-07-21 | Tier 1 fixes: B1-B5 (ConnectInfo, Json status, Router init, CORS, shutdown) |
+| 19 | 2026-07-21 | Tier 2: with_state + HandlerService4-6 + IntoResponseParts |
+| 20 | — | _Next_ |
