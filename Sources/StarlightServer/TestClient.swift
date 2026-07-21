@@ -22,7 +22,7 @@ import StarlightTower
 
 /// In-process test client. Calls a Service<Request<Body>> directly,
 /// without TCP. Direct port of `axum::test::TestClient`.
-public final class TestClient: @unchecked Sendable {
+public final class TestClient: Sendable {
     public let service: BoxService<HTTP.Request<Body>, HTTP.Response<Body>>
 
     @inlinable public init<S: Service>(_ service: S)

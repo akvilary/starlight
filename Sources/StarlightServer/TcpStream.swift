@@ -22,7 +22,7 @@ import StarlightPoll
 /// `read`/`write` arms an oneshot interest, awaits the readiness
 /// notification, then issues the syscall on the loop thread (which
 /// is the same thread the resuming Task continues on).
-public final class TcpStream: @unchecked Sendable {
+public final class TcpStream: Sendable {
 
     public let fd: CInt
     public let eventLoop: PollEventLoop

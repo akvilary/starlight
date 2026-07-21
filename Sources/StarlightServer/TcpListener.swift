@@ -23,7 +23,7 @@ import StarlightPoll
 /// driven by an attached `PollEventLoop` — registering the listener
 /// fd as a watch channel and draining `accept4(2)` when readable.
 /// This is the same idiom tokio/mio use.
-public final class TcpListener: @unchecked Sendable {
+public final class TcpListener: Sendable {
 
     /// Raw kernel fd.
     public let fd: CInt

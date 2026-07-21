@@ -22,7 +22,7 @@ import StarlightTower
 /// When the window expires, the counter resets.
 ///
 /// Thread-safe via `Mutex`. Sync access — no async overhead.
-public final class RateLimiter: @unchecked Sendable {
+public final class RateLimiter: Sendable {
     @usableFromInline
     internal struct Window {
         var count: Int

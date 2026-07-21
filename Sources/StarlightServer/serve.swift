@@ -19,6 +19,7 @@ import CLinuxExt
 #endif
 
 import Foundation
+import Synchronization
 import HTTP
 import Hyper
 import StarlightPoll
@@ -170,35 +171,32 @@ public func serve<S: Service>(
 
 /// Thread-safe stash for worker actors. The worker thread creates the
 /// Worker actor and needs to hand it back to the serve() caller for
-/// shutdown orchestration. Backed by `Mutex` to make cross-thread
-/// mutation safe under Swift 6 strict concurrency.
-private final class WorkerStash: @unchecked Sendable {
+/// shutdown orchestration. Backed by `Mutex` — Sendable without
+/// @unchecked.
+private final class WorkerStash: Sendable {
     static let shared = WorkerStash()
-    private var workers: [Worker?] = []
-    private let lock = NSLock()
+    private let workers = Mutex<[Worker?]>([])
 
     @inline(__always)
     func set(_ worker: Worker, at index: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        while workers.count <= index { workers.append(nil) }
-        workers[index] = worker
+        workers.withLock { arr in
+            while arr.count <= index { arr.append(nil) }
+            arr[index] = worker
+        }
     }
 
     @inline(__always)
     func count() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return workers.compactMap { $0 }.count
+        workers.withLock { $0.compactMap { $0 }.count }
     }
 
     @inline(__always)
     func drain() -> [Worker] {
-        lock.lock()
-        defer { lock.unlock() }
-        let result = workers.compactMap { $0 }
-        workers.removeAll()
-        return result
+        workers.withLock { arr in
+            let result = arr.compactMap { $0 }
+            arr.removeAll()
+            return result
+        }
     }
 }
 
