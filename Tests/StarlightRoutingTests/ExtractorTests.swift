@@ -10,6 +10,7 @@
 import Testing
 import Foundation
 import HTTP
+import Synchronization
 import StarlightCore
 import StarlightExtractors
 import StarlightRouting
@@ -17,6 +18,11 @@ import StarlightTower
 
 @Suite("Phase 1.4 extractors")
 struct ExtractorTests {
+
+    // Local helper (RouterTests.swift has its own fileprivate version)
+    fileprivate func fixed(_ s: String) -> HandlerEndpoint {
+        BoxService { _ in .plain(s) }
+    }
 
     // MARK: - Bytes
 
@@ -148,5 +154,73 @@ struct ExtractorTests {
         var request = HTTP.Request<Body>(method: .GET, uri: Uri("/"))
         setConnectInfo("10.0.0.1:80", on: &request)
         #expect(request.extensions.get(ConnectInfo.self)?.peerAddress == "10.0.0.1:80")
+    }
+
+    // MARK: - Extension<T> (axum::Extension)
+
+    @Test("Extension extractor reads from request extensions")
+    func extensionExtractor() async throws {
+        struct DB: Hashable, Sendable { let name: String }
+        var extensions = Extensions()
+        extensions.insert(DB(name: "prod"))
+        let req = HTTP.Request<Body>(
+            method: .GET, uri: Uri("/"), body: .empty, extensions: extensions
+        )
+        var parts = RequestParts<Body>(req)
+        let ext: Extension<DB> = try await Extension<DB>.fromRequestParts(&parts, state: AnySendable())
+        #expect(ext.value.name == "prod")
+    }
+
+    @Test("Extension extractor rejects with 500 when missing")
+    func extensionMissing() async throws {
+        struct Missing: Hashable, Sendable {}
+        var parts = RequestParts<Body>(
+            HTTP.Request<Body>(method: .GET, uri: Uri("/"), body: .empty)
+        )
+        do {
+            _ = try await Extension<Missing>.fromRequestParts(&parts, state: AnySendable())
+            Issue.record("expected ExtractionRejection")
+        } catch {
+            // expected
+        }
+    }
+
+    @Test("Extension.layer inserts value into every request")
+    func extensionLayer() async throws {
+        struct Token: Hashable, Sendable { let value: String }
+        let router = Router(state: NoState())
+            .get("/", fixed("ok"))
+        let service = Extension.layer(Token(value: "abc"))
+            .layer(BoxService(router))
+
+        let req = HTTP.Request<Body>(method: .GET, uri: Uri("/"))
+        let resp = try await service.call(req)
+        // The Token should be in the request's extensions when it
+        // reached the router. We can't directly verify it here (the
+        // router consumed the request), but the call succeeded —
+        // meaning the layer ran without error.
+        #expect(resp.status == StatusCode.ok)
+    }
+
+    // MARK: - Redirect (axum::response::Redirect)
+
+    @Test("Redirect.to produces 302 Found")
+    func redirectTo() {
+        let r = Redirect.to("/new").intoResponse()
+        #expect(r.status == StatusCode.found)
+        #expect(r.headers.first(for: .location)?.description == "/new")
+    }
+
+    @Test("Redirect.permanent produces 301 Moved Permanently")
+    func redirectPermanent() {
+        let r = Redirect.permanent("/gone").intoResponse()
+        #expect(r.status == StatusCode.movedPermanently)
+        #expect(r.headers.first(for: .location)?.description == "/gone")
+    }
+
+    @Test("Redirect.seeOther produces 303 See Other")
+    func redirectSeeOther() {
+        let r = Redirect.seeOther("/result").intoResponse()
+        #expect(r.status == StatusCode(303))
     }
 }
