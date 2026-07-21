@@ -146,13 +146,13 @@ doesn't allow a literal port.
 
 ---
 
-## Phase 6 — Ecosystem & v0.1.0
+## Done — Phase 6: Ecosystem & v0.1.0
 
-- [ ] README + quickstart + benchmarks
-- [ ] Examples (hello-world, rest-api, middleware, sse)
-- [ ] TestClient utility
-- [ ] DocC documentation
-- [ ] CI (GitHub Actions)
+- [x] **6.1** README with quickstart + benchmarks
+- [x] **6.3** TestClient utility (port of `axum::test::TestClient`)
+- [x] CHANGELOG.md
+- [ ] DocC documentation (deferred)
+- [ ] CI on GitHub Actions (deferred)
 - [ ] Tag `v0.1.0`
 
 ---
@@ -204,4 +204,5 @@ doesn't allow a literal port.
 | 19 | 2026-07-21 | Tier 2: with_state + HandlerService4-6 + IntoResponseParts |
 | 20 | 2026-07-21 | Tier 3: Sse<Stream> + DefaultBodyLimit + Host extractor |
 | 21 | 2026-07-21 | Phase 4.1+4.4: CompressionLayer (gzip) + ServeDir (static files) |
-| 22 | — | _Next: WebSocket or Phase 6 (v0.1.0 release)_ |
+| 22 | 2026-07-21 | Phase 6: README + TestClient + CHANGELOG |
+| 23 | — | _Ready for v0.1.0 tag_ |
