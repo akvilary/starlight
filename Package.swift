@@ -281,7 +281,13 @@ let package = Package(
         // ── Hello-world executable (smoke test) ────────────────────
         .executableTarget(
             name: "HelloWorld",
-            dependencies: ["Starlight"],
+            dependencies: [
+                "Starlight",
+                "StarlightServer",
+                "StarlightMiddleware",
+                .product(name: "HTTP", package: "http"),
+                .product(name: "Hyper", package: "hyper"),
+            ],
             path: "Sources/HelloWorld",
             swiftSettings: baseSwiftSettings
         ),

@@ -16,6 +16,11 @@ import StarlightCore
 import StarlightTower
 
 /// Configuration for `TraceLayer`. Mirrors `tower_http::trace::TraceLayer`.
+///
+/// By default, all hooks are no-ops — zero per-request overhead.
+/// Provide closures to opt into logging. This matches axum's
+/// `tracing` integration (which is also opt-in — you configure
+/// the subscriber, not the layer itself).
 public struct TraceConfig: Sendable {
     /// Called at the start of each request, before the handler runs.
     public var onRequest: @Sendable (Method, String) -> Void
@@ -25,26 +30,34 @@ public struct TraceConfig: Sendable {
     public var onFailure: @Sendable (Method, String, Duration, String) -> Void
 
     @inlinable public init(
-        onRequest: @escaping @Sendable (Method, String) -> Void = { method, path in
-            FileHandle.standardError.write("[req] \(method) \(path)\n".data(using: .utf8)!)
-        },
-        onResponse: @escaping @Sendable (Method, String, StatusCode, Duration) -> Void = { method, path, status, duration in
-            let ms = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18 * 1000
-            FileHandle.standardError.write(
-                "[res] \(method) \(path) → \(status.code) (\(String(format: "%.2f", ms))ms)\n".data(using: .utf8)!
-            )
-        },
-        onFailure: @escaping @Sendable (Method, String, Duration, String) -> Void = { method, path, duration, error in
-            let ms = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18 * 1000
-            FileHandle.standardError.write(
-                "[err] \(method) \(path) ✗ \(error) (\(String(format: "%.2f", ms))ms)\n".data(using: .utf8)!
-            )
-        }
+        onRequest: @escaping @Sendable (Method, String) -> Void = { _, _ in },
+        onResponse: @escaping @Sendable (Method, String, StatusCode, Duration) -> Void = { _, _, _, _ in },
+        onFailure: @escaping @Sendable (Method, String, Duration, String) -> Void = { _, _, _, _ in }
     ) {
         self.onRequest = onRequest
         self.onResponse = onResponse
         self.onFailure = onFailure
     }
+
+    /// Stderr logging config — prints `[req]` / `[res]` / `[err]` lines.
+    /// Use sparingly: adds ~1µs per request from the stderr write syscall.
+    public static let stderr = TraceConfig(
+        onRequest: { method, path in
+            FileHandle.standardError.write("[req] \(method) \(path)\n".data(using: .utf8)!)
+        },
+        onResponse: { method, path, status, duration in
+            let ms = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18 * 1000
+            FileHandle.standardError.write(
+                "[res] \(method) \(path) → \(status.code) (\(String(format: "%.2f", ms))ms)\n".data(using: .utf8)!
+            )
+        },
+        onFailure: { method, path, duration, error in
+            let ms = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18 * 1000
+            FileHandle.standardError.write(
+                "[err] \(method) \(path) ✗ \(error) (\(String(format: "%.2f", ms))ms)\n".data(using: .utf8)!
+            )
+        }
+    )
 }
 
 /// Trace middleware layer — direct port of `tower_http::trace::TraceLayer`.

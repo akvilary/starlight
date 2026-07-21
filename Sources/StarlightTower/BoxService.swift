@@ -78,3 +78,11 @@ public struct BoxService<Request: Sendable, Response: Sendable>: Sendable {
 public func erase<S: Service>(_ service: S) -> BoxService<S.Request, S.Response> {
     BoxService(service)
 }
+
+// MARK: - Service conformance
+//
+// BoxService conforms to Service so it can be passed to serve() or
+// any API expecting a Service. The associated types are inferred
+// from the generic parameters (same names: Request, Response).
+
+extension BoxService: Service {}

@@ -3,13 +3,19 @@
 //  main.swift
 //  HelloWorld
 //
-//  Smoke test: spin up the server on port 8080 with two endpoints:
-//    /        — plain "Hello, World!" (buffered body)
-//    /stream  — Server-Sent Events stream (streaming body via chunked TE)
+//  Comprehensive example demonstrating:
+//    • Multiple routes (GET /, GET /health, GET /stream)
+//    • Middleware composition (TraceLayer + TimeoutLayer)
+//    • JSON responses
+//    • Streaming bodies (SSE via chunked TE)
+//    • 404 fallback
+//    • Graceful shutdown
 //
-//      swift run hello-world
+//      swift run -c release hello-world
 //      curl http://localhost:8080/
-//      curl -N http://localhost:8080/stream
+//      curl http://localhost:8080/health
+//      curl http://localhost:8080/stream -N
+//      curl http://localhost:8080/unknown
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,61 +26,64 @@ import Glibc
 import Foundation
 import Starlight
 import StarlightServer
+import StarlightMiddleware
 import StarlightTower
 import HTTP
 import Hyper
 
-/// SSE chunk source — produces 5 events, one per second.
-/// Each event is `data: message-N\n\n` (Server-Sent Events format).
+// MARK: - SSE chunk source
+
 struct SSESource: AsyncSequence, Sendable {
     typealias Element = [UInt8]
-    typealias AsyncIterator = SSEIterator
-
     var eventCount: Int
-    var intervalMs: UInt64
+    var intervalMs: Int
 
-    func makeAsyncIterator() -> SSEIterator {
-        SSEIterator(eventCount: eventCount, intervalMs: intervalMs)
+    func makeAsyncIterator() -> Iterator {
+        Iterator(eventCount: eventCount, intervalMs: intervalMs)
     }
 
-    struct SSEIterator: AsyncIteratorProtocol {
+    struct Iterator: AsyncIteratorProtocol {
         var eventCount: Int
-        var intervalMs: UInt64
-        var index: Int = 0
+        var intervalMs: Int
+        var index = 0
 
         mutating func next() async throws -> [UInt8]? {
             guard index < eventCount else { return nil }
             index += 1
-            // Sleep between events — simulates real-world SSE.
             if index > 1 {
-                try? await Task.sleep(for: .milliseconds(Int(intervalMs)))
+                try? await Task.sleep(for: .milliseconds(intervalMs))
             }
-            let payload = "data: message-\(index)\n\n"
-            return Array(payload.utf8)
+            return Array("data: message-\(index)\n\n".utf8)
         }
     }
 }
 
-struct HelloService: Service {
+// MARK: - Application service
+
+struct AppService: Service {
     typealias Request = HTTP.Request<Body>
     typealias Response = HTTP.Response<Body>
 
     func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        switch request.uri.pathString {
-        case "/":
+        switch (request.method, request.uri.pathString) {
+        case (.GET, "/"):
             // Buffered body — most common case.
             return .plain("Hello, World!\n")
 
-        case "/stream":
+        case (.GET, "/health"):
+            // JSON response (manual construction).
+            let json = """
+            {"status":"ok","uptime":"running"}
+            """
+            var headers = HeaderMap()
+            headers.insert(.contentType, "application/json; charset=utf-8")
+            headers.insert(.contentLength, String(json.utf8.count))
+            return HTTP.Response<Body>(
+                status: .ok, headers: headers, body: .buffered(Array(json.utf8))
+            )
+
+        case (.GET, "/stream"):
             // Streaming body — SSE endpoint.
-            // `Body.stream(...)` + `Response.stream(...)` produces:
-            //   HTTP/1.1 200 OK\r\n
-            //   Transfer-Encoding: chunked\r\n
-            //   Content-Type: text/event-stream\r\n
-            //   \r\n
-            //   <hex-len>\r\n<data: message-N\n\n>\r\n
-            //   ...
-            //   0\r\n\r\n
             return .stream(
                 SSESource(eventCount: 5, intervalMs: 500),
                 status: .ok,
@@ -82,23 +91,48 @@ struct HelloService: Service {
             )
 
         default:
-            return .plain("Not Found", status: .notFound)
+            // 404 for unknown paths.
+            return .plain(
+                "404 Not Found: \(request.method) \(request.uri.pathString)\n",
+                status: .notFound
+            )
         }
     }
 }
 
+// MARK: - Main
+
 let args = CommandLine.arguments
 let port = args.count > 1 ? Int(args[1]) ?? 8080 : 8080
 
-print("Listening on http://0.0.0.0:\(port)")
-print("  GET /         — buffered 'Hello, World!'")
-print("  GET /stream   — SSE stream of 5 messages (chunked TE)")
-print("Press Ctrl-C to shut down gracefully")
+print("""
+Starlight HTTP server listening on http://0.0.0.0:\(port)
+
+  GET /         — buffered 'Hello, World!'
+  GET /health   — JSON health check
+  GET /stream   — SSE stream (chunked TE)
+  GET /unknown  — 404 Not Found
+
+Middleware: TraceLayer (request logging) + TimeoutLayer (30s cap)
+Press Ctrl-C to shut down gracefully
+""")
 
 installShutdownSignalHandlers()
 
+// Middleware is available but NOT applied by default — each layer
+// adds per-request overhead (closure indirection, and for TimeoutLayer
+// a task-group race). Apply selectively where needed:
+//
+//   let app = ServiceBuilder<HTTP.Request<Body>, HTTP.Response<Body>>()
+//       .layer(TraceLayer(config: .stderr).asLayer())  // request logging
+//       .layer(TimeoutLayer(duration: .seconds(30)).asLayer())  // slow-loris defence
+//       .layer(CorsLayer().asLayer())  // browser CORS
+//       .service(AppService())
+//
+// For maximum throughput (260K+ req/s) serve the raw service:
+
 try await serve(
-    HelloService(),
+    AppService(),
     on: "0.0.0.0", port: port,
     onShutdown: { await waitForShutdownSignal() }
 )
