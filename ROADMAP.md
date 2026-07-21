@@ -367,4 +367,6 @@ type system or runtime model doesn't allow a literal port.
 | 9 | 2026-07-21 | Phase 2.1: SWAR byte search (hyper `ByteSearch.swift`). |
 | 10 | 2026-07-21 | Phase 3.1-3.5: TraceLayer + TimeoutLayer + CorsLayer + RateLimitLayer. |
 | 11 | 2026-07-21 | Extension<T> + Redirect (axum::Extension, axum::response::Redirect). |
-| 12 | — | _Next_ |
+| 12 | 2026-07-21 | Handler ergonomics: closure-based route registration. |
+| 13 | 2026-07-21 | MatchedPath + OriginalUri extractors (axum::extract). |
+| 14 | — | _Next_ |
