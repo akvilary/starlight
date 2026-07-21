@@ -362,4 +362,6 @@ type system or runtime model doesn't allow a literal port.
 | 4 | 2026-07-21 | Working HTTP server, Worker actor, 136K req/s. `5bec2ed`. |
 | 5 | 2026-07-21 | Phase 1.1: graceful shutdown via SIGINT/SIGTERM + drain timeout. `280c554`. |
 | 6 | 2026-07-21 | Phase 1.2: streaming bodies + chunked TE (in + out). `8d917f3`. |
-| 7 | — | _Phase 1.3 start (Router.nest + layer)_ |
+| 7 | 2026-07-21 | Phase 1.3: Router.nest + merge + layer + route_layer. `03cd521`. |
+| 8 | 2026-07-21 | Phase 1.4: Bytes + Form + ConnectInfo + RawRequest extractors. |
+| 9 | — | _Phase 1 complete — start Phase 2 (SWAR byte search)_ |
