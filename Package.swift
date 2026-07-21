@@ -273,6 +273,10 @@ let package = Package(
             name: "StarlightServerTests",
             dependencies: [
                 "Starlight",
+                "StarlightServer",
+                "StarlightCore",
+                "StarlightRouting",
+                "StarlightExtractors",
                 .product(name: "HTTP", package: "http"),
                 .product(name: "Hyper", package: "hyper"),
             ],
