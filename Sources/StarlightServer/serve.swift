@@ -72,7 +72,7 @@ public func serve<S: Service>(
         installShutdownSignalHandlers()
         await waitForShutdownSignal()
     }
-) async throws where S.Request == Request<Body>, S.Response == Response<Body> {
+) async throws where S.Request == Request, S.Response == Response {
     // Wrap the user-provided Service in a BoxService so all worker
     // actors share the same type (no per-worker generics needed).
     let router = BoxService(service)

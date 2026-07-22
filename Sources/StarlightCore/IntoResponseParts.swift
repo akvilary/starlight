@@ -26,23 +26,23 @@ import HTTP
 /// extensions) without owning the body.
 ///
 /// Direct port of `axum_core::response::IntoResponseParts`. Applied
-/// to a `Response<Body>` via `apply(to:)`.
+/// to a `Response` via `apply(to:)`.
 public protocol IntoResponseParts {
     /// Apply this part to the response. Modifies status, headers,
     /// or extensions in place.
-    func apply(to response: inout Response<Body>)
+    func apply(to response: inout Response)
 }
 
 // MARK: - Conformances
 
 extension StatusCode: IntoResponseParts {
-    public func apply(to response: inout Response<Body>) {
+    public func apply(to response: inout Response) {
         response.status = self
     }
 }
 
 extension HeaderMap: IntoResponseParts {
-    public func apply(to response: inout Response<Body>) {
+    public func apply(to response: inout Response) {
         for (name, value) in entries {
             response.headers.append(name, value)
         }
@@ -55,7 +55,7 @@ extension HeaderMap: IntoResponseParts {
 // retroactively conform `(StatusCode, T)` tuples, we provide explicit
 // convenience initializers.
 
-extension Response where B == Body {
+extension Response {
     /// Build a response from a status + an IntoResponse body.
     /// Matches axum's `(StatusCode, T: IntoResponse)` tuple.
     ///

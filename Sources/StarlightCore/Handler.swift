@@ -13,7 +13,7 @@
 //
 //  We use the same runtime trick axum uses for `from_fn` / `Router::route`:
 //  a `Handler` is stored as a type-erased async closure
-//  `(HTTP.Request<Body>, State) async throws -> HTTP.Response<Body>`, and
+//  `(HTTP.Request, State) async throws -> HTTP.Response`, and
 //  specific extractor arity combinations are wrapped by `HandlerService`
 //  adapters (see HandlerService.swift). This is exactly how
 //  `tower::Service::call` ends up dispatching in axum after all the
@@ -29,15 +29,15 @@ import StarlightTower
 ///
 /// Concrete conformers are `HandlerService<T0, T1, …, S>` — one per
 /// supported arity. Each is a thin struct that stores the user's
-/// closure and conforms to `Service<HTTP.Request<Body>, Response = HTTP.Response<Body>>`,
+/// closure and conforms to `Service<HTTP.Request, Response = HTTP.Response>`,
 /// running each extractor in turn and feeding the results to the
 /// user's closure.
 ///
 /// Application code rarely names `Handler` directly — it shows up in
 /// `Router<S>.get(_:_:handler:)` etc. constraints.
 public protocol Handler: Service, Sendable
-where Self.Request == HTTP.Request<Body>,
-      Self.Response == HTTP.Response<Body> {}
+where Self.Request == HTTP.Request,
+      Self.Response == HTTP.Response {}
 
 /// The "no state" state value. Used by routers that have no `S`.
 @frozen
@@ -46,4 +46,4 @@ public struct NoState: Sendable {
 }
 
 /// Convenience alias for the response type every `Handler` returns.
-public typealias HandlerResponse = HTTP.Response<Body>
+public typealias HandlerResponse = HTTP.Response

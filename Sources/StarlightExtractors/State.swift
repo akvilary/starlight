@@ -27,7 +27,7 @@ extension State: FromRequestParts {
     public typealias State = S
 
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing S
     ) async throws -> StarlightExtractors.State<S> {
         StarlightExtractors.State(copy state)

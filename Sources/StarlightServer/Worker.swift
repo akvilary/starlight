@@ -67,7 +67,7 @@ public actor Worker {
 
     public nonisolated let eventLoop: PollEventLoop
     public nonisolated let listenerFd: CInt
-    public nonisolated let router: BoxService<Request<Body>, Response<Body>>
+    public nonisolated let router: BoxService<Request, Response>
     public nonisolated let cpuIndex: CInt
     public nonisolated let readBufferSize: Int
 
@@ -100,7 +100,7 @@ public actor Worker {
     public init(
         eventLoop: PollEventLoop,
         listenerFd: CInt,
-        router: BoxService<Request<Body>, Response<Body>>,
+        router: BoxService<Request, Response>,
         cpuIndex: CInt,
         readBufferSize: Int = 8192,
         maxConnectionsPerWorker: Int = 8192
@@ -242,7 +242,7 @@ public actor Worker {
     /// can run on the eventLoop Task without going through actor dispatch.
     private nonisolated static func driveConnection(
         eventLoop: PollEventLoop,
-        router: BoxService<Request<Body>, Response<Body>>,
+        router: BoxService<Request, Response>,
         conn initialConn: ConnState,
         readBufferSize: Int
     ) async {
@@ -305,7 +305,7 @@ public actor Worker {
                     explicitConnection: request.headers.first(for: .connection)
                 )
 
-                let response: Response<Body>
+                let response: Response
                 do {
                     response = try await router.call(request)
                 } catch {
@@ -480,7 +480,7 @@ public actor Worker {
     @inline(__always)
     private nonisolated static func errorResponse(
         status: StatusCode, message: String
-    ) -> Response<Body> {
+    ) -> Response {
         var headers = HeaderMap()
         headers.insert(.contentType, "text/plain; charset=utf-8")
         headers.insert(.contentLength, String(message.utf8.count))

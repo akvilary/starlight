@@ -26,15 +26,15 @@ import StarlightTower
 /// ```
 public struct FromFn: Sendable {
     public let run: @Sendable (
-        Request<Body>,
+        Request,
         Next
-    ) async throws -> Response<Body>
+    ) async throws -> Response
 
     @inlinable
     public init(_ run: @Sendable @escaping (
-        Request<Body>,
+        Request,
         Next
-    ) async throws -> Response<Body>) {
+    ) async throws -> Response) {
         self.run = run
     }
 }
@@ -43,15 +43,15 @@ public struct FromFn: Sendable {
 /// closure. axum calls this `Next`; it is the inner service wrapped
 /// in a callable.
 public struct Next: Sendable {
-    @usableFromInline internal let inner: BoxService<Request<Body>, Response<Body>>
+    @usableFromInline internal let inner: BoxService<Request, Response>
 
     @inlinable
-    public init(_ inner: BoxService<Request<Body>, Response<Body>>) {
+    public init(_ inner: BoxService<Request, Response>) {
         self.inner = inner
     }
 
     @inlinable
-    public func run(_ request: consuming Request<Body>) async throws -> Response<Body> {
+    public func run(_ request: consuming Request) async throws -> Response {
         try await inner.call(request)
     }
 }
@@ -61,10 +61,10 @@ public struct Next: Sendable {
 /// supplied closure around every call.
 public func from_fn(
     _ run: @Sendable @escaping (
-        Request<Body>,
+        Request,
         Next
-    ) async throws -> Response<Body>
-) -> Layer<Request<Body>, Response<Body>> {
+    ) async throws -> Response
+) -> Layer<Request, Response> {
     Layer { inner in
         // Capture the FromFn by value so the closure is self-contained.
         let middleware = FromFn(run)

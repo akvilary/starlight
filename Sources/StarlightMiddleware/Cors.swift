@@ -64,7 +64,7 @@ public struct CorsLayer: Sendable {
         self.config = config
     }
 
-    public func asLayer() -> Layer<HTTP.Request<Body>, HTTP.Response<Body>> {
+    public func asLayer() -> Layer<HTTP.Request, HTTP.Response> {
         let cfg = config
         return Layer { inner in
             BoxService { request in
@@ -84,8 +84,8 @@ public struct CorsLayer: Sendable {
 
     @inline(__always)
     private static func preflightResponse(
-        config: CorsConfig, request: Request<Body>
-    ) -> HTTP.Response<Body> {
+        config: CorsConfig, request: Request
+    ) -> HTTP.Response {
         var headers = HeaderMap()
         applyOriginHeader(config: config, request: request, headers: &headers)
         headers.insert(.accessControlAllowMethods,
@@ -97,13 +97,13 @@ public struct CorsLayer: Sendable {
         }
         headers.insert(.accessControlMaxAge, String(config.maxAge))
         headers.insert(.contentLength, "0")
-        return HTTP.Response<Body>(status: .noContent, headers: headers, body: .empty)
+        return HTTP.Response(status: .noContent, headers: headers, body: .empty)
     }
 
     @inline(__always)
     private static func applyCorsHeaders(
-        config: CorsConfig, request: Request<Body>,
-        response: inout HTTP.Response<Body>
+        config: CorsConfig, request: Request,
+        response: inout HTTP.Response
     ) {
         applyOriginHeader(config: config, request: request, headers: &response.headers)
         if config.allowCredentials {
@@ -113,7 +113,7 @@ public struct CorsLayer: Sendable {
 
     @inline(__always)
     private static func applyOriginHeader(
-        config: CorsConfig, request: Request<Body>,
+        config: CorsConfig, request: Request,
         headers: inout HeaderMap
     ) {
         let origin = request.headers.first(for: .origin)?.description ?? ""

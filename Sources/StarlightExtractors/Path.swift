@@ -34,7 +34,7 @@ extension Path: FromRequestParts {
     public typealias State = AnySendable
 
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> Path<T> {
         guard let matched = parts.extensions.get(MatchedPathParams.self) else {

@@ -7,7 +7,7 @@
 //
 //  The main entry point of the framework: holds a list of
 //  `(PathPattern, MethodRouter<S>)` plus a fallback. Conforms to
-//  `Service<HTTP.Request<Body>, Response = HTTP.Response<Body>>` so it can
+//  `Service<HTTP.Request, Response = HTTP.Response>` so it can
 //  be served via `StarlightServer.serve(service:)`.
 //
 //===----------------------------------------------------------------------===//
@@ -154,7 +154,7 @@ public struct Router<S: Sendable>: Sendable {
     //   router.get("/") { _ in .plain("hello") }
     //   router.get("/") { .plain("no args needed") }
     //
-    // The closure receives the whole Request<Body> for manual
+    // The closure receives the whole Request for manual
     // extraction. For typed extractors (Path<T>, Query<T>, etc.)
     // use HandlerService1/2/3 explicitly — they're more verbose but
     // provide compile-time extraction + rejection.
@@ -163,7 +163,7 @@ public struct Router<S: Sendable>: Sendable {
     /// Matches axum's `get(|req| async { ... })`.
     public func get(
         _ pattern: String,
-        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+        _ handler: @Sendable @escaping (HTTP.Request) async throws -> HTTP.Response
     ) -> Router<S> {
         get(pattern, BoxService(handler))
     }
@@ -172,7 +172,7 @@ public struct Router<S: Sendable>: Sendable {
     /// Matches axum's `get(|| async { ... })`.
     public func get(
         _ pattern: String,
-        _ handler: @Sendable @escaping () async throws -> HTTP.Response<Body>
+        _ handler: @Sendable @escaping () async throws -> HTTP.Response
     ) -> Router<S> {
         get(pattern, BoxService { _ in try await handler() })
     }
@@ -180,7 +180,7 @@ public struct Router<S: Sendable>: Sendable {
     /// Register a POST handler that receives the whole request.
     public func post(
         _ pattern: String,
-        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+        _ handler: @Sendable @escaping (HTTP.Request) async throws -> HTTP.Response
     ) -> Router<S> {
         post(pattern, BoxService(handler))
     }
@@ -188,7 +188,7 @@ public struct Router<S: Sendable>: Sendable {
     /// Register a POST handler with no arguments.
     public func post(
         _ pattern: String,
-        _ handler: @Sendable @escaping () async throws -> HTTP.Response<Body>
+        _ handler: @Sendable @escaping () async throws -> HTTP.Response
     ) -> Router<S> {
         post(pattern, BoxService { _ in try await handler() })
     }
@@ -196,7 +196,7 @@ public struct Router<S: Sendable>: Sendable {
     /// Register a PUT handler that receives the whole request.
     public func put(
         _ pattern: String,
-        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+        _ handler: @Sendable @escaping (HTTP.Request) async throws -> HTTP.Response
     ) -> Router<S> {
         put(pattern, BoxService(handler))
     }
@@ -204,7 +204,7 @@ public struct Router<S: Sendable>: Sendable {
     /// Register a DELETE handler that receives the whole request.
     public func delete(
         _ pattern: String,
-        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+        _ handler: @Sendable @escaping (HTTP.Request) async throws -> HTTP.Response
     ) -> Router<S> {
         delete(pattern, BoxService(handler))
     }
@@ -212,7 +212,7 @@ public struct Router<S: Sendable>: Sendable {
     /// Register a PATCH handler that receives the whole request.
     public func patch(
         _ pattern: String,
-        _ handler: @Sendable @escaping (HTTP.Request<Body>) async throws -> HTTP.Response<Body>
+        _ handler: @Sendable @escaping (HTTP.Request) async throws -> HTTP.Response
     ) -> Router<S> {
         patch(pattern, BoxService(handler))
     }
@@ -305,7 +305,7 @@ public struct Router<S: Sendable>: Sendable {
     ///     })
     /// ```
     public func layer(
-        _ layer: Layer<HTTP.Request<Body>, HTTP.Response<Body>>
+        _ layer: Layer<HTTP.Request, HTTP.Response>
     ) -> Router<S> {
         var statics = staticRoutes
         var dynamics = dynamicRoutes
@@ -347,7 +347,7 @@ public struct Router<S: Sendable>: Sendable {
     ///     .get("/private", ...)           // has auth
     /// ```
     public func route_layer(
-        _ layer: Layer<HTTP.Request<Body>, HTTP.Response<Body>>
+        _ layer: Layer<HTTP.Request, HTTP.Response>
     ) -> Router<S> {
         // Same implementation as `layer` — applied to all currently-
         // registered routes. axum panics if there are no routes; we
@@ -389,14 +389,14 @@ public struct Router<S: Sendable>: Sendable {
 
 // MARK: - Service conformance
 //
-// `Router<S>` is `Service<HTTP.Request<Body>, Response = HTTP.Response<Body>>`
+// `Router<S>` is `Service<HTTP.Request, Response = HTTP.Response>`
 // — this is the central contract that lets axum pass a `Router` to
 // `axum::serve`.
 extension Router: Service {
-    public typealias Request = HTTP.Request<Body>
-    public typealias Response = HTTP.Response<Body>
+    public typealias Request = HTTP.Request
+    public typealias Response = HTTP.Response
 
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
         let path = Array(request.uri.pathBytes)
 
         // 1. Static routes — linear scan, fast path for typical apps.
@@ -423,9 +423,9 @@ extension Router: Service {
     private func dispatch(
         _ methodRouter: MethodRouter<S>,
         matchedPattern: String,
-        request: consuming HTTP.Request<Body>,
+        request: consuming HTTP.Request,
         params: PathParams
-    ) async throws -> HTTP.Response<Body> {
+    ) async throws -> HTTP.Response {
         var req = request
         // axum-compatible extension insertions on every match:
         req.extensions.insert(MatchedPathParams(params))
@@ -443,7 +443,7 @@ extension Router: Service {
     }
 
     @inline(__always)
-    private static func defaultNotFound() -> HTTP.Response<Body> {
-        HTTP.Response<Body>.plain("Not Found", status: .notFound)
+    private static func defaultNotFound() -> HTTP.Response {
+        HTTP.Response.plain("Not Found", status: .notFound)
     }
 }

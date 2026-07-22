@@ -24,7 +24,7 @@ extension Query: FromRequestParts {
     public typealias State = AnySendable
 
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> Query<T> {
         guard let bytes = parts.uri.queryBytes, !bytes.isEmpty else {

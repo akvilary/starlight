@@ -48,7 +48,7 @@ public struct Extension<T: Hashable & Sendable>: Sendable {
 
     /// Create a Layer that inserts `value` into every request's
     /// extensions. Direct port of `Extension<T> as tower::Layer`.
-    public static func layer(_ value: T) -> Layer<HTTP.Request<Body>, HTTP.Response<Body>> {
+    public static func layer(_ value: T) -> Layer<HTTP.Request, HTTP.Response> {
         let v = value
         return Layer { inner in
             BoxService { request in
@@ -66,7 +66,7 @@ extension Extension: FromRequestParts {
     public typealias State = AnySendable
 
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> Extension<T> {
         guard let value = parts.extensions.get(T.self) else {
@@ -82,12 +82,12 @@ extension Extension: FromRequestParts {
 // MARK: - IntoResponse
 
 extension Extension: IntoResponse {
-    public func intoResponse() -> HTTP.Response<Body> {
+    public func intoResponse() -> HTTP.Response {
         // Insert value into response extensions — matches axum's
         // IntoResponse impl which puts T into res.extensions_mut().
         var headers = HeaderMap()
         headers.insert(.contentLength, "0")
-        var response = HTTP.Response<Body>(status: .ok, headers: headers, body: .empty)
+        var response = HTTP.Response(status: .ok, headers: headers, body: .empty)
         response.extensions.insert(value)
         return response
     }

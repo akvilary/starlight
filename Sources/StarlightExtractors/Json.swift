@@ -28,7 +28,7 @@ extension Json: FromRequest where T: Decodable {
     public typealias State = AnySendable
 
     public static func fromRequest(
-        _ request: consuming Request<Body>,
+        _ request: consuming Request,
         state: borrowing AnySendable
     ) async throws -> Json<T> {
         // B2 FIX: Content-Type check BEFORE decode.
@@ -55,13 +55,13 @@ extension Json: FromRequest where T: Decodable {
 }
 
 extension Json: IntoResponse where T: Encodable {
-    public func intoResponse() -> Response<Body> {
+    public func intoResponse() -> Response {
         do {
             let data = try JSONEncoder().encode(value)
             var headers = HeaderMap()
             headers.insert(.contentType, "application/json; charset=utf-8")
             headers.insert(.contentLength, String(data.count))
-            return Response<Body>(
+            return Response(
                 status: .ok, headers: headers, body: .buffered(Array(data))
             )
         } catch {

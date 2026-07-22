@@ -32,7 +32,7 @@ public struct DefaultBodyLimit: Hashable, Sendable {
     /// Create a Layer that inserts this limit into every request's
     /// extensions. Applied via `Router.layer` or `ServiceBuilder`.
     public static func layer(_ limit: DefaultBodyLimit = .default_)
-        -> Layer<HTTP.Request<Body>, HTTP.Response<Body>>
+        -> Layer<HTTP.Request, HTTP.Response>
     {
         let l = limit
         return Layer { inner in

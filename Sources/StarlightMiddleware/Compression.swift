@@ -51,7 +51,7 @@ public struct CompressionLayer: Sendable {
         self.config = config
     }
 
-    public func asLayer() -> Layer<HTTP.Request<Body>, HTTP.Response<Body>> {
+    public func asLayer() -> Layer<HTTP.Request, HTTP.Response> {
         let cfg = config
         return Layer { inner in
             BoxService { request in
@@ -63,10 +63,10 @@ public struct CompressionLayer: Sendable {
 
     @inline(__always)
     private static func compress(
-        _ response: HTTP.Response<Body>,
-        request: HTTP.Request<Body>,
+        _ response: HTTP.Response,
+        request: HTTP.Request,
         config: CompressionConfig
-    ) -> HTTP.Response<Body> {
+    ) -> HTTP.Response {
         // Only compress buffered bodies above the minimum size.
         guard case .buffered(let bytes) = response.body,
               bytes.count >= config.minBodySize else {
@@ -106,7 +106,7 @@ public struct CompressionLayer: Sendable {
         headers.insert(.contentLength, String(compressed))
         headers.insert(.vary, "Accept-Encoding")
 
-        return HTTP.Response<Body>(
+        return HTTP.Response(
             status: response.status,
             headers: headers,
             body: .buffered(output)

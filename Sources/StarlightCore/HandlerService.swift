@@ -31,7 +31,7 @@ public enum HandlerError: Error, Sendable {
     case bodyAlreadyConsumed
     /// Rejection from an extractor — already wrapped in its
     /// `intoResponse()` form so the dispatcher just returns it.
-    case rejection(HTTP.Response<Body>)
+    case rejection(HTTP.Response)
 }
 
 /// Zero-extractor handler — `() -> IntoResponse`.
@@ -50,7 +50,7 @@ where Fn: Sendable, S: Sendable, Out: IntoResponse {
 
 extension HandlerService0: Service {
 
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
         try await f(state).intoResponse()
     }
 }
@@ -73,8 +73,8 @@ where E0: FromRequestParts, Fn: Sendable, S: Sendable, Out: IntoResponse,
 
 extension HandlerService1: Service {
 
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        var parts = RequestParts<Body>(request)
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+        var parts = RequestParts(request)
         let e0: E0
         do {
             e0 = try await E0.fromRequestParts(&parts, state: state)
@@ -102,8 +102,8 @@ where E0: FromRequestParts, E1: FromRequest, Fn: Sendable, S: Sendable,
 
 extension HandlerService2: Service {
 
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        var parts = RequestParts<Body>(request)
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+        var parts = RequestParts(request)
         let e0: E0
         do {
             e0 = try await E0.fromRequestParts(&parts, state: state)
@@ -113,7 +113,7 @@ extension HandlerService2: Service {
         guard let remainingBody = parts.body else {
             throw HandlerError.bodyAlreadyConsumed
         }
-        let remaining = HTTP.Request<Body>(
+        let remaining = HTTP.Request(
             method: parts.method, uri: parts.uri, version: parts.version,
             headers: parts.headers, body: remainingBody,
             extensions: parts.extensions
@@ -146,8 +146,8 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequest,
 
 extension HandlerService3: Service {
 
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        var parts = RequestParts<Body>(request)
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+        var parts = RequestParts(request)
         let e0: E0
         let e1: E1
         do {
@@ -163,7 +163,7 @@ extension HandlerService3: Service {
         guard let remainingBody = parts.body else {
             throw HandlerError.bodyAlreadyConsumed
         }
-        let remaining = HTTP.Request<Body>(
+        let remaining = HTTP.Request(
             method: parts.method, uri: parts.uri, version: parts.version,
             headers: parts.headers, body: remainingBody,
             extensions: parts.extensions
@@ -197,8 +197,8 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: From
 }
 
 extension HandlerService4: Service {
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        var parts = RequestParts<Body>(request)
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+        var parts = RequestParts(request)
         let e0: E0, e1: E1, e2: E2
         do { e0 = try await E0.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
@@ -207,7 +207,7 @@ extension HandlerService4: Service {
         do { e2 = try await E2.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
         guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
-        let req = HTTP.Request<Body>(method: parts.method, uri: parts.uri,
+        let req = HTTP.Request(method: parts.method, uri: parts.uri,
             version: parts.version, headers: parts.headers, body: body,
             extensions: parts.extensions)
         let e3: E3
@@ -234,8 +234,8 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: From
 }
 
 extension HandlerService5: Service {
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        var parts = RequestParts<Body>(request)
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+        var parts = RequestParts(request)
         let e0: E0, e1: E1, e2: E2, e3: E3
         do { e0 = try await E0.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
@@ -246,7 +246,7 @@ extension HandlerService5: Service {
         do { e3 = try await E3.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
         guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
-        let req = HTTP.Request<Body>(method: parts.method, uri: parts.uri,
+        let req = HTTP.Request(method: parts.method, uri: parts.uri,
             version: parts.version, headers: parts.headers, body: body,
             extensions: parts.extensions)
         let e4: E4
@@ -273,8 +273,8 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: From
 }
 
 extension HandlerService6: Service {
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
-        var parts = RequestParts<Body>(request)
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+        var parts = RequestParts(request)
         let e0: E0, e1: E1, e2: E2, e3: E3, e4: E4
         do { e0 = try await E0.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
@@ -287,7 +287,7 @@ extension HandlerService6: Service {
         do { e4 = try await E4.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
         guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
-        let req = HTTP.Request<Body>(method: parts.method, uri: parts.uri,
+        let req = HTTP.Request(method: parts.method, uri: parts.uri,
             version: parts.version, headers: parts.headers, body: body,
             extensions: parts.extensions)
         let e5: E5

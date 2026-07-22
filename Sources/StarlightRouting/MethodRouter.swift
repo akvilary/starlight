@@ -134,6 +134,6 @@ public struct MethodRouter<S: Sendable>: Sendable {
     }
 }
 
-/// Type-erased `Service<Request<Body>, Response = Response<Body>>` —
+/// Type-erased `Service<Request, Response = Response>` —
 /// what a route handler becomes after passing through `Router<S>.get(_:)`.
-public typealias HandlerEndpoint = BoxService<Request<Body>, Response<Body>>
+public typealias HandlerEndpoint = BoxService<Request, Response>

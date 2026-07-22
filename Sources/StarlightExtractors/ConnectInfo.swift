@@ -40,7 +40,7 @@ extension ConnectInfo: FromRequestParts {
     public typealias State = AnySendable
 
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> ConnectInfo {
         if let info = parts.extensions.get(ConnectInfo.self) {
@@ -56,6 +56,6 @@ extension ConnectInfo: FromRequestParts {
 /// Extension point for the server. The worker calls this on each
 /// accepted connection to stash the peer address in the request.
 @inlinable
-public func setConnectInfo(_ peerAddress: String, on request: inout Request<Body>) {
+public func setConnectInfo(_ peerAddress: String, on request: inout Request) {
     request.extensions.insert(ConnectInfo(peerAddress: peerAddress))
 }

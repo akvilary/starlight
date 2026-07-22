@@ -26,15 +26,15 @@ import StarlightCore
 ///     return .plain("got \(req.method) \(req.uri.pathString)")
 /// }
 /// ```
-public typealias RawRequest = Request<Body>
+public typealias RawRequest = Request
 
-extension Request: FromRequest where B == Body {
+extension Request: FromRequest {
     public typealias State = AnySendable
 
     public static func fromRequest(
-        _ request: consuming Request<Body>,
+        _ request: consuming Request,
         state: borrowing AnySendable
-    ) async throws -> Request<Body> {
+    ) async throws -> Request {
         request
     }
 }

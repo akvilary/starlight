@@ -36,7 +36,7 @@ extension Bytes: FromRequest {
     public typealias State = AnySendable
 
     public static func fromRequest(
-        _ request: consuming Request<Body>,
+        _ request: consuming Request,
         state: borrowing AnySendable
     ) async throws -> Bytes {
         let bytes = try await request.body.collect()
@@ -45,7 +45,7 @@ extension Bytes: FromRequest {
 }
 
 extension Bytes: IntoResponse {
-    public func intoResponse() -> Response<Body> {
+    public func intoResponse() -> Response {
         var headers = HeaderMap()
         headers.insert(.contentLength, String(value.count))
         return Response(status: .ok, headers: headers, body: .buffered(value))

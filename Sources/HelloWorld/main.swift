@@ -72,7 +72,7 @@ let app = Router(state: NoState())
         var headers = HeaderMap()
         headers.insert(.contentType, "application/json; charset=utf-8")
         headers.insert(.contentLength, String(json.utf8.count))
-        return HTTP.Response<Body>(
+        return HTTP.Response(
             status: .ok, headers: headers, body: .buffered(Array(json.utf8))
         )
     }

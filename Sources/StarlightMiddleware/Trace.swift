@@ -84,7 +84,7 @@ public struct TraceLayer: Sendable {
     }
 
     /// Convert to a `Layer` that can be passed to `Router.layer(_:)`.
-    public func asLayer() -> Layer<HTTP.Request<Body>, HTTP.Response<Body>> {
+    public func asLayer() -> Layer<HTTP.Request, HTTP.Response> {
         Layer { inner in
             BoxService { request in
                 let method = request.method

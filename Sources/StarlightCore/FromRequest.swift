@@ -22,7 +22,7 @@
 //  IntoResponse`. In Swift, `Result`'s `Failure` must be `Error`,
 //  which makes that composition awkward. We instead throw a
 //  single concrete `ExtractionRejection` error type that wraps a
-//  `Response<Body>`. Concrete extractors build the appropriate
+//  `Response`. Concrete extractors build the appropriate
 //  4xx `Response` inline and throw it. The dispatcher catches the
 //  rejection and uses the embedded `Response` directly. This is the
 //  Swift-idiomatic equivalent of axum's typed rejection pipeline
@@ -37,9 +37,9 @@ import StarlightTower
 /// Thrown by extractors on a 4xx rejection. Carries the `Response`
 /// that should be returned to the client.
 public struct ExtractionRejection: Error, Sendable {
-    public let response: Response<Body>
+    public let response: Response
 
-    @inlinable public init(_ response: Response<Body>) {
+    @inlinable public init(_ response: Response) {
         self.response = response
     }
 
@@ -47,7 +47,7 @@ public struct ExtractionRejection: Error, Sendable {
         _ reason: String,
         status: StatusCode = .badRequest
     ) {
-        self.response = Response<Body>.plain(reason, status: status)
+        self.response = Response.plain(reason, status: status)
     }
 }
 
@@ -58,7 +58,7 @@ public struct ExtractionRejection: Error, Sendable {
 /// `TypedHeader<T>`, `Query<T>`, `State<S>`) does not need to take
 /// ownership of the body, leaving it available for a later
 /// body-consuming extractor.
-public struct RequestParts<B: Sendable>: Sendable {
+public struct RequestParts: Sendable {
     public var method: Method
     public var uri: Uri
     public var version: Version
@@ -67,10 +67,10 @@ public struct RequestParts<B: Sendable>: Sendable {
     /// Borrowed view of the body — present iff no prior extractor has
     /// consumed it via `FromRequest`. `nil` after the body has been
     /// moved out. The `FromRequest` extractor asserts / replaces this.
-    public var body: B?
+    public var body: Body?
 
     @inlinable
-    public init(_ request: consuming Request<B>) {
+    public init(_ request: consuming Request) {
         self.method = request.method
         self.uri = request.uri
         self.version = request.version
@@ -95,7 +95,7 @@ public protocol FromRequestParts: Sendable {
     /// The state is passed by `borrowing` — most state-less extractors
     /// (Path, Query) ignore it; stateful ones (`State<S>`) only read it.
     static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing State
     ) async throws -> Self
 }
@@ -114,7 +114,7 @@ public protocol FromRequest: Sendable {
     /// Extract from the full request, consuming the body if needed.
     /// Throws `ExtractionRejection` on a 4xx rejection.
     static func fromRequest(
-        _ request: consuming Request<Body>,
+        _ request: consuming Request,
         state: borrowing State
     ) async throws -> Self
 }
@@ -127,7 +127,7 @@ extension Method: FromRequestParts {
 
     @inlinable
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> Method {
         parts.method
@@ -140,7 +140,7 @@ extension Uri: FromRequestParts {
 
     @inlinable
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> Uri {
         parts.uri
@@ -154,7 +154,7 @@ extension HeaderMap: FromRequestParts {
 
     @inlinable
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> HeaderMap {
         parts.headers
@@ -168,7 +168,7 @@ extension Body: FromRequest {
 
     @inlinable
     public static func fromRequest(
-        _ request: consuming Request<Body>,
+        _ request: consuming Request,
         state: borrowing AnySendable
     ) async throws -> Body {
         request.body
@@ -180,7 +180,7 @@ extension String: FromRequest {
     public typealias State = AnySendable
 
     public static func fromRequest(
-        _ request: consuming Request<Body>,
+        _ request: consuming Request,
         state: borrowing AnySendable
     ) async throws -> String {
         let bytes = try await request.body.collect()

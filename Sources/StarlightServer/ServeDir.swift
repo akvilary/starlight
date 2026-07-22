@@ -73,8 +73,8 @@ public enum MimeType {
 ///     .get("/*path", ServeDir(root: "./public").erase())
 /// ```
 public struct ServeDir: Service, Sendable {
-    public typealias Request = HTTP.Request<Body>
-    public typealias Response = HTTP.Response<Body>
+    public typealias Request = HTTP.Request
+    public typealias Response = HTTP.Response
 
     public let root: String
     public let maxFileSize: Int
@@ -84,7 +84,7 @@ public struct ServeDir: Service, Sendable {
         self.maxFileSize = maxFileSize
     }
 
-    public func call(_ request: consuming HTTP.Request<Body>) async throws -> HTTP.Response<Body> {
+    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
         #if canImport(Glibc)
         let requestPath = request.uri.pathString
 
@@ -116,7 +116,7 @@ public struct ServeDir: Service, Sendable {
     }
 
     #if canImport(Glibc)
-    private func serveFile(fd: CInt, path: String) -> HTTP.Response<Body> {
+    private func serveFile(fd: CInt, path: String) -> HTTP.Response {
         // Get file stat for size + mtime
         var st = stat()
         guard Glibc.fstat(fd, &st) == 0 else {
@@ -147,7 +147,7 @@ public struct ServeDir: Service, Sendable {
         let etag = "\"\(st.st_mtim.tv_sec)-\(size)\""
         headers.insert(.etag, etag)
 
-        return HTTP.Response<Body>(
+        return HTTP.Response(
             status: .ok,
             headers: headers,
             body: .buffered(bytes)
@@ -156,11 +156,11 @@ public struct ServeDir: Service, Sendable {
     #endif
 
     @inline(__always)
-    private func errorResponse(_ status: StatusCode, _ message: String) -> HTTP.Response<Body> {
+    private func errorResponse(_ status: StatusCode, _ message: String) -> HTTP.Response {
         var headers = HeaderMap()
         headers.insert(.contentType, "text/plain; charset=utf-8")
         headers.insert(.contentLength, String(message.utf8.count))
-        return HTTP.Response<Body>(status: status, headers: headers, body: .buffered(Array(message.utf8)))
+        return HTTP.Response(status: status, headers: headers, body: .buffered(Array(message.utf8)))
     }
 }
 

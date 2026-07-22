@@ -36,7 +36,7 @@ extension Host: FromRequestParts {
     public typealias State = AnySendable
 
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> Host {
         // 1. Forwarded header (RFC 7239): "host=example.com; proto=https"

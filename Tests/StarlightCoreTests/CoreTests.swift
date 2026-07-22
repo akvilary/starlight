@@ -33,8 +33,8 @@ struct CoreTests {
 
     @Test("Method extractor yields the request method")
     func methodExtractor() async throws {
-        var parts = RequestParts<Body>(
-            Request<Body>(method: .POST, uri: Uri("/"))
+        var parts = RequestParts(
+            Request(method: .POST, uri: Uri("/"))
         )
         let method = try await Method.fromRequestParts(&parts, state: AnySendable())
         #expect(method == .POST)
@@ -44,8 +44,8 @@ struct CoreTests {
     func headerMapExtractor() async throws {
         var headers = HeaderMap()
         headers.insert(.host, "example.com")
-        var parts = RequestParts<Body>(
-            Request<Body>(method: .GET, uri: Uri("/"), headers: headers)
+        var parts = RequestParts(
+            Request(method: .GET, uri: Uri("/"), headers: headers)
         )
         let extracted = try await HeaderMap.fromRequestParts(&parts, state: AnySendable())
         #expect(extracted.first(for: .host)?.description == "example.com")

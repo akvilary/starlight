@@ -83,7 +83,7 @@ public struct Sse<S: AsyncSequence<SseEvent, Error> & Sendable>: Sendable {
 }
 
 extension Sse: IntoResponse {
-    public func intoResponse() -> Response<Body> {
+    public func intoResponse() -> Response {
         // Convert AsyncSequence<SseEvent> → AsyncSequence<[UInt8]>
         // by formatting each event to SSE wire bytes.
         let byteStream = AsyncThrowingMapSequence(base: stream)
@@ -91,7 +91,7 @@ extension Sse: IntoResponse {
         headers.insert(.contentType, "text/event-stream")
         headers.insert(.cacheControl, "no-cache")
         headers.insert(.connection, "keep-alive")
-        return Response<Body>(
+        return Response(
             status: .ok,
             headers: headers,
             body: .stream(byteStream)

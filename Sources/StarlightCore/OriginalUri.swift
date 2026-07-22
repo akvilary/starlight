@@ -35,7 +35,7 @@ extension OriginalUri: FromRequestParts {
     public typealias State = AnySendable
 
     public static func fromRequestParts(
-        _ parts: inout RequestParts<Body>,
+        _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> OriginalUri {
         // In our current implementation the URI is never modified
@@ -52,6 +52,6 @@ extension OriginalUri: FromRequestParts {
 /// the original URI in extensions — matches axum's behaviour where
 /// `serve()` inserts OriginalUri before routing.
 @inlinable
-public func setOriginalUri(_ uri: Uri, on request: inout Request<Body>) {
+public func setOriginalUri(_ uri: Uri, on request: inout Request) {
     request.extensions.insert(OriginalUri(uri))
 }

@@ -62,10 +62,10 @@ public struct Redirect: IntoResponse, Sendable, Equatable {
 
     // MARK: - IntoResponse
 
-    public func intoResponse() -> HTTP.Response<Body> {
+    public func intoResponse() -> HTTP.Response {
         var headers = HeaderMap()
         headers.insert(.location, location)
         headers.insert(.contentLength, "0")
-        return HTTP.Response<Body>(status: status, headers: headers, body: .empty)
+        return HTTP.Response(status: status, headers: headers, body: .empty)
     }
 }

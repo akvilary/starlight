@@ -47,8 +47,8 @@ public func serve<S: Service>(
     onShutdown: @escaping @Sendable () async -> Void = {
         await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
     }
-) async throws where S.Request == HTTP.Request<Body>,
-                      S.Response == HTTP.Response<Body> {
+) async throws where S.Request == HTTP.Request,
+                      S.Response == HTTP.Response {
     try await StarlightServer.serve(
         host: host, port: port,
         service: service,

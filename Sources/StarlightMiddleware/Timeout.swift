@@ -32,7 +32,7 @@ public struct TimeoutLayer: Sendable {
         self.duration = duration
     }
 
-    public func asLayer() -> Layer<HTTP.Request<Body>, HTTP.Response<Body>> {
+    public func asLayer() -> Layer<HTTP.Request, HTTP.Response> {
         let timeout = duration
         return Layer { inner in
             BoxService { request in
@@ -40,8 +40,8 @@ public struct TimeoutLayer: Sendable {
                 let path = request.uri.pathString
 
                 let result = await withTaskGroup(
-                    of: HTTP.Response<Body>?.self,
-                    returning: HTTP.Response<Body>?.self
+                    of: HTTP.Response?.self,
+                    returning: HTTP.Response?.self
                 ) { group in
                     // Race: handler vs timeout
                     group.addTask {
@@ -62,7 +62,7 @@ public struct TimeoutLayer: Sendable {
                     headers.insert(.contentType, "text/plain; charset=utf-8")
                     let body = "Gateway Timeout: \(method) \(path) exceeded \(timeout)\n"
                     headers.insert(.contentLength, String(body.utf8.count))
-                    return HTTP.Response<Body>(
+                    return HTTP.Response(
                         status: .gatewayTimeout,
                         headers: headers,
                         body: .buffered(Array(body.utf8))

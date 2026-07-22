@@ -28,7 +28,7 @@ struct ExtractorTests {
 
     @Test("Bytes extractor drains the body")
     func bytesExtractor() async throws {
-        let request = HTTP.Request<Body>(
+        let request = HTTP.Request(
             method: .POST,
             uri: Uri("/"),
             body: .buffered([0x68, 0x69])  // "hi"
@@ -56,7 +56,7 @@ struct ExtractorTests {
         var headers = HeaderMap()
         headers.insert(.contentType, "application/x-www-form-urlencoded")
         let body = "name=alice&age=30"
-        let request = HTTP.Request<Body>(
+        let request = HTTP.Request(
             method: .POST,
             uri: Uri("/login"),
             headers: headers,
@@ -77,7 +77,7 @@ struct ExtractorTests {
     func formRejectsWrongContentType() async throws {
         var headers = HeaderMap()
         headers.insert(.contentType, "application/json")
-        let request = HTTP.Request<Body>(
+        let request = HTTP.Request(
             method: .POST,
             uri: Uri("/login"),
             headers: headers,
@@ -100,7 +100,7 @@ struct ExtractorTests {
         headers.insert(.contentType, "application/x-www-form-urlencoded")
         // %20 = space, + = space, %2B = literal +
         let body = "name=alice+smith&greeting=hello%20world&plus=a%2Bb"
-        let request = HTTP.Request<Body>(
+        let request = HTTP.Request(
             method: .POST,
             uri: Uri("/"),
             headers: headers,
@@ -125,21 +125,21 @@ struct ExtractorTests {
     func connectInfoExtractor() async throws {
         var extensions = Extensions()
         extensions.insert(ConnectInfo(peerAddress: "127.0.0.1:54321"))
-        let req = HTTP.Request<Body>(
+        let req = HTTP.Request(
             method: .GET,
             uri: Uri("/"),
             body: Body.empty,
             extensions: extensions
         )
-        var parts = RequestParts<Body>(req)
+        var parts = RequestParts(req)
         let info = try await ConnectInfo.fromRequestParts(&parts, state: AnySendable())
         #expect(info.peerAddress == "127.0.0.1:54321")
     }
 
     @Test("ConnectInfo throws if not set")
     func connectInfoMissing() async throws {
-        var parts = RequestParts<Body>(
-            HTTP.Request<Body>(method: .GET, uri: Uri("/"), body: .empty)
+        var parts = RequestParts(
+            HTTP.Request(method: .GET, uri: Uri("/"), body: .empty)
         )
         do {
             _ = try await ConnectInfo.fromRequestParts(&parts, state: AnySendable())
@@ -151,7 +151,7 @@ struct ExtractorTests {
 
     @Test("setConnectInfo helper populates extensions")
     func setConnectInfoHelper() {
-        var request = HTTP.Request<Body>(method: .GET, uri: Uri("/"))
+        var request = HTTP.Request(method: .GET, uri: Uri("/"))
         setConnectInfo("10.0.0.1:80", on: &request)
         #expect(request.extensions.get(ConnectInfo.self)?.peerAddress == "10.0.0.1:80")
     }
@@ -163,10 +163,10 @@ struct ExtractorTests {
         struct DB: Hashable, Sendable { let name: String }
         var extensions = Extensions()
         extensions.insert(DB(name: "prod"))
-        let req = HTTP.Request<Body>(
+        let req = HTTP.Request(
             method: .GET, uri: Uri("/"), body: .empty, extensions: extensions
         )
-        var parts = RequestParts<Body>(req)
+        var parts = RequestParts(req)
         let ext: Extension<DB> = try await Extension<DB>.fromRequestParts(&parts, state: AnySendable())
         #expect(ext.value.name == "prod")
     }
@@ -174,8 +174,8 @@ struct ExtractorTests {
     @Test("Extension extractor rejects with 500 when missing")
     func extensionMissing() async throws {
         struct Missing: Hashable, Sendable {}
-        var parts = RequestParts<Body>(
-            HTTP.Request<Body>(method: .GET, uri: Uri("/"), body: .empty)
+        var parts = RequestParts(
+            HTTP.Request(method: .GET, uri: Uri("/"), body: .empty)
         )
         do {
             _ = try await Extension<Missing>.fromRequestParts(&parts, state: AnySendable())
@@ -193,7 +193,7 @@ struct ExtractorTests {
         let service = Extension.layer(Token(value: "abc"))
             .layer(BoxService(router))
 
-        let req = HTTP.Request<Body>(method: .GET, uri: Uri("/"))
+        let req = HTTP.Request(method: .GET, uri: Uri("/"))
         let resp = try await service.call(req)
         // The Token should be in the request's extensions when it
         // reached the router. We can't directly verify it here (the

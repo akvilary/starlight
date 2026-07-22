@@ -96,12 +96,12 @@ public final class RateLimiter: Sendable {
 /// ```
 public struct RateLimitLayer: Sendable {
     public let limiter: RateLimiter
-    public let keyExtractor: @Sendable (HTTP.Request<Body>) -> String
+    public let keyExtractor: @Sendable (HTTP.Request) -> String
 
     @inlinable
     public init(
         limiter: RateLimiter,
-        keyExtractor: @Sendable @escaping (HTTP.Request<Body>) -> String = { req in
+        keyExtractor: @Sendable @escaping (HTTP.Request) -> String = { req in
             // Default: use ConnectInfo if available, otherwise "global".
             req.extensions.get(ConnectInfo.self)?.peerAddress ?? "global"
         }
@@ -110,7 +110,7 @@ public struct RateLimitLayer: Sendable {
         self.keyExtractor = keyExtractor
     }
 
-    public func asLayer() -> Layer<HTTP.Request<Body>, HTTP.Response<Body>> {
+    public func asLayer() -> Layer<HTTP.Request, HTTP.Response> {
         let limiter = self.limiter
         let extractKey = self.keyExtractor
         return Layer { inner in
@@ -123,7 +123,7 @@ public struct RateLimitLayer: Sendable {
                     headers.insert(.contentType, "text/plain; charset=utf-8")
                     headers.insert(.contentLength, String(body.utf8.count))
                     headers.insert(.retryAfter, "1")
-                    return HTTP.Response<Body>(
+                    return HTTP.Response(
                         status: .tooManyRequests,
                         headers: headers,
                         body: .buffered(Array(body.utf8))

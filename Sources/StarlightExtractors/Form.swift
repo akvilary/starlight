@@ -39,7 +39,7 @@ extension Form: FromRequest {
     public typealias State = AnySendable
 
     public static func fromRequest(
-        _ request: consuming Request<Body>,
+        _ request: consuming Request,
         state: borrowing AnySendable
     ) async throws -> Form<T> {
         // Content-Type check — axum requires the exact media type.
@@ -124,7 +124,7 @@ extension Form: FromRequest {
 }
 
 extension Form: IntoResponse where T: Encodable {
-    public func intoResponse() -> Response<Body> {
+    public func intoResponse() -> Response {
         // Re-encode as urlencoded. For v0.1 just JSON-encode then
         // flatten — full urlencoded encoder lands later.
         do {
