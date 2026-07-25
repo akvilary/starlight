@@ -95,7 +95,8 @@ let package = Package(
         // mio — epoll-backed readiness I/O primitives (Poll/Registry/
         // Token/Interest/Ready/Event/Events/Waker). Swift port of
         // Rust's mio. https://github.com/akvilary/mio
-        .package(url: "https://github.com/akvilary/mio.git", from: "0.1.1"),
+        // .package(url: "https://github.com/akvilary/mio.git", from: "0.1.1"),
+        .package(path: "../mio"),
         // http — pure HTTP message types (Request/Response/Method/
         // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
         // Rust `http` crate. https://github.com/akvilary/http

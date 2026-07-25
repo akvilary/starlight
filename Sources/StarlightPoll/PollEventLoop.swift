@@ -34,11 +34,14 @@
 #if os(Linux)
 
 import Foundation
-// Re-export the mio primitives so consumers of `StarlightPoll` get
-// `Poll`, `Token`, `Interest`, `Ready`, `Event`, `Events`, `Waker`,
-// `Registry`, `PollError` transitively (mirrors how the module bundled
-// them before they were extracted into the standalone mio package).
-@_exported import MIO
+// Direct `import MIO` (not `@_exported`) — the re-export attribute
+// conflicts with `~Copyable` type extension visibility in current
+// Swift 6.2 toolchains: methods declared on a `~Copyable` struct
+// disappear from the re-exporter's view even though they appear in
+// the module interface. The re-export is moved to a dedicated file
+// `ReexportMIO.swift` that contains nothing else, so the bulk of
+// this module sees MIO through the plain `import` below.
+import MIO
 import Synchronization
 import StarlightCore
 
@@ -89,7 +92,12 @@ public final class PollEventLoop: @unchecked Sendable {
     // Epoll primitives.
     public let poll: Poll
     public let registry: Registry
-    private let events: Events
+    // `Events` is now a `~Copyable` struct — single-owner, single-thread.
+    // Stored as `var` because `Poll.poll` requires `inout` access (it
+    // writes the delivered-event count). The compiler now rejects any
+    // accidental aliasing or cross-thread sharing that `@unchecked
+    // Sendable` on the previous class form silently permitted.
+    private var events: Events
     private var waker: Waker?
 
     // Per-channel pending-op tracking — loop thread only.
@@ -167,7 +175,7 @@ public final class PollEventLoop: @unchecked Sendable {
             // Phase 1: block on epoll_wait until at least one source is
             // ready (or the waker fires, or a signal interrupts).
             do {
-                try poll.poll(events, timeout: .blocking)
+                try self.events.wait(on: self.poll, timeout: PollTimeout.blocking)
                 consecutiveErrors = 0
             } catch {
                 // Recoverable errors: log, sleep briefly, retry. After 32
