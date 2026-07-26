@@ -117,10 +117,55 @@ public struct PathPattern: Sendable {
         return pos == n || (pos + 1 == n && pathBytes[pos] == 0x2F)
     }
 
-    /// Percent-decode a captured value. For the skeleton, just UTF-8
-    /// decode — full %XX-decode lands in the extractors phase.
+    /// Percent-decode captured path parameter bytes per RFC 3986 §2.1.
+    ///
+    /// `%XX` (where XX are hex digits) → single byte. All other bytes
+    /// pass through. After all `%XX` sequences are decoded, the result
+    /// is interpreted as UTF-8.
+    ///
+    /// **`+` is NOT decoded** as space — in path components `+` is a
+    /// literal character (per RFC 3986). Only query-string parsing
+    /// treats `+` as space.
+    ///
+    /// **Malformed `%`** (not followed by two hex digits) is treated
+    /// as a literal `%` character — lenient, matching most web
+    /// frameworks.
+    ///
+    /// **Fast path:** if no `%` byte is present, skips the byte-by-byte
+    /// walk and decodes directly as UTF-8. This covers the vast
+    /// majority of real-world path parameters (numeric IDs, slugs).
     @inlinable
     static func decode(_ bytes: [UInt8]) -> String {
-        String(decoding: bytes, as: UTF8.self)
+        // Fast path: no percent-encoding → direct UTF-8 decode.
+        if !bytes.contains(0x25) {
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        // Slow path: byte-by-byte percent-decode.
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var i = 0
+        while i < bytes.count {
+            if bytes[i] == 0x25,               // '%'
+               i + 2 < bytes.count,
+               let hi = hexDigit(bytes[i + 1]),
+               let lo = hexDigit(bytes[i + 2]) {
+                out.append(hi << 4 | lo)
+                i += 3
+            } else {
+                out.append(bytes[i])
+                i += 1
+            }
+        }
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    @inlinable
+    static func hexDigit(_ b: UInt8) -> UInt8? {
+        switch b {
+        case 0x30...0x39: return b - 0x30       // 0-9
+        case 0x41...0x46: return b - 0x41 + 10  // A-F
+        case 0x61...0x66: return b - 0x61 + 10  // a-f
+        default: return nil
+        }
     }
 }
