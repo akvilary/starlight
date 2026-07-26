@@ -221,7 +221,11 @@ final class IntegrationServer {
 
             // Encode + write.
             var outBuf: [UInt8] = []
-            let head = encoder.encodeHead(response, keepAlive: true, into: &outBuf)
+            let head = encoder.encodeHead(
+                response, keepAlive: true,
+                requestMethod: req.method,
+                into: &outBuf
+            )
             if case .buffered = head {
                 if case .buffered(let bytes) = response.body, !bytes.isEmpty {
                     outBuf.append(contentsOf: bytes)

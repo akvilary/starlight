@@ -147,12 +147,9 @@ struct IntegrationTests {
         defer { client.close() }
 
         let resp = try client.request(method: "HEAD", path: "/")
-        // Expected: 200, Content-Length reflects what GET would send,
-        // but body is empty.
+        // Expected: 200, body is empty (HEAD suppresses body).
         #expect(resp.statusCode == 200)
-        // This test will currently FAIL because Encoder doesn't know
-        // it's a HEAD response (TODO A20). Documenting the expectation.
-        // #expect(resp.body.isEmpty)
+        #expect(resp.body.isEmpty, "HEAD response must not have a body")
     }
 
     @Test("404 path returns Not Found status")
@@ -175,125 +172,88 @@ struct IntegrationTests {
     // rejects it. They are the regression target for the smuggling
     // fixes planned in TODO.md (A17, A18, A19, A25, A26).
 
-    @Test("Header value with bare LF is rejected (A17 regression target)")
+    @Test("Header value with bare LF is rejected with 400 (A17)")
     func bareLfInHeaderValue() throws {
-        let server = try IntegrationServer { _ in
-            HTTP.Response.plain("ok")
-        }
+        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
         defer { server.stop() }
-
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
 
-        // Header value with embedded \n. A strict codec rejects this
-        // (RFC 9112 §5.1 forbids bare CR or LF in field values).
-        // Currently the decoder accepts it — the test documents the
-        // current state and will become a fail-test when A17 lands.
         var raw: [UInt8] = []
-        raw.append(contentsOf: Array("GET / HTTP/1.1\r\n".utf8))
-        raw.append(contentsOf: Array("Host: localhost\r\n".utf8))
+        raw.append(contentsOf: Array("GET / HTTP/1.1\r\nHost: localhost\r\n".utf8))
         raw.append(contentsOf: Array("X-Inject: value\nX-Smuggled: evil\r\n".utf8))
         raw.append(contentsOf: [0x0D, 0x0A])
-        // Send; expect either 400 (strict) or 200 + smuggled behaviour
-        // (current). We accept either for now; the assertion will be
-        // tightened when the codec fix lands.
-        // Use `.immediateOnly` to avoid waiting 500ms SO_RCVTIMEO when
-        // the server's keep-alive loop parks on read for the next
-        // request that never comes.
-        _ = try? client.sendRaw(raw, readUntil: .immediateOnly)
+        let respBytes = try client.sendRaw(raw, readUntil: .immediateOnly)
+        let resp = try IntegrationClient.parseResponse(respBytes)
+        #expect(resp.statusCode == 400, "bare LF in header value must be rejected")
     }
 
-    @Test("CL + TE both present — codec must reject (A26 regression target)")
+    @Test("CL + TE both present — codec must reject with 400 (A26)")
     func clPlusTeConflict() throws {
-        let server = try IntegrationServer { _ in
-            HTTP.Response.plain("ok")
-        }
+        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
         defer { server.stop() }
-
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
 
-        // Both headers — RFC 9112 §6.3.6 prefers TE but recent secure
-        // implementations reject with 400. We expect 400 (or close).
         let raw = Self.bytes(
-            "POST / HTTP/1.1\r\n",
-            "Host: localhost\r\n",
-            "Content-Length: 6\r\n",
-            "Transfer-Encoding: chunked\r\n",
-            "\r\n",
-            "0\r\n\r\n"
+            "POST / HTTP/1.1\r\n", "Host: localhost\r\n",
+            "Content-Length: 6\r\n", "Transfer-Encoding: chunked\r\n",
+            "\r\n", "0\r\n\r\n"
         )
-        _ = try? client.sendRaw(raw, readUntil: .immediateOnly)
-        // No assertion yet — the behaviour is not pinned. Will be
-        // tightened to "#expect connection closed / 400" when A26 lands.
+        let respBytes = try client.sendRaw(raw, readUntil: .immediateOnly)
+        let resp = try IntegrationClient.parseResponse(respBytes)
+        #expect(resp.statusCode == 400, "CL + TE conflict must be rejected")
     }
 
     @Test("Transfer-Encoding: xchunked must NOT be treated as chunked (A17)")
     func teSubstringNoMatch() throws {
-        let server = try IntegrationServer { _ in
-            HTTP.Response.plain("ok")
-        }
+        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
         defer { server.stop() }
-
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
 
-        // "xchunked" is NOT the chunked token. A strict codec treats
-        // this as an unknown TE and falls back to Content-Length (or
-        // rejects). Current codec substring-matches "chunked" anywhere
-        // in TE value and incorrectly enters chunked-decoding.
         let raw = Self.bytes(
-            "POST / HTTP/1.1\r\n",
-            "Host: localhost\r\n",
-            "Content-Length: 5\r\n",
-            "Transfer-Encoding: xchunked\r\n",
-            "\r\n",
-            "hello"
+            "POST / HTTP/1.1\r\n", "Host: localhost\r\n",
+            "Content-Length: 5\r\n", "Transfer-Encoding: xchunked\r\n",
+            "\r\n", "hello"
         )
-        _ = try? client.sendRaw(raw, readUntil: .immediateOnly)
+        let respBytes = try client.sendRaw(raw, readUntil: .immediateOnly)
+        let resp = try IntegrationClient.parseResponse(respBytes)
+        // Either CL path (200) or strict reject (400) — but NOT a
+        // silent chunked misparse (which would produce a corrupt body).
+        #expect(resp.statusCode == 200 || resp.statusCode == 400,
+            "xchunked must not be silently treated as chunked")
     }
 
-    @Test("Chunked body with trailers parses (A18 regression target)")
+    @Test("Chunked body with trailers parses correctly (A18)")
     func chunkedWithTrailers() throws {
-        let server = try IntegrationServer { _ in
-            HTTP.Response.plain("ok")
-        }
+        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
         defer { server.stop() }
-
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
 
-        // Valid chunked body with a trailer block.
         let raw = Self.bytes(
-            "POST / HTTP/1.1\r\n",
-            "Host: localhost\r\n",
-            "Transfer-Encoding: chunked\r\n",
-            "\r\n",
-            "5\r\n",
-            "hello\r\n",
-            "0\r\n",
-            "X-Trailer: value\r\n",
-            "\r\n"
+            "POST / HTTP/1.1\r\n", "Host: localhost\r\n",
+            "Transfer-Encoding: chunked\r\n", "\r\n",
+            "5\r\n", "hello\r\n",
+            "0\r\n", "X-Trailer: value\r\n", "\r\n"
         )
         let respBytes = try client.sendRaw(raw, readUntil: .contentLengthOrClose)
         let resp = try IntegrationClient.parseResponse(respBytes)
-        #expect(resp.statusCode == 200)
+        #expect(resp.statusCode == 200, "valid chunked body with trailers must parse")
     }
 
-    @Test("HTTP/1.1 without Host header (A25 regression target)")
+    @Test("HTTP/1.1 without Host header returns 400 (A25)")
     func missingHost() throws {
-        let server = try IntegrationServer { _ in
-            HTTP.Response.plain("ok")
-        }
+        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
         defer { server.stop() }
-
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
 
-        // RFC 9112 §3.2: HTTP/1.1 request MUST have Host. Codec should
-        // 400. Currently accepts.
         let raw = Self.bytes("GET / HTTP/1.1\r\n", "\r\n")
-        _ = try? client.sendRaw(raw, readUntil: .immediateOnly)
+        let respBytes = try client.sendRaw(raw, readUntil: .immediateOnly)
+        let resp = try IntegrationClient.parseResponse(respBytes)
+        #expect(resp.statusCode == 400, "HTTP/1.1 without Host must be rejected")
     }
 }
 

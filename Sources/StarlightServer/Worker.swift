@@ -305,6 +305,9 @@ public actor Worker {
                     explicitConnection: request.headers.first(for: .connection)
                 )
 
+                // Save method for encodeHead (HEAD responses suppress body).
+                let requestMethod = request.method
+
                 let response: Response
                 do {
                     response = try await router.call(request)
@@ -319,7 +322,9 @@ public actor Worker {
 
                 writeBuffer.removeAll(keepingCapacity: true)
                 let head = conn.encoder.encodeHead(
-                    response, keepAlive: keepAlive, into: &writeBuffer
+                    response, keepAlive: keepAlive,
+                    requestMethod: requestMethod,
+                    into: &writeBuffer
                 )
                 // Write header (+ body via writev) in one syscall.
                 switch head {

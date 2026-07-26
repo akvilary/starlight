@@ -412,6 +412,12 @@ public final class IntegrationClient: Sendable {
     ) -> [UInt8] {
         var out: [UInt8] = []
         out.append(contentsOf: Array("\(method) \(path) \(version)\r\n".utf8))
+        // Auto-add Host if the caller didn't supply one. HTTP/1.1
+        // mandates it (RFC 9112 §3.2), and the codec now enforces this.
+        let hasHost = headers.contains { $0.name.lowercased() == "host" }
+        if !hasHost {
+            out.append(contentsOf: Array("Host: localhost\r\n".utf8))
+        }
         for (name, value) in headers {
             out.append(contentsOf: Array("\(name): \(value)\r\n".utf8))
         }
