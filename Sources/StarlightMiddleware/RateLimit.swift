@@ -96,14 +96,22 @@ public final class RateLimiter: Sendable {
 /// ```
 public struct RateLimitLayer: Sendable {
     public let limiter: RateLimiter
-    public let keyExtractor: @Sendable (HTTP.Request) -> String
+    public let keyExtractor: @Sendable (HTTP.Request) -> String?
 
+    /// Create a rate-limit layer.
+    ///
+    /// - Parameters:
+    ///   - limiter: The rate limiter to use.
+    ///   - keyExtractor: Extracts the rate-limit key (typically client
+    ///     IP) from the request. Returns `nil` to reject the request
+    ///     with 500 (e.g. when ConnectInfo is missing and no custom
+    ///     fallback is configured). The default extracts from
+    ///     `ConnectInfo` — returns `nil` if ConnectInfo is not set.
     @inlinable
     public init(
         limiter: RateLimiter,
-        keyExtractor: @Sendable @escaping (HTTP.Request) -> String = { req in
-            // Default: use ConnectInfo if available, otherwise "global".
-            req.extensions.get(ConnectInfo.self)?.peerAddress ?? "global"
+        keyExtractor: @Sendable @escaping (HTTP.Request) -> String? = { req in
+            req.extensions.get(ConnectInfo.self)?.peerAddress
         }
     ) {
         self.limiter = limiter
@@ -115,7 +123,22 @@ public struct RateLimitLayer: Sendable {
         let extractKey = self.keyExtractor
         return Layer { inner in
             BoxService { request in
-                let key = extractKey(request)
+                guard let key = extractKey(request) else {
+                    // Key extraction failed (e.g. ConnectInfo not set
+                    // and no custom keyExtractor override). Return 500
+                    // so the operator sees the misconfiguration in logs
+                    // rather than silently collapsing all clients into
+                    // one "global" rate-limit bucket.
+                    let body = "RateLimit requires ConnectInfo or a custom keyExtractor\n"
+                    var headers = HeaderMap()
+                    headers.insert(.contentType, "text/plain; charset=utf-8")
+                    headers.insert(.contentLength, String(body.utf8.count))
+                    return HTTP.Response(
+                        status: .internalServerError,
+                        headers: headers,
+                        body: .buffered(Array(body.utf8))
+                    )
+                }
                 if !limiter.allow(key) {
                     // Rate limited — return 429.
                     let body = "Too Many Requests\n"
