@@ -39,7 +39,16 @@ extension Bytes: FromRequest {
         _ request: consuming Request,
         state: borrowing AnySendable
     ) async throws -> Bytes {
-        let bytes = try await request.body.collect()
+        let limit = DefaultBodyLimit.read(from: request.extensions)
+        let bytes: [UInt8]
+        do {
+            bytes = try await request.body.collect(maxBytes: limit)
+        } catch BodyError.limitExceeded {
+            throw ExtractionRejection(
+                "request body exceeds limit of \(limit) bytes",
+                status: .payloadTooLarge
+            )
+        }
         return Bytes(bytes)
     }
 }

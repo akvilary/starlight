@@ -10,6 +10,7 @@
 import Foundation
 import StarlightCore
 import HTTP
+import StarlightTower
 
 /// Extractor for a JSON request body, plus a response wrapper.
 ///
@@ -41,7 +42,16 @@ extension Json: FromRequest where T: Decodable {
                 status: .unsupportedMediaType  // 415
             )
         }
-        let bytes = try await request.body.collect()
+        let limit = DefaultBodyLimit.read(from: request.extensions)
+        let bytes: [UInt8]
+        do {
+            bytes = try await request.body.collect(maxBytes: limit)
+        } catch BodyError.limitExceeded {
+            throw ExtractionRejection(
+                "request body exceeds limit of \(limit) bytes",
+                status: .payloadTooLarge
+            )
+        }
         do {
             let decoded = try JSONDecoder().decode(T.self, from: Data(bytes))
             return Json(decoded)
