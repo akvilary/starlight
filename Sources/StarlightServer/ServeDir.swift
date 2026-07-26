@@ -72,6 +72,12 @@ public enum MimeType {
 /// let app = Router(state: NoState())
 ///     .get("/*path", ServeDir(root: "./public").erase())
 /// ```
+///
+/// **Security:** Path traversal is prevented via `realpath(3)`
+/// canonicalization + prefix verification. The resolved path must
+/// start with the canonical root directory. Symlinks are followed
+/// by `realpath` — a symlink inside root that points outside will
+/// resolve to the outside path and fail the prefix check.
 public struct ServeDir: Service, Sendable {
     public typealias Request = HTTP.Request
     public typealias Response = HTTP.Response
@@ -79,71 +85,181 @@ public struct ServeDir: Service, Sendable {
     public let root: String
     public let maxFileSize: Int
 
-    @inlinable public init(root: String, maxFileSize: Int = 10 * 1024 * 1024) {
+    /// Canonicalized root path, resolved once at init. All served
+    /// files must resolve to a path starting with this prefix.
+    private let canonicalRoot: String
+
+    public init(root: String, maxFileSize: Int = 10 * 1024 * 1024) {
         self.root = root
         self.maxFileSize = maxFileSize
+        #if canImport(Glibc)
+        self.canonicalRoot = Self.resolvePath(root) ?? root
+        #else
+        self.canonicalRoot = root
+        #endif
     }
 
     public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
         #if canImport(Glibc)
-        let requestPath = request.uri.pathString
+        let rawPath = request.uri.pathString
 
-        // Security: prevent path traversal (../../etc/passwd)
-        guard !requestPath.contains("..") else {
+        // 1. Percent-decode the URL path. Path components do NOT
+        //    treat '+' as space (unlike query strings).
+        let decodedPath = Self.percentDecode(rawPath)
+
+        // 2. Reject null bytes — defense against C-string truncation
+        //    attacks (e.g. /etc/passwd\0.txt).
+        guard !decodedPath.contains("\0") else {
+            return errorResponse(.badRequest, "null byte in path")
+        }
+
+        // 3. Join root + decoded relative path.
+        let relativePath = decodedPath.hasPrefix("/")
+            ? String(decodedPath.dropFirst())
+            : decodedPath
+        let fullPath = root + "/" + relativePath
+
+        // 4. Canonicalize via realpath — resolves ALL ".." components
+        //    and symlinks. Returns nil if the file doesn't exist.
+        guard let resolved = Self.resolvePath(fullPath) else {
+            return errorResponse(.notFound, "Not Found")
+        }
+
+        // 5. Verify the resolved path is inside canonicalRoot.
+        //    This is the chroot-style check that defeats all traversal
+        //    attacks — realpath already resolved everything.
+        guard resolved == canonicalRoot
+              || resolved.hasPrefix(canonicalRoot + "/") else {
             return errorResponse(.forbidden, "Forbidden")
         }
 
-        // Map URL path to filesystem path
-        let filePath = root + (requestPath.hasPrefix("/") ? requestPath : "/" + requestPath)
+        // 6. stat to determine file vs directory. Use lstat to avoid
+        //    name conflict with the `stat` struct type in Swift's
+        //    Glibc module. Since realpath already resolved symlinks,
+        //    lstat and stat give identical results here.
+        var st = stat()
+        let statRc = resolved.withCString { p in
+            Glibc.lstat(p, &st)
+        }
+        guard statRc == 0 else {
+            return errorResponse(.notFound, "Not Found")
+        }
 
-        // Try to open the file
-        let fd = Glibc.open(filePath, O_RDONLY | O_CLOEXEC)
-        guard fd >= 0 else {
-            // Try index.html for directory paths
-            let indexPath = filePath.hasSuffix("/") ? filePath + "index.html" : filePath + "/index.html"
-            let indexFd = Glibc.open(indexPath, O_RDONLY | O_CLOEXEC)
-            guard indexFd >= 0 else {
+        // 7. If directory → try index.html (with its own realpath check).
+        if (st.st_mode & S_IFMT) == S_IFDIR {
+            let indexResolved = Self.resolvePath(resolved + "/index.html")
+            guard let indexResolved,
+                  indexResolved.hasPrefix(canonicalRoot + "/") else {
                 return errorResponse(.notFound, "Not Found")
             }
-            defer { _ = Glibc.close(indexFd) }
-            return serveFile(fd: indexFd, path: indexPath)
+            // Re-stat index.html for size + mtime.
+            var indexSt = stat()
+            let indexStatRc = indexResolved.withCString { p in
+                Glibc.lstat(p, &indexSt)
+            }
+            guard indexStatRc == 0 else {
+                return errorResponse(.notFound, "Not Found")
+            }
+            return serveFile(path: indexResolved, st: indexSt)
         }
-        defer { _ = Glibc.close(fd) }
-        return serveFile(fd: fd, path: filePath)
+
+        // 8. Regular file — serve it.
+        return serveFile(path: resolved, st: st)
         #else
         return errorResponse(.notFound, "Static files require Linux")
         #endif
     }
 
+    // MARK: - Internals
+
     #if canImport(Glibc)
-    private func serveFile(fd: CInt, path: String) -> HTTP.Response {
-        // Get file stat for size + mtime
-        var st = stat()
-        guard Glibc.fstat(fd, &st) == 0 else {
-            return errorResponse(.internalServerError, "fstat failed")
+    /// Resolve a path to its canonical absolute form via `realpath(3)`.
+    /// Returns nil if the path doesn't exist or can't be resolved.
+    @usableFromInline
+    internal static func resolvePath(_ path: String) -> String? {
+        var buf = [CChar](repeating: 0, count: 4096)  // PATH_MAX
+        let result = path.withCString { p in
+            buf.withUnsafeMutableBufferPointer { b in
+                Glibc.realpath(p, b.baseAddress)
+            }
         }
+        guard let r = result else { return nil }
+        return String(cString: r)
+    }
+
+    /// Percent-decode a URL path component. `%XX` → byte.
+    /// `+` is NOT decoded as space (path component semantics per
+    /// RFC 3986 — only query strings treat `+` as space).
+    @usableFromInline
+    internal static func percentDecode(_ string: String) -> String {
+        let bytes = Array(string.utf8)
+        if !bytes.contains(0x25) {  // fast path: no '%'
+            return string
+        }
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var i = 0
+        while i < bytes.count {
+            if bytes[i] == 0x25,               // '%'
+               i + 2 < bytes.count,
+               let hi = hexDigit(bytes[i + 1]),
+               let lo = hexDigit(bytes[i + 2]) {
+                out.append(hi << 4 | lo)
+                i += 3
+            } else {
+                out.append(bytes[i])
+                i += 1
+            }
+        }
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    @usableFromInline
+    internal static func hexDigit(_ b: UInt8) -> UInt8? {
+        switch b {
+        case 0x30...0x39: return b - 0x30       // 0-9
+        case 0x41...0x46: return b - 0x41 + 10  // A-F
+        case 0x61...0x66: return b - 0x61 + 10  // a-f
+        default: return nil
+        }
+    }
+
+    private func serveFile(path: String, st: stat) -> HTTP.Response {
         let size = Int(st.st_size)
 
-        // Security: don't serve files larger than maxFileSize
+        // Security: don't serve files larger than maxFileSize.
         guard size <= maxFileSize else {
             return errorResponse(.payloadTooLarge, "File too large")
         }
 
-        // Read file into buffer
-        var bytes = [UInt8](repeating: 0, count: size)
-        let n = bytes.withUnsafeMutableBufferPointer { ptr in
-            Glibc.read(fd, ptr.baseAddress, size)
+        // Open and read. Use the canonical path (already verified).
+        let fd = Glibc.open(path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else {
+            return errorResponse(.notFound, "Not Found")
         }
-        guard n == size else {
+        defer { _ = Glibc.close(fd) }
+
+        // Read file into buffer. Loop for special files (/proc, etc.)
+        // that may return fewer bytes than st_size in one read.
+        var bytes = [UInt8](repeating: 0, count: size)
+        var bytesRead = 0
+        while bytesRead < size {
+            let n = bytes.withUnsafeMutableBufferPointer { ptr in
+                Glibc.read(fd, ptr.baseAddress!.advanced(by: bytesRead), size - bytesRead)
+            }
+            if n <= 0 { break }
+            bytesRead += n
+        }
+        guard bytesRead == size else {
             return errorResponse(.internalServerError, "read failed")
         }
 
-        // Build response headers
+        // Build response headers.
         var headers = HeaderMap()
         headers.insert(.contentType, MimeType.for(path))
         headers.insert(.contentLength, String(size))
 
-        // ETag from mtime + size
+        // ETag from mtime + size.
         let etag = "\"\(st.st_mtim.tv_sec)-\(size)\""
         headers.insert(.etag, etag)
 
