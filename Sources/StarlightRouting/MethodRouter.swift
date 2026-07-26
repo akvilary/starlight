@@ -90,6 +90,48 @@ public struct MethodRouter<S: Sendable>: Sendable {
         }
     }
 
+    /// Merge another MethodRouter into this one. Each method slot is
+    /// filled from whichever router has a handler. Panics if both
+    /// have a handler for the same method (duplicate registration),
+    /// or if the result has both `any` and per-method handlers
+    /// (the per-method handler would be unreachable dead code).
+    public func merge(_ other: MethodRouter<S>) -> MethodRouter<S> {
+        mutate { dst in
+            func slot(_ existing: HandlerEndpoint?, _ incoming: HandlerEndpoint?, _ name: String) -> HandlerEndpoint? {
+                if let incoming {
+                    precondition(existing == nil,
+                        "MethodRouter.merge: duplicate \(name) — already registered for this path")
+                    return incoming
+                }
+                return existing
+            }
+            dst.get     = slot(dst.get, other.get, "GET")
+            dst.put     = slot(dst.put, other.put, "PUT")
+            dst.post    = slot(dst.post, other.post, "POST")
+            dst.delete  = slot(dst.delete, other.delete, "DELETE")
+            dst.head    = slot(dst.head, other.head, "HEAD")
+            dst.options = slot(dst.options, other.options, "OPTIONS")
+            dst.patch   = slot(dst.patch, other.patch, "PATCH")
+            dst.trace   = slot(dst.trace, other.trace, "TRACE")
+            dst.any     = slot(dst.any, other.any, "ANY")
+            dst.fallback = slot(dst.fallback, other.fallback, "fallback")
+
+            // Reject any + per-method coexistence — per-method handlers
+            // would be dead code (dispatch always returns `any` first).
+            if dst.any != nil {
+                let perMethod: [HandlerEndpoint?] = [
+                    dst.get, dst.put, dst.post, dst.delete,
+                    dst.head, dst.options, dst.patch, dst.trace,
+                ]
+                if perMethod.contains(where: { $0 != nil }) {
+                    preconditionFailure(
+                        "MethodRouter.merge: 'any' handler cannot coexist with per-method handlers (dead code)"
+                    )
+                }
+            }
+        }
+    }
+
     @usableFromInline
     internal func mutate(_ body: (inout Self) -> Void) -> Self {
         var copy = self

@@ -70,14 +70,27 @@ public struct Router<S: Sendable>: Sendable {
     // ── Builder methods ────────────────────────────────────────────
 
     /// Register a `MethodRouter<S>` for a path pattern.
+    ///
+    /// If a route for the same path pattern already exists, the two
+    /// MethodRouters are merged (per-method slots combined). Panics
+    /// if both have a handler for the same method, or if the merge
+    /// would produce an `any` + per-method conflict.
     public func route(_ pattern: String, _ methodRouter: MethodRouter<S>) -> Router<S> {
         let compiled = PathPattern(pattern)
         var statics = staticRoutes
         var dynamics = dynamicRoutes
         if compiled.isAllStatic {
-            statics.append((compiled, methodRouter))
+            if let idx = statics.firstIndex(where: { $0.0.raw == compiled.raw }) {
+                statics[idx].1 = statics[idx].1.merge(methodRouter)
+            } else {
+                statics.append((compiled, methodRouter))
+            }
         } else {
-            dynamics.append((compiled, methodRouter))
+            if let idx = dynamics.firstIndex(where: { $0.0.raw == compiled.raw }) {
+                dynamics[idx].1 = dynamics[idx].1.merge(methodRouter)
+            } else {
+                dynamics.append((compiled, methodRouter))
+            }
         }
         return Router<S>(
             state: state,

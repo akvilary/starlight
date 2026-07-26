@@ -33,6 +33,11 @@ fileprivate func call(_ router: Router<NoState>, path: String) async throws -> S
     } else { "" }
 }
 
+fileprivate func call(_ router: Router<NoState>, method: Method, path: String) async throws -> HTTP.Response {
+    let req = HTTP.Request(method: method, uri: Uri(path))
+    return try await router.call(req)
+}
+
 /// Atomic counter — Sendable, safe to mutate from concurrent code.
 fileprivate final class Counter: @unchecked Sendable {
     private let value = Atomic<Int>(0)
@@ -158,5 +163,36 @@ struct LayerTests {
         // impl is "apply to current routes", /public is wrapped but
         // /secret (added after) is not.
         #expect(counter.load() == 1)
+    }
+
+    // MARK: - Route merging (A5)
+
+    @Test("Same path different methods merge correctly")
+    func samePathDifferentMethods() async throws {
+        let router = Router(state: NoState())
+            .get("/users") { _ in .plain("GET users") }
+            .post("/users") { _ in .plain("POST users") }
+
+        let getResp = try await call(router, method: .GET, path: "/users")
+        #expect(getResp.status == .ok)
+
+        let postResp = try await call(router, method: .POST, path: "/users")
+        #expect(postResp.status == .ok)
+
+        // PUT has no handler → 405.
+        let putResp = try await call(router, method: .PUT, path: "/users")
+        #expect(putResp.status == .methodNotAllowed)
+    }
+
+    @Test("Three methods on same path all work")
+    func threeMethodsSamePath() async throws {
+        let router = Router(state: NoState())
+            .get("/x") { _ in .plain("ok") }
+            .post("/x") { _ in .plain("ok") }
+            .delete("/x") { _ in .plain("ok") }
+
+        #expect(try await call(router, method: .GET, path: "/x").status == .ok)
+        #expect(try await call(router, method: .POST, path: "/x").status == .ok)
+        #expect(try await call(router, method: Method.DELETE, path: "/x").status == .ok)
     }
 }
