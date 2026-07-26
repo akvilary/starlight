@@ -82,7 +82,15 @@ public struct CompressionLayer: Sendable {
         #if canImport(Glibc)
         // Compress using zlib gzip.
         let inputLen = bytes.count
-        let outputLen = inputLen + 64  // zlib needs some extra space
+        // Output buffer size: zlib's deflateBound formula for gzip
+        // format with default parameters (windowBits=31, memLevel=8).
+        // Matches zlib source: sourceLen + (sourceLen >> 12) +
+        // (sourceLen >> 14) + (sourceLen >> 25) + 25.
+        // The old `inputLen + 64` was insufficient for large
+        // incompressible inputs (e.g. 1MB → Z_BUF_ERROR → silent
+        // fallback to uncompressed).
+        let outputLen = inputLen + (inputLen >> 12) + (inputLen >> 14)
+                      + (inputLen >> 25) + 25
         var output = [UInt8](repeating: 0, count: outputLen)
 
         let compressed = bytes.withUnsafeBufferPointer { inputPtr in
