@@ -96,6 +96,10 @@ let package = Package(
         // Token/Interest/Ready/Event/Events/Waker). Swift port of
         // Rust's mio. https://github.com/akvilary/mio
         .package(url: "https://github.com/akvilary/mio.git", from: "0.2.0"),
+        // pulsar — epoll event loop bridge for Swift Concurrency.
+        // SerialExecutor + TaskExecutor on top of mio.
+        // https://github.com/akvilary/pulsar
+        .package(url: "https://github.com/akvilary/pulsar.git", from: "0.1.0"),
         // http — pure HTTP message types (Request/Response/Method/
         // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
         // Rust `http` crate. https://github.com/akvilary/http
@@ -116,16 +120,17 @@ let package = Package(
             linkerSettings: [.linkedLibrary("z")]  // zlib for gzip compression
         ),
 
-        // ── StarlightPoll — tokio::runtime analog. ────────────────
+        // ── StarlightPoll — re-export wrapper for Pulsar. ───────────
         //
-        // High-level Swift Concurrency event loop driven by mio's
-        // `Poll`. Provides SerialExecutor + TaskExecutor + async
-        // read/write API. The reactor on top of which all higher
-        // layers are built. Depends on StarlightCore for
-        // `PaddedAtomicInt64` (cross-loop stats counters).
+        // Pulsar is the epoll event loop bridge (SerialExecutor +
+        // TaskExecutor). StarlightPoll is now a thin re-export module
+        // so existing `import StarlightPoll` continues to work.
+        // The actual implementation lives in the pulsar package.
         .target(
             name: "StarlightPoll",
-            dependencies: pollDependencies,
+            dependencies: [
+                .product(name: "Pulsar", package: "pulsar"),
+            ],
             path: "Sources/StarlightPoll",
             swiftSettings: baseSwiftSettings
         ),
@@ -251,12 +256,6 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
         .testTarget(
-            name: "StarlightPollTests",
-            dependencies: ["StarlightPoll"],
-            path: "Tests/StarlightPollTests",
-            swiftSettings: baseSwiftSettings
-        ),
-        .testTarget(
             name: "StarlightRoutingTests",
             dependencies: [
                 "StarlightRouting",
@@ -312,26 +311,6 @@ var baseSwiftSettings: [SwiftSetting] {
 }
 
 // ── Platform-conditional dependencies ────────────────────────────────────
-//
-// StarlightPoll wraps the mio package. On non-Linux platforms the mio
-// module compiles to an empty shell (its sources are all #if os(Linux)),
-// so the dependency remains declared but produces no symbols.
-
-#if os(Linux)
-var pollDependencies: [Target.Dependency] {
-    [
-        "StarlightCore",
-        .product(name: "MIO", package: "mio"),
-    ]
-}
-#else
-var pollDependencies: [Target.Dependency] {
-    [
-        "StarlightCore",
-        .product(name: "MIO", package: "mio"),
-    ]
-}
-#endif
 
 #if os(Linux)
 var serverDependencies: [Target.Dependency] {
