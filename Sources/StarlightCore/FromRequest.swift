@@ -32,7 +32,7 @@
 
 import Foundation
 import HTTP
-import StarlightTower
+import Pylon
 
 /// Thrown by extractors on a 4xx rejection. Carries the `Response`
 /// that should be returned to the client.

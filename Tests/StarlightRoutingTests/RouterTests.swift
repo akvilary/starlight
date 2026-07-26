@@ -15,7 +15,7 @@ import Synchronization
 import StarlightCore
 import StarlightExtractors
 import StarlightRouting
-import StarlightTower
+import Pylon
 @testable import StarlightRouting
 
 // MARK: - Test helpers

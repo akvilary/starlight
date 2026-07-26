@@ -13,7 +13,7 @@
 import Foundation
 import HTTP
 import StarlightCore
-import StarlightTower
+import Pylon
 
 /// CORS configuration — direct port of `tower_http::cors::CorsLayer`.
 public struct CorsConfig: Sendable {

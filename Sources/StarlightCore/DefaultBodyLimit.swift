@@ -13,7 +13,7 @@
 
 import Foundation
 import HTTP
-import StarlightTower
+import Pylon
 
 /// Maximum request body size, set via a Layer and read from
 /// `Request.extensions` by body-consuming extractors.

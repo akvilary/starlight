@@ -23,7 +23,7 @@ import Synchronization
 import HTTP
 import Hyper
 import Pulsar
-import StarlightTower
+import Pylon
 import Synchronization
 
 /// Bind N worker actors to `(host, port)` and serve `service` on

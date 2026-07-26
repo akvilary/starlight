@@ -18,7 +18,7 @@ import CLinuxExt
 
 import Foundation
 import HTTP
-import StarlightTower
+import Pylon
 
 /// MIME type detection from file extension.
 public enum MimeType {

@@ -12,7 +12,7 @@ import StarlightCore
 import StarlightExtractors
 import StarlightRouting
 import StarlightServer
-import StarlightTower
+import Pylon
 
 @Suite("TestClient")
 struct TestClientTests {

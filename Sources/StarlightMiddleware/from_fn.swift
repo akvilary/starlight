@@ -14,7 +14,7 @@
 import Foundation
 import StarlightCore
 import HTTP
-import StarlightTower
+import Pylon
 
 /// The function shape `from_fn` accepts.
 ///

@@ -18,7 +18,7 @@
 
 import Foundation
 import HTTP
-import StarlightTower
+import Pylon
 
 /// In-process test client. Calls a Service<Request> directly,
 /// without TCP. Direct port of `axum::test::TestClient`.

@@ -19,7 +19,7 @@
 import Foundation
 import StarlightCore
 import HTTP
-import StarlightTower
+import Pylon
 
 /// Per-method handler dispatch for a single path.
 ///

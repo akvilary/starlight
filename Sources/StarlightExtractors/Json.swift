@@ -10,7 +10,7 @@
 import Foundation
 import StarlightCore
 import HTTP
-import StarlightTower
+import Pylon
 
 /// Extractor for a JSON request body, plus a response wrapper.
 ///
