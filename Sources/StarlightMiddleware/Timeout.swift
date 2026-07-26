@@ -39,21 +39,45 @@ public struct TimeoutLayer: Sendable {
                 let method = request.method
                 let path = request.uri.pathString
 
+                // Race: handler vs timer.
+                //
+                // The handler task catches errors internally and maps
+                // them to a 500 Response. This ensures that nil from
+                // group.next() means ONLY "timeout" — not a collapsed
+                // handler error (the original bug with `try?`).
+                //
+                // withTaskGroup waits for both tasks to finish after
+                // cancelAll(). For async handlers this is microseconds
+                // (Task.sleep and await points respect cancellation).
+                // For CPU-bound handlers without await points, the
+                // group hangs — this is a general Swift Concurrency
+                // limitation, not specific to this middleware.
                 let result = await withTaskGroup(
                     of: HTTP.Response?.self,
                     returning: HTTP.Response?.self
                 ) { group in
-                    // Race: handler vs timeout
-                    group.addTask {
-                        try? await inner.call(request)
+                    group.addTask { () -> HTTP.Response? in
+                        do {
+                            return try await inner.call(request)
+                        } catch {
+                            var h = HeaderMap()
+                            h.insert(.contentType, "text/plain; charset=utf-8")
+                            let msg = "Internal Server Error"
+                            h.insert(.contentLength, String(msg.utf8.count))
+                            return HTTP.Response(
+                                status: .internalServerError,
+                                headers: h,
+                                body: .buffered(Array(msg.utf8))
+                            )
+                        }
                     }
                     group.addTask {
                         try? await Task.sleep(for: timeout)
                         return nil  // timeout fired
                     }
-                    let first = await group.next()
+                    let first = await group.next() ?? nil
                     group.cancelAll()
-                    return first ?? nil
+                    return first
                 }
 
                 guard let response = result else {

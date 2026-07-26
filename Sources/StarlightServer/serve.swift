@@ -148,23 +148,31 @@ public func serve<S: Service>(
         await worker.initiateShutdown()
     }
 
-    // Drain with timeout. Each worker's waitForDrain resumes when its
-    // inFlightConns hits 0; the timeout enforces a wall-clock cap.
+    // Drain all workers in parallel, with a global wall-clock cap.
+    //
+    // A timer Task sleeps for drainTimeout; if it fires before the
+    // drain completes, it force-shuts-down every worker's event loop.
+    // The cascade (loop exit → recoverOrphanedContinuations → conn
+    // close → inFlightConns → 0 → drainContinuation.resume) causes
+    // waitForDrain to return for each worker.
+    //
+    // If the drain completes naturally first, the timer is cancelled.
+    // After cancellation, `try?` swallows the CancellationError and
+    // execution continues to forceShutdown — which is always called
+    // regardless (matching the previous code's unconditional
+    // forceShutdown after drain).
+    let timer = Task {
+        try? await Task.sleep(for: drainTimeout)
+        for worker in workers { worker.forceShutdown() }
+    }
+
     await withTaskGroup(of: Void.self) { g in
         for worker in workers {
-            g.addTask {
-                await withTimeout(drainTimeout) {
-                    await worker.waitForDrain()
-                }
-            }
+            g.addTask { await worker.waitForDrain() }
         }
     }
 
-    // Force-close any workers that didn't drain in time. This sets
-    // eventLoop.stopped = true → run() exits → thread exits.
-    for worker in workers {
-        worker.forceShutdown()
-    }
+    timer.cancel()
 }
 
 // MARK: - Worker stash (cross-thread hand-off)
@@ -222,24 +230,3 @@ fileprivate func starlightBindWorkerListener(host: String, port: Int) throws -> 
 }
 
 fileprivate enum StarlightServer {}
-
-// MARK: - withTimeout helper (Void variant)
-
-/// Run `operation`, racing it against a sleep. If the sleep fires
-/// first, the operation is cancelled (its continuation stays parked
-/// forever — we don't actually need to resume it; the caller moves on).
-@inline(__always)
-fileprivate func withTimeout(
-    _ timeout: Duration,
-    _ operation: @escaping @Sendable () async -> Void
-) async {
-    await withTaskGroup(of: Void.self) { g in
-        g.addTask { await operation() }
-        g.addTask {
-            try? await Task.sleep(for: timeout)
-        }
-        // Wait for whichever fires first, then cancel the other.
-        _ = await g.next()
-        g.cancelAll()
-    }
-}
