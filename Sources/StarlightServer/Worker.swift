@@ -143,8 +143,14 @@ public actor Worker {
         if isShuttingDown { return }
         while true {
             let fd = sl_accept4(listenerFd)
-            if fd < 0 { break }  // EAGAIN — drained
-            acceptConnection(fd: fd)
+            if fd >= 0 {
+                acceptConnection(fd: fd)
+                continue
+            }
+            // fd < 0: sl_accept4 returns -errno on failure.
+            let err = -fd
+            if err == EINTR { continue }  // signal — retry
+            break  // EAGAIN/EWOULDBLOCK (drained) or other error
         }
     }
 
@@ -371,7 +377,13 @@ public actor Worker {
         _ = writeAll(fd: fd, buffer: writeBuffer)
     }
 
-    /// Sync `write(2)` loop that handles partial writes.
+    /// Sync `write(2)` loop that handles partial writes, EINTR, and
+    /// EAGAIN. On EAGAIN (non-blocking socket buffer full), blocks via
+    /// `poll(POLLOUT)` until the socket becomes writable (up to 5 s).
+    ///
+    /// Returns total bytes written. If less than `buffer.count`, the
+    /// write was truncated (timeout, EPIPE, or other error) and the
+    /// caller should close the connection.
     @inline(__always)
     private nonisolated static func writeAll(fd: CInt, buffer: [UInt8]) -> Int {
         #if canImport(Glibc)
@@ -382,9 +394,26 @@ public actor Worker {
                 let n = Glibc.write(
                     fd, ptr.baseAddress!.advanced(by: offset), remaining
                 )
-                if n <= 0 { break }
-                remaining -= n
-                offset += n
+                if n > 0 {
+                    remaining -= n
+                    offset += n
+                    continue
+                }
+                if n == 0 { break }  // shouldn't happen on socket
+                // n == -1: check errno
+                if errno == EINTR { continue }  // signal — retry
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    // Non-blocking socket buffer full. Wait for
+                    // writability, then retry. 5 s timeout matches
+                    // typical read timeouts.
+                    var pfd = pollfd(fd: fd, events: 0x004, revents: 0)  // POLLOUT
+                    let pr = Glibc.poll(&pfd, 1, 5000)
+                    if pr > 0 && (pfd.revents & 0x004) != 0 {
+                        continue  // writable → retry write
+                    }
+                    break  // timeout or POLLERR/POLLHUP
+                }
+                break  // EPIPE, EBADF, etc.
             }
             return offset
         }
@@ -422,20 +451,22 @@ public actor Worker {
                 if n <= 0 {
                     return 0  // error
                 }
-                // Partial write — fall back to individual writes for
-                // the remaining bytes. Rare for small responses.
+                // Partial write — fall back to writeAll for the
+                // remaining bytes. writeAll handles EINTR/EAGAIN.
+                // Rare for small responses.
                 var written = n
-                var headerConsumed = min(n, hPtr.count)
+                let headerConsumed = min(n, hPtr.count)
                 let bodyConsumed = max(0, n - hPtr.count)
-                if headerConsumed < hPtr.count {
-                    let remaining = hPtr.count - headerConsumed
-                    let w = Glibc.write(fd, hPtr.baseAddress!.advanced(by: headerConsumed), remaining)
-                    written += max(0, w)
+                if headerConsumed < header.count {
+                    let rem = Array(header[headerConsumed..<header.count])
+                    let w = writeAll(fd: fd, buffer: rem)
+                    written += w
+                    if w < rem.count { return written }  // truncated
                 }
-                if bodyConsumed < bPtr.count {
-                    let remaining = bPtr.count - bodyConsumed
-                    let w = Glibc.write(fd, bPtr.baseAddress!.advanced(by: bodyConsumed), remaining)
-                    written += max(0, w)
+                if bodyConsumed < body.count {
+                    let rem = Array(body[bodyConsumed..<body.count])
+                    let w = writeAll(fd: fd, buffer: rem)
+                    written += w
                 }
                 return written
             }

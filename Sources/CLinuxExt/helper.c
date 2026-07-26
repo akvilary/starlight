@@ -28,7 +28,8 @@
 #include <fcntl.h>
 
 int sl_accept4(int fd) {
-    return accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    int accepted = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    return accepted < 0 ? -errno : accepted;
 }
 
 void sl_pin_to_cpu(int cpu) {
