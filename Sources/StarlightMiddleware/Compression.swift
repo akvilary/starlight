@@ -112,7 +112,7 @@ public struct CompressionLayer: Sendable {
         var headers = response.headers
         headers.insert(.contentEncoding, "gzip")
         headers.insert(.contentLength, String(compressed))
-        headers.insert(.vary, "Accept-Encoding")
+        headers.append(.vary, "Accept-Encoding")
 
         return HTTP.Response(
             status: response.status,
