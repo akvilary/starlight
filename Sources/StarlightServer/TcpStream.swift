@@ -14,7 +14,7 @@ import Glibc
 
 import Foundation
 import HTTP
-import StarlightPoll
+import Pulsar
 
 /// An async TCP stream — the connection side of a `TcpListener::accept`.
 ///

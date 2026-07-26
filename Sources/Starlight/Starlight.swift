@@ -14,7 +14,7 @@ import Foundation
 @_exported import StarlightExtractors
 @_exported import HTTP
 @_exported import StarlightMiddleware
-@_exported import StarlightPoll
+@_exported import Pulsar
 @_exported import StarlightRouting
 @_exported import StarlightServer
 @_exported import StarlightTower

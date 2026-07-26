@@ -15,7 +15,7 @@ import CLinuxExt
 
 import Foundation
 import HTTP
-import StarlightPoll
+import Pulsar
 
 /// A TCP listener bound to a `(host, port)`.
 ///

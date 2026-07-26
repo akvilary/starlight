@@ -7,7 +7,7 @@
 //    ┌──────────────────────┬─────────────────────────────────────┐
 //    │ Swift module         │ Rust analogue                       │
 //    ├──────────────────────┼─────────────────────────────────────┤
-//    │ StarlightPoll        │ tokio::runtime (reactor) — wraps    │
+//    │ Pulsar               │ tokio::runtime (reactor) — wraps    │
 //    │                      │ the mio package (epoll primitives)  │
 //    │ StarlightTower       │ tower::{Service, Layer}             │
 //    │ StarlightHTTP        │ http + hyper types (Request,        │
@@ -85,9 +85,6 @@ let package = Package(
         // axum::middleware + tower-http analogue.
         .library(name: "StarlightMiddleware", targets: ["StarlightMiddleware"]),
 
-        // tokio::runtime analogue (epoll reactor on top of mio).
-        .library(name: "StarlightPoll", targets: ["StarlightPoll"]),
-
         // Hello-world example executable (smoke test for the server).
         .executable(name: "hello-world", targets: ["HelloWorld"]),
     ],
@@ -118,21 +115,6 @@ let package = Package(
             path: "Sources/CLinuxExt",
             publicHeadersPath: "include",
             linkerSettings: [.linkedLibrary("z")]  // zlib for gzip compression
-        ),
-
-        // ── StarlightPoll — re-export wrapper for Pulsar. ───────────
-        //
-        // Pulsar is the epoll event loop bridge (SerialExecutor +
-        // TaskExecutor). StarlightPoll is now a thin re-export module
-        // so existing `import StarlightPoll` continues to work.
-        // The actual implementation lives in the pulsar package.
-        .target(
-            name: "StarlightPoll",
-            dependencies: [
-                .product(name: "Pulsar", package: "pulsar"),
-            ],
-            path: "Sources/StarlightPoll",
-            swiftSettings: baseSwiftSettings
         ),
 
         // ── StarlightTower — tower::{Service, Layer} analog. ──────
@@ -236,7 +218,7 @@ let package = Package(
                 "StarlightRouting",
                 "StarlightExtractors",
                 "StarlightMiddleware",
-                "StarlightPoll",
+                .product(name: "Pulsar", package: "pulsar"),
             ],
             path: "Sources/Starlight",
             swiftSettings: baseSwiftSettings
@@ -317,7 +299,7 @@ var serverDependencies: [Target.Dependency] {
     [
         .product(name: "HTTP", package: "http"),
         .product(name: "Hyper", package: "hyper"),
-        "StarlightPoll",
+        .product(name: "Pulsar", package: "pulsar"),
         "CLinuxExt",
     ]
 }
@@ -326,7 +308,7 @@ var serverDependencies: [Target.Dependency] {
     [
         .product(name: "HTTP", package: "http"),
         .product(name: "Hyper", package: "hyper"),
-        "StarlightPoll",
+        .product(name: "Pulsar", package: "pulsar"),
     ]
 }
 #endif

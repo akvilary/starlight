@@ -22,7 +22,7 @@ import Foundation
 import Synchronization
 import HTTP
 import Hyper
-import StarlightPoll
+import Pulsar
 import StarlightTower
 import Synchronization
 
