@@ -11,6 +11,7 @@
 
 #if canImport(Glibc)
 import Glibc
+import CLinuxExt
 #endif
 
 import Foundation
@@ -21,20 +22,22 @@ import Synchronization
 /// handler, which is lock-free and signal-safe on all our targets.
 private let shutdownFlag = Atomic<Bool>(false)
 
-#if canImport(Glibc)
-@_cdecl("starlight_signal_handler")
-private func starlightSignalHandler(_ signal: Int32) {
-    shutdownFlag.store(true, ordering: .releasing)
-}
-#endif
-
 /// Install SIGINT + SIGTERM handlers that flip the shutdown flag.
+/// Uses `sigaction` with `SA_RESTART` (via C wrapper) so that
+/// interrupted syscalls are automatically restarted by the kernel.
+/// Also unblocks the signals in case the parent process blocked them.
+///
 /// Safe to call multiple times — subsequent installs replace prior
 /// handlers.
 public func installShutdownSignalHandlers() {
     #if canImport(Glibc)
-    signal(SIGINT, starlightSignalHandler)
-    signal(SIGTERM, starlightSignalHandler)
+    // The handler closure is a C function pointer (@convention(c)).
+    // It accesses only the module-level `shutdownFlag` global — no
+    // captures, which is required for @convention(c) closures.
+    let handler: @convention(c) (Int32) -> Void = { _ in
+        shutdownFlag.store(true, ordering: .releasing)
+    }
+    sl_install_shutdown_handlers(handler)
     #endif
 }
 

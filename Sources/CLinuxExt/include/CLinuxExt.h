@@ -42,6 +42,11 @@ long sl_sendfile(int out_fd, int in_fd, long offset, long count);
 long sl_gzip_compress(const unsigned char *input, long input_len,
                       unsigned char *output, long output_len, int level);
 
+/// Install SIGINT + SIGTERM handlers via sigaction with SA_RESTART,
+/// and unblock the signals in case the parent process (e.g. systemd)
+/// blocked them. `handler` is called when the signal is delivered.
+void sl_install_shutdown_handlers(void (*handler)(int));
+
 #ifdef __cplusplus
 }
 #endif

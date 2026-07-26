@@ -22,6 +22,8 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <signal.h>
+#include <pthread.h>
 #include <sys/sendfile.h>
 #include <zlib.h>
 #include <sys/stat.h>
@@ -130,6 +132,28 @@ long sl_gzip_compress(const unsigned char *input, long input_len,
 
     if (ret != Z_STREAM_END) return -1;
     return total;
+}
+
+// ─── Signal handling ────────────────────────────────────────────────
+
+void sl_install_shutdown_handlers(void (*handler)(int)) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handler;
+    sa.sa_flags = SA_RESTART;  // auto-restart interrupted syscalls
+    sigemptyset(&sa.sa_mask);  // don't block extra signals during handler
+
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    // Unblock SIGINT/SIGTERM in case the parent process (e.g. systemd)
+    // blocked them in the process signal mask. Without this, the handler
+    // never fires and the server can't shut down gracefully.
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTERM);
+    pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 #endif /* __linux__ */
