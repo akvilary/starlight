@@ -131,7 +131,7 @@ internal struct PathKeyedContainer<K: CodingKey>: KeyedDecodingContainerProtocol
     // ── KeyedDecodingContainerProtocol ───────────────────────────
     public var allKeys: [K] { entries.compactMap { K(stringValue: $0.0) } }
     public func contains(_ key: K) -> Bool { entries.contains { $0.0 == key.stringValue } }
-    public func decodeNil(forKey key: K) -> Bool { false }
+    public func decodeNil(forKey key: K) -> Bool { !contains(key) }
 
     public func decode(_ type: String.Type, forKey key: K) throws -> String {
         for (n, v) in entries where n == key.stringValue { return v }
