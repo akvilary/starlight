@@ -300,6 +300,18 @@ public actor Worker {
                     return
                 }
                 guard case .complete(var request) = parseResult else {
+                    // Body not yet complete. If the client sent
+                    // `Expect: 100-continue`, send the interim
+                    // 100 Continue response so the client proceeds
+                    // with the body (RFC 9110 §10.1.1).
+                    if conn.decoder.pendingContinue {
+                        conn.decoder.clearPendingContinue()
+                        writeBuffer.removeAll(keepingCapacity: true)
+                        writeBuffer.append(contentsOf: Array(
+                            "HTTP/1.1 100 Continue\r\n\r\n".utf8
+                        ))
+                        _ = writeAll(fd: fd, buffer: writeBuffer)
+                    }
                     break reqLoop
                 }
 
