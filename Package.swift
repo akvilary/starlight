@@ -20,7 +20,7 @@
 //    │                      │ MethodRouter, Route, Fallback)      │
 //    │ StarlightExtractors  │ axum::extract (State, Path, Query,  │
 //    │                      │ Json, Form, Bytes, …)               │
-//    │ Lens                 │ axum::middleware + tower-http       │
+//    │ HTTPLens             │ axum::middleware + tower-http       │
 //    │                      │ (from_fn, Compression, …)           │
 //    │ Starlight            │ axum umbrella + serve()             │
 //    │ CLinuxExt            │ libc wrappers (accept4,             │
@@ -95,9 +95,9 @@ let package = Package(
         // prism — Service and Layer abstractions (port of tower).
         // https://github.com/akvilary/prism
         .package(url: "https://github.com/akvilary/prism.git", from: "0.1.0"),
-        // lens — HTTP middleware (port of tower-http).
-        // https://github.com/akvilary/lens
-        .package(url: "https://github.com/akvilary/lens.git", from: "0.1.0"),
+        // http-lens — HTTP middleware (port of tower-http).
+        // https://github.com/akvilary/http-lens
+        .package(url: "https://github.com/akvilary/http-lens.git", from: "0.1.0"),
         // http — pure HTTP message types (Request/Response/Method/
         // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
         // Rust `http` crate. https://github.com/akvilary/http
@@ -188,7 +188,7 @@ let package = Package(
                 "StarlightServer",
                 "StarlightRouting",
                 "StarlightExtractors",
-                .product(name: "Lens", package: "lens"),
+                .product(name: "HTTPLens", package: "http-lens"),
                 .product(name: "Pulsar", package: "pulsar"),
             ],
             path: "Sources/Starlight",
@@ -208,7 +208,7 @@ let package = Package(
                 "StarlightRouting",
                 "StarlightCore",
                 "StarlightExtractors",
-                .product(name: "Lens", package: "lens"),
+                .product(name: "HTTPLens", package: "http-lens"),
                 .product(name: "Prism", package: "prism"),
                 .product(name: "HTTP", package: "http"),
             ],
@@ -236,7 +236,7 @@ let package = Package(
             dependencies: [
                 "Starlight",
                 "StarlightServer",
-                .product(name: "Lens", package: "lens"),
+                .product(name: "HTTPLens", package: "http-lens"),
                 .product(name: "HTTP", package: "http"),
                 .product(name: "Hyper", package: "hyper"),
             ],

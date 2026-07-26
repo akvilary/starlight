@@ -14,7 +14,7 @@ import Synchronization
 import StarlightCore
 import StarlightExtractors
 import StarlightRouting
-import Lens
+import HTTPLens
 import Prism
 
 fileprivate func fixed(_ s: String) -> HandlerEndpoint {

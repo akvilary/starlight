@@ -26,7 +26,7 @@ import Glibc
 import Foundation
 import Starlight
 import StarlightServer
-import Lens
+import HTTPLens
 import Prism
 import HTTP
 import Hyper
