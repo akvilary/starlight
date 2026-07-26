@@ -127,25 +127,24 @@ public final class PollEventLoop: @unchecked Sendable {
     // User hook invoked from the loop thread after the waker fires.
     public var onWakeup: (@Sendable () -> Void)?
 
-    // Cached UnownedSerialExecutor (created on first access).
-    private var _cachedExecutor: UnownedSerialExecutor? = nil
+    // UnownedSerialExecutor / UnownedTaskExecutor handles.
+    //
+    // These are @frozen structs wrapping a single pointer to `self`.
+    // Creating one is a single store instruction (~1ns, stack-allocated,
+    // zero heap allocation, no ARC operation). Caching them in a `var`
+    // would require synchronization (check-then-set race); the struct
+    // is so cheap to create that caching is unnecessary.
+    //
+    // The Swift runtime identifies executors via
+    // isSameExclusiveExecutionContext (which uses `self === other`),
+    // NOT via struct identity — so fresh structs wrapping the same
+    // PollEventLoop are interchangeable.
     public var cachedExecutor: UnownedSerialExecutor {
-        if let ce = _cachedExecutor { return ce }
-        let ce = UnownedSerialExecutor(ordinary: self)
-        _cachedExecutor = ce
-        return ce
+        UnownedSerialExecutor(ordinary: self)
     }
 
-    // Cached UnownedTaskExecutor (created on first access).
-    // Used by `Task(executorPreference: loop)` — the runtime fetches
-    // this once per Task spawn, so caching avoids a fresh
-    // `UnownedTaskExecutor` struct allocation on each enqueue.
-    private var _cachedTaskExecutor: UnownedTaskExecutor? = nil
     public var cachedTaskExecutor: UnownedTaskExecutor {
-        if let te = _cachedTaskExecutor { return te }
-        let te = UnownedTaskExecutor(ordinary: self)
-        _cachedTaskExecutor = te
-        return te
+        UnownedTaskExecutor(ordinary: self)
     }
 
     // MARK: Init
