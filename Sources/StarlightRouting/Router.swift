@@ -15,7 +15,7 @@
 import Foundation
 import StarlightCore
 import HTTP
-import Prism
+import HTTPPrism
 
 /// The axum `Router<S>` port.
 ///

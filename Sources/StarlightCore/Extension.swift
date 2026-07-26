@@ -14,7 +14,7 @@
 
 import Foundation
 import HTTP
-import Prism
+import HTTPPrism
 
 /// Extractor and layer for sharing state via request extensions.
 ///

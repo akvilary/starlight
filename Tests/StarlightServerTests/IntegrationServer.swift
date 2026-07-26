@@ -24,7 +24,7 @@ import Glibc
 
 import Foundation
 import HTTP
-import Hyper
+import HTTPCodec
 import StarlightServer
 import Synchronization
 

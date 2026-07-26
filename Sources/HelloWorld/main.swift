@@ -27,9 +27,9 @@ import Foundation
 import Starlight
 import StarlightServer
 import HTTPLens
-import Prism
+import HTTPPrism
 import HTTP
-import Hyper
+import HTTPCodec
 
 // MARK: - SSE chunk source
 

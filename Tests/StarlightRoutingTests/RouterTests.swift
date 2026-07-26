@@ -15,7 +15,7 @@ import Synchronization
 import StarlightCore
 import StarlightExtractors
 import StarlightRouting
-import Prism
+import HTTPPrism
 @testable import StarlightRouting
 
 // MARK: - Test helpers

@@ -42,10 +42,10 @@ import CLinuxExt
 
 import Foundation
 import HTTP
-import Hyper
+import HTTPCodec
 import Pulsar
 import StarlightExtractors   // ConnectInfo
-import Prism
+import HTTPPrism
 
 /// Per-connection state. Owned by the per-conn Task frame.
 struct ConnState: Sendable {

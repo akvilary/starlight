@@ -23,7 +23,7 @@
 
 import Foundation
 import HTTP
-import Prism
+import HTTPPrism
 
 /// The function-like thing a route handler is.
 ///

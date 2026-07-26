@@ -17,7 +17,7 @@ import Foundation
 @_exported import Pulsar
 @_exported import StarlightRouting
 @_exported import StarlightServer
-@_exported import Prism
+@_exported import HTTPPrism
 
 #if canImport(Glibc)
 import CLinuxExt

@@ -21,9 +21,9 @@ import CLinuxExt
 import Foundation
 import Synchronization
 import HTTP
-import Hyper
+import HTTPCodec
 import Pulsar
-import Prism
+import HTTPPrism
 import Synchronization
 
 /// Bind N worker actors to `(host, port)` and serve `service` on

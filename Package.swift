@@ -9,7 +9,7 @@
 //    ├──────────────────────┼─────────────────────────────────────┤
 //    │ Pulsar               │ tokio::runtime (reactor) — wraps    │
 //    │                      │ the mio package (epoll primitives)  │
-//    │ Prism                │ tower::{Service, Layer}             │
+//    │ HTTPPrism            │ tower::{Service, Layer}             │
 //    │ StarlightHTTP        │ http + hyper types (Request,        │
 //    │                      │ Response, HeaderMap, Method, …)     │
 //    │ StarlightServer      │ hyper::server + tokio::net          │
@@ -93,8 +93,8 @@ let package = Package(
         // https://github.com/akvilary/pulsar
         .package(url: "https://github.com/akvilary/pulsar.git", from: "0.1.0"),
         // prism — Service and Layer abstractions (port of tower).
-        // https://github.com/akvilary/prism
-        .package(url: "https://github.com/akvilary/prism.git", from: "0.1.0"),
+        // https://github.com/akvilary/http-prism
+        .package(url: "https://github.com/akvilary/http-prism.git", from: "0.1.0"),
         // http-lens — HTTP middleware (port of tower-http).
         // https://github.com/akvilary/http-lens
         .package(url: "https://github.com/akvilary/http-lens.git", from: "0.1.0"),
@@ -104,8 +104,8 @@ let package = Package(
         .package(path: "../http"),
         // hyper — HTTP/1.1 codec + connection driver (Conn/Decoder/
         // Dispatcher/Encoder). Swift port of the Rust `hyper` crate.
-        // https://github.com/akvilary/hyper
-        .package(path: "../hyper"),
+        // https://github.com/akvilary/http-codec
+        .package(url: "https://github.com/akvilary/http-codec.git", from: "0.1.0"),
     ],
     targets: [
         // ── C wrappers for GNU-extension syscalls (accept4,
@@ -138,7 +138,7 @@ let package = Package(
             name: "StarlightCore",
             dependencies: [
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Prism", package: "prism"),
+                .product(name: "HTTPPrism", package: "http-prism"),
             ],
             path: "Sources/StarlightCore",
             swiftSettings: baseSwiftSettings
@@ -154,7 +154,7 @@ let package = Package(
             dependencies: [
                 "StarlightCore",
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Prism", package: "prism"),
+                .product(name: "HTTPPrism", package: "http-prism"),
             ],
             path: "Sources/StarlightRouting",
             swiftSettings: baseSwiftSettings
@@ -183,8 +183,8 @@ let package = Package(
             dependencies: [
                 "StarlightCore",
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Hyper", package: "hyper"),
-                .product(name: "Prism", package: "prism"),
+                .product(name: "HTTPCodec", package: "http-codec"),
+                .product(name: "HTTPPrism", package: "http-prism"),
                 "StarlightServer",
                 "StarlightRouting",
                 "StarlightExtractors",
@@ -209,7 +209,7 @@ let package = Package(
                 "StarlightCore",
                 "StarlightExtractors",
                 .product(name: "HTTPLens", package: "http-lens"),
-                .product(name: "Prism", package: "prism"),
+                .product(name: "HTTPPrism", package: "http-prism"),
                 .product(name: "HTTP", package: "http"),
             ],
             path: "Tests/StarlightRoutingTests",
@@ -224,7 +224,7 @@ let package = Package(
                 "StarlightRouting",
                 "StarlightExtractors",
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Hyper", package: "hyper"),
+                .product(name: "HTTPCodec", package: "http-codec"),
             ],
             path: "Tests/StarlightServerTests",
             swiftSettings: baseSwiftSettings
@@ -238,7 +238,7 @@ let package = Package(
                 "StarlightServer",
                 .product(name: "HTTPLens", package: "http-lens"),
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Hyper", package: "hyper"),
+                .product(name: "HTTPCodec", package: "http-codec"),
             ],
             path: "Sources/HelloWorld",
             swiftSettings: baseSwiftSettings
@@ -263,7 +263,7 @@ var baseSwiftSettings: [SwiftSetting] {
 var serverDependencies: [Target.Dependency] {
     [
         .product(name: "HTTP", package: "http"),
-        .product(name: "Hyper", package: "hyper"),
+        .product(name: "HTTPCodec", package: "http-codec"),
         .product(name: "Pulsar", package: "pulsar"),
         "CLinuxExt",
     ]
@@ -272,7 +272,7 @@ var serverDependencies: [Target.Dependency] {
 var serverDependencies: [Target.Dependency] {
     [
         .product(name: "HTTP", package: "http"),
-        .product(name: "Hyper", package: "hyper"),
+        .product(name: "HTTPCodec", package: "http-codec"),
         .product(name: "Pulsar", package: "pulsar"),
     ]
 }

@@ -17,7 +17,7 @@
 
 import Foundation
 import HTTP
-import Prism
+import HTTPPrism
 
 /// Errors surfaced by the handler dispatcher when extraction fails.
 ///

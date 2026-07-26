@@ -12,7 +12,7 @@ import StarlightCore
 import StarlightExtractors
 import StarlightRouting
 import StarlightServer
-import Prism
+import HTTPPrism
 
 @Suite("TestClient")
 struct TestClientTests {

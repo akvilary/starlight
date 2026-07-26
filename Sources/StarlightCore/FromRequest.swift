@@ -32,7 +32,7 @@
 
 import Foundation
 import HTTP
-import Prism
+import HTTPPrism
 
 /// Thrown by extractors on a 4xx rejection. Carries the `Response`
 /// that should be returned to the client.
