@@ -80,35 +80,65 @@ struct MiddlewareTests {
 
     // MARK: - CorsLayer
 
-    @Test("CorsLayer intercepts OPTIONS when wrapping the Router")
+    @Test("CORS preflight (OPTIONS + Origin + ACRM)")
     func corsPreflight() async throws {
-        // Apply CORS by wrapping the whole Router — not via Router.layer().
-        // This way CORS sees OPTIONS before the Router's method dispatch
-        // (which would return 405 for unregistered methods).
         let router = Router(state: NoState())
             .get("/api", fixed("data"))
         let service = CorsLayer().asLayer().layer(BoxService(router))
 
         var headers = HeaderMap()
         headers.insert(.origin, "https://example.com")
+        headers.insert(.accessControlRequestMethod, "DELETE")
         let req = HTTP.Request(
             method: .OPTIONS, uri: Uri("/api"), headers: headers
         )
         let response = try await service.call(req)
-        #expect(response.status == StatusCode.noContent)
+        #expect(response.status == .noContent)
         #expect(response.headers.first(for: .accessControlAllowOrigin) != nil)
     }
 
-    @Test("CorsLayer adds headers to normal responses")
-    func corsNormalResponse() async throws {
+    @Test("Non-preflight OPTIONS forwarded to handler")
+    func corsNonPreflightOptions() async throws {
+        let router = Router(state: NoState())
+            .get("/api", fixed("data"))
+        let service = CorsLayer().asLayer().layer(BoxService(router))
+
+        // OPTIONS with Origin but NO Access-Control-Request-Method →
+        // not a preflight → forwarded to Router → 405 (no OPTIONS handler).
+        var headers = HeaderMap()
+        headers.insert(.origin, "https://example.com")
+        let req = HTTP.Request(method: .OPTIONS, uri: Uri("/api"), headers: headers)
+        let response = try await service.call(req)
+        // NOT 204 (preflight) — proves the request reached the Router.
+        #expect(response.status != .noContent)
+    }
+
+    @Test("Vary: Origin on normal response")
+    func corsVaryOrigin() async throws {
         let router = Router(state: NoState())
             .get("/api", fixed("data"))
         let service = CorsLayer().asLayer().layer(BoxService(router))
 
         let req = HTTP.Request(method: .GET, uri: Uri("/api"))
         let response = try await service.call(req)
-        #expect(response.status == StatusCode.ok)
-        #expect(response.headers.first(for: .accessControlAllowOrigin)?.description == "*")
+        let vary = response.headers.first(for: .vary)?.description ?? ""
+        #expect(vary.contains("Origin"))
+    }
+
+    @Test("CORS preflight rejects disallowed origin")
+    func corsPreflightDisallowed() async throws {
+        let config = CorsConfig(allowedOrigins: ["https://good.com"])
+        let router = Router(state: NoState())
+            .get("/api", fixed("data"))
+        let service = CorsLayer(config: config).asLayer().layer(BoxService(router))
+
+        var headers = HeaderMap()
+        headers.insert(.origin, "https://evil.com")
+        headers.insert(.accessControlRequestMethod, "DELETE")
+        let req = HTTP.Request(method: .OPTIONS, uri: Uri("/api"), headers: headers)
+        let response = try await service.call(req)
+        #expect(response.status == .forbidden)
+        #expect(response.headers.first(for: .accessControlAllowMethods) == nil)
     }
 
     @Test("CorsLayer restricts origins when configured")
