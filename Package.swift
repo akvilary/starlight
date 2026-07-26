@@ -101,7 +101,7 @@ let package = Package(
         // http — pure HTTP message types (Request/Response/Method/
         // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
         // Rust `http` crate. https://github.com/akvilary/http
-        .package(path: "../http"),
+        .package(url: "https://github.com/akvilary/http.git", from: "0.1.0"),
         // hyper — HTTP/1.1 codec + connection driver (Conn/Decoder/
         // Dispatcher/Encoder). Swift port of the Rust `hyper` crate.
         // https://github.com/akvilary/http-codec
