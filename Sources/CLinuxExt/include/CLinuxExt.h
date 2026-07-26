@@ -37,11 +37,6 @@ int sl_bind_listener(const char *host, int port);
 /// Returns bytes sent, or -1 on error.
 long sl_sendfile(int out_fd, int in_fd, long offset, long count);
 
-/// Compress data using gzip (zlib). Returns compressed size, or -1 on error.
-/// `output` must be at least `input_len + 64` bytes.
-long sl_gzip_compress(const unsigned char *input, long input_len,
-                      unsigned char *output, long output_len, int level);
-
 /// Install SIGINT + SIGTERM handlers via sigaction with SA_RESTART,
 /// and unblock the signals in case the parent process (e.g. systemd)
 /// blocked them. `handler` is called when the signal is delivered.

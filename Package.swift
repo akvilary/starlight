@@ -20,7 +20,7 @@
 //    │                      │ MethodRouter, Route, Fallback)      │
 //    │ StarlightExtractors  │ axum::extract (State, Path, Query,  │
 //    │                      │ Json, Form, Bytes, …)               │
-//    │ StarlightMiddleware  │ axum::middleware + tower-http       │
+//    │ Lens                 │ axum::middleware + tower-http       │
 //    │                      │ (from_fn, Compression, …)           │
 //    │ Starlight            │ axum umbrella + serve()             │
 //    │ CLinuxExt            │ libc wrappers (accept4,             │
@@ -79,8 +79,6 @@ let package = Package(
         // axum::extract analogue.
         .library(name: "StarlightExtractors", targets: ["StarlightExtractors"]),
 
-        // axum::middleware + tower-http analogue.
-        .library(name: "StarlightMiddleware", targets: ["StarlightMiddleware"]),
 
         // Hello-world example executable (smoke test for the server).
         .executable(name: "hello-world", targets: ["HelloWorld"]),
@@ -97,6 +95,9 @@ let package = Package(
         // prism — Service and Layer abstractions (port of tower).
         // https://github.com/akvilary/prism
         .package(url: "https://github.com/akvilary/prism.git", from: "0.1.0"),
+        // lens — HTTP middleware (port of tower-http).
+        // https://github.com/akvilary/lens
+        .package(url: "https://github.com/akvilary/lens.git", from: "0.1.0"),
         // http — pure HTTP message types (Request/Response/Method/
         // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
         // Rust `http` crate. https://github.com/akvilary/http
@@ -113,8 +114,7 @@ let package = Package(
         .target(
             name: "CLinuxExt",
             path: "Sources/CLinuxExt",
-            publicHeadersPath: "include",
-            linkerSettings: [.linkedLibrary("z")]  // zlib for gzip compression
+            publicHeadersPath: "include"
         ),
 
         // ── StarlightServer — hyper::server + tokio::net analog. ──
@@ -174,23 +174,6 @@ let package = Package(
             swiftSettings: baseSwiftSettings
         ),
 
-        // ── StarlightMiddleware — axum::middleware + tower-http. ──
-        //
-        // `from_fn` style middleware builder, plus common middleware
-        // (compression, trace, auth, CORS). All built as `Layer`s.
-        .target(
-            name: "StarlightMiddleware",
-            dependencies: [
-                "StarlightCore",
-                "StarlightExtractors",
-                "CLinuxExt",
-                .product(name: "HTTP", package: "http"),
-                .product(name: "Prism", package: "prism"),
-            ],
-            path: "Sources/StarlightMiddleware",
-            swiftSettings: baseSwiftSettings
-        ),
-
         // ── Starlight — public umbrella. ──────────────────────────
         //
         // Re-exports every submodule and provides `serve(router:)`
@@ -205,7 +188,7 @@ let package = Package(
                 "StarlightServer",
                 "StarlightRouting",
                 "StarlightExtractors",
-                "StarlightMiddleware",
+                .product(name: "Lens", package: "lens"),
                 .product(name: "Pulsar", package: "pulsar"),
             ],
             path: "Sources/Starlight",
@@ -225,7 +208,7 @@ let package = Package(
                 "StarlightRouting",
                 "StarlightCore",
                 "StarlightExtractors",
-                "StarlightMiddleware",
+                .product(name: "Lens", package: "lens"),
                 .product(name: "Prism", package: "prism"),
                 .product(name: "HTTP", package: "http"),
             ],
@@ -253,7 +236,7 @@ let package = Package(
             dependencies: [
                 "Starlight",
                 "StarlightServer",
-                "StarlightMiddleware",
+                .product(name: "Lens", package: "lens"),
                 .product(name: "HTTP", package: "http"),
                 .product(name: "Hyper", package: "hyper"),
             ],
