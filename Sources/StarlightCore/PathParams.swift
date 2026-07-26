@@ -41,9 +41,9 @@ public struct PathParams: Sendable {
     }
 
     /// Decode into a concrete `Decodable` type — used by the
-    /// `Path<T>` extractor.
+    /// `Path<T>` extractor. Delegates to `StringKeyedDecoder`.
     public func decode<T: Decodable>(_ type: T.Type = T.self) throws -> T {
-        try PathParamsDecoder.decode(entries, into: T.self)
+        try StringKeyedDecoder.decode(entries, into: T.self)
     }
 
     @inlinable public var count: Int { entries.count }
@@ -72,20 +72,31 @@ public struct MatchedPathParams: Hashable, Sendable {
     }
 }
 
-/// Tiny ad-hoc decoder for `Path<T>` / `Query<T>` — supports struct
-/// cases with primitive `Decodable` fields. A full CodingKeys-
-/// robust implementation lives in StarlightExtractors (built on
-/// `JSONSerialization`).
-@usableFromInline
-internal enum PathParamsDecoder {
-    static func decode<T: Decodable>(_ entries: [(String, String)], into type: T.Type) throws -> T {
-        let decoder = PathKeyedDecoder(entries: entries)
+/// Decodes `[(String, String)]` key-value pairs into a `Decodable` type.
+///
+/// Used by `Path<T>`, `Query<T>`, and `Form<T>` extractors — anything
+/// that has flat key-value string pairs and needs to decode them into a
+/// struct of primitives (Int, Double, Bool, String, etc.).
+///
+/// Coerces strings to numbers via `Int(String)`, `Double(String)`, etc.
+/// — unlike `JSONDecoder`, which rejects JSON strings where numbers are
+/// expected.
+public enum StringKeyedDecoder {
+    /// Decode `entries` into `T`. Throws `DecodingError` on missing keys
+    /// (for non-optional fields) or type mismatches.
+    public static func decode<T: Decodable>(
+        _ entries: [(String, String)],
+        into type: T.Type = T.self
+    ) throws -> T {
+        let decoder = _StringKeyedDecoderImpl(entries: entries)
         return try T(from: decoder)
     }
 }
 
+// MARK: - Internal implementation
+
 @usableFromInline
-internal struct PathKeyedDecoder: Decoder {
+internal struct _StringKeyedDecoderImpl: Decoder {
     @usableFromInline internal let entries: [(String, String)]
 
     @inlinable init(entries: [(String, String)]) { self.entries = entries }
@@ -95,7 +106,7 @@ internal struct PathKeyedDecoder: Decoder {
 
     public func container<Key>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key>
     where Key: CodingKey {
-        KeyedDecodingContainer(PathKeyedContainer(entries: entries, codingPath: []))
+        KeyedDecodingContainer(_StringKeyedContainer(entries: entries, codingPath: []))
     }
     public func unkeyedContainer() throws -> UnkeyedDecodingContainer {
         throw DecodingError.typeMismatch(Any.self, .init(codingPath: [], debugDescription: "unkeyed not supported"))
@@ -106,7 +117,7 @@ internal struct PathKeyedDecoder: Decoder {
 }
 
 @usableFromInline
-internal struct PathKeyedContainer<K: CodingKey>: KeyedDecodingContainerProtocol, Decoder {
+internal struct _StringKeyedContainer<K: CodingKey>: KeyedDecodingContainerProtocol, Decoder {
     @usableFromInline internal let entries: [(String, String)]
     @usableFromInline internal let codingPath: [CodingKey]
 
@@ -119,7 +130,7 @@ internal struct PathKeyedContainer<K: CodingKey>: KeyedDecodingContainerProtocol
     public var userInfo: [CodingUserInfoKey: Any] { [:] }
     public func container<NestedKey>(keyedBy type: NestedKey.Type) throws
         -> KeyedDecodingContainer<NestedKey> where NestedKey: CodingKey {
-        KeyedDecodingContainer(PathKeyedContainer<NestedKey>(entries: entries, codingPath: codingPath))
+        KeyedDecodingContainer(_StringKeyedContainer<NestedKey>(entries: entries, codingPath: codingPath))
     }
     public func unkeyedContainer() throws -> UnkeyedDecodingContainer {
         throw DecodingError.typeMismatch(Any.self, .init(codingPath: codingPath, debugDescription: "unkeyed not supported"))

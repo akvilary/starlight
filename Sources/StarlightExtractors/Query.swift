@@ -27,17 +27,19 @@ extension Query: FromRequestParts {
         _ parts: inout RequestParts,
         state: borrowing AnySendable
     ) async throws -> Query<T> {
-        guard let bytes = parts.uri.queryBytes, !bytes.isEmpty else {
-            throw ExtractionRejection("missing query string", status: .badRequest)
-        }
-        var dict: [String: String] = [:]
+        // Parse query string into [(String, String)] entries.
+        // Empty query → empty entries → optional fields decode as nil.
+        let rawBytes = parts.uri.queryBytes ?? []
+        var entries: [(String, String)] = []
         var key: [UInt8] = []
         var val: [UInt8] = []
         var inValue = false
-        for b in bytes {
+        for b in rawBytes {
             switch b {
             case 0x26:  // '&'
-                dict[Self.decode(key)] = Self.decode(val)
+                if !key.isEmpty {
+                    entries.append((Self.decode(key), Self.decode(val)))
+                }
                 key.removeAll(keepingCapacity: true)
                 val.removeAll(keepingCapacity: true)
                 inValue = false
@@ -47,19 +49,23 @@ extension Query: FromRequestParts {
                 if inValue { val.append(b) } else { key.append(b) }
             }
         }
-        if !key.isEmpty || !val.isEmpty {
-            dict[Self.decode(key)] = Self.decode(val)
+        if !key.isEmpty {
+            entries.append((Self.decode(key), Self.decode(val)))
         }
 
+        // Decode via StringKeyedDecoder — coerces String→Int/Double/Bool,
+        // handles Optional fields via decodeNil. Same decoder used by
+        // Path<T>, ensuring consistent decoding semantics.
         do {
-            let data = try JSONSerialization.data(withJSONObject: dict)
-            let decoded = try JSONDecoder().decode(T.self, from: data)
+            let decoded = try StringKeyedDecoder.decode(entries, into: T.self)
             return Query(decoded)
         } catch {
             throw ExtractionRejection("query decode failed: \(error)", status: .badRequest)
         }
     }
 
+    /// URL-decode a query key or value. Per application/x-www-form-urlencoded
+    /// (RFC 1866 §8.2.1): `+` → space, `%XX` → byte.
     @inline(__always)
     private static func decode(_ bytes: [UInt8]) -> String {
         var out: [UInt8] = []
@@ -67,7 +73,7 @@ extension Query: FromRequestParts {
         var i = 0
         while i < bytes.count {
             let b = bytes[i]
-            if b == 0x2B {  // '+' → space
+            if b == 0x2B {  // '+' → space (query-string convention)
                 out.append(0x20)
             } else if b == 0x25, i + 2 < bytes.count {  // '%XX'
                 if let hi = Self.hexDigit(bytes[i + 1]),
