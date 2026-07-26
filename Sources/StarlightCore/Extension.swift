@@ -14,7 +14,7 @@
 
 import Foundation
 import HTTP
-import Pylon
+import Prism
 
 /// Extractor and layer for sharing state via request extensions.
 ///

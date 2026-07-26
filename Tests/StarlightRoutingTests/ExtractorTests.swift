@@ -14,7 +14,7 @@ import Synchronization
 import StarlightCore
 import StarlightExtractors
 import StarlightRouting
-import Pylon
+import Prism
 
 @Suite("Phase 1.4 extractors")
 struct ExtractorTests {

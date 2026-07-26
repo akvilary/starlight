@@ -18,7 +18,7 @@ import CLinuxExt
 
 import Foundation
 import HTTP
-import Pylon
+import Prism
 
 /// MIME type detection from file extension.
 public enum MimeType {

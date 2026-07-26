@@ -18,7 +18,7 @@ import CLinuxExt
 import Foundation
 import HTTP
 import StarlightCore
-import Pylon
+import Prism
 
 /// Configuration for `CompressionLayer`.
 public struct CompressionConfig: Sendable {

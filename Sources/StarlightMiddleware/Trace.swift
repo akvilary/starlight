@@ -13,7 +13,7 @@
 import Foundation
 import HTTP
 import StarlightCore
-import Pylon
+import Prism
 
 /// Configuration for `TraceLayer`. Mirrors `tower_http::trace::TraceLayer`.
 ///

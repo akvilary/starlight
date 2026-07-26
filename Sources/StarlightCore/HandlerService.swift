@@ -17,7 +17,7 @@
 
 import Foundation
 import HTTP
-import Pylon
+import Prism
 
 /// Errors surfaced by the handler dispatcher when extraction fails.
 ///

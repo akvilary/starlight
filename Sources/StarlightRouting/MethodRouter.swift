@@ -19,7 +19,7 @@
 import Foundation
 import StarlightCore
 import HTTP
-import Pylon
+import Prism
 
 /// Per-method handler dispatch for a single path.
 ///

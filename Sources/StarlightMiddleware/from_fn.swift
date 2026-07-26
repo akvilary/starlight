@@ -14,7 +14,7 @@
 import Foundation
 import StarlightCore
 import HTTP
-import Pylon
+import Prism
 
 /// The function shape `from_fn` accepts.
 ///

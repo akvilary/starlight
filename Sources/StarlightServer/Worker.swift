@@ -45,7 +45,7 @@ import HTTP
 import Hyper
 import Pulsar
 import StarlightExtractors   // ConnectInfo
-import Pylon
+import Prism
 
 /// Per-connection state. Owned by the per-conn Task frame.
 struct ConnState: Sendable {

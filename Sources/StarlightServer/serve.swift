@@ -23,7 +23,7 @@ import Synchronization
 import HTTP
 import Hyper
 import Pulsar
-import Pylon
+import Prism
 import Synchronization
 
 /// Bind N worker actors to `(host, port)` and serve `service` on

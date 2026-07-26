@@ -15,7 +15,7 @@ import StarlightCore
 import StarlightExtractors
 import StarlightRouting
 import StarlightMiddleware
-import Pylon
+import Prism
 
 fileprivate func fixed(_ s: String) -> HandlerEndpoint {
     BoxService { _ in .plain(s) }

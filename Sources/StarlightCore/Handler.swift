@@ -23,7 +23,7 @@
 
 import Foundation
 import HTTP
-import Pylon
+import Prism
 
 /// The function-like thing a route handler is.
 ///

@@ -13,7 +13,7 @@
 import Foundation
 import HTTP
 import StarlightCore
-import Pylon
+import Prism
 
 /// Timeout middleware layer — direct port of `tower::timeout::Timeout`.
 ///

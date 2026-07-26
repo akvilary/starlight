@@ -12,7 +12,7 @@ import StarlightCore
 import StarlightExtractors
 import StarlightRouting
 import StarlightServer
-import Pylon
+import Prism
 
 @Suite("TestClient")
 struct TestClientTests {

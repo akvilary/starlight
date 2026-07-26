@@ -9,7 +9,7 @@
 //    ├──────────────────────┼─────────────────────────────────────┤
 //    │ Pulsar               │ tokio::runtime (reactor) — wraps    │
 //    │                      │ the mio package (epoll primitives)  │
-//    │ Pylon                │ tower::{Service, Layer}             │
+//    │ Prism                │ tower::{Service, Layer}             │
 //    │ StarlightHTTP        │ http + hyper types (Request,        │
 //    │                      │ Response, HeaderMap, Method, …)     │
 //    │ StarlightServer      │ hyper::server + tokio::net          │
@@ -94,9 +94,9 @@ let package = Package(
         // SerialExecutor + TaskExecutor on top of mio.
         // https://github.com/akvilary/pulsar
         .package(url: "https://github.com/akvilary/pulsar.git", from: "0.1.0"),
-        // pylon — Service and Layer abstractions (port of tower).
-        // https://github.com/akvilary/pylon
-        .package(url: "https://github.com/akvilary/pylon.git", from: "0.1.0"),
+        // prism — Service and Layer abstractions (port of tower).
+        // https://github.com/akvilary/prism
+        .package(url: "https://github.com/akvilary/prism.git", from: "0.1.0"),
         // http — pure HTTP message types (Request/Response/Method/
         // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
         // Rust `http` crate. https://github.com/akvilary/http
@@ -138,7 +138,7 @@ let package = Package(
             name: "StarlightCore",
             dependencies: [
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Pylon", package: "pylon"),
+                .product(name: "Prism", package: "prism"),
             ],
             path: "Sources/StarlightCore",
             swiftSettings: baseSwiftSettings
@@ -154,7 +154,7 @@ let package = Package(
             dependencies: [
                 "StarlightCore",
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Pylon", package: "pylon"),
+                .product(name: "Prism", package: "prism"),
             ],
             path: "Sources/StarlightRouting",
             swiftSettings: baseSwiftSettings
@@ -185,7 +185,7 @@ let package = Package(
                 "StarlightExtractors",
                 "CLinuxExt",
                 .product(name: "HTTP", package: "http"),
-                .product(name: "Pylon", package: "pylon"),
+                .product(name: "Prism", package: "prism"),
             ],
             path: "Sources/StarlightMiddleware",
             swiftSettings: baseSwiftSettings
@@ -201,7 +201,7 @@ let package = Package(
                 "StarlightCore",
                 .product(name: "HTTP", package: "http"),
                 .product(name: "Hyper", package: "hyper"),
-                .product(name: "Pylon", package: "pylon"),
+                .product(name: "Prism", package: "prism"),
                 "StarlightServer",
                 "StarlightRouting",
                 "StarlightExtractors",
@@ -226,7 +226,7 @@ let package = Package(
                 "StarlightCore",
                 "StarlightExtractors",
                 "StarlightMiddleware",
-                .product(name: "Pylon", package: "pylon"),
+                .product(name: "Prism", package: "prism"),
                 .product(name: "HTTP", package: "http"),
             ],
             path: "Tests/StarlightRoutingTests",

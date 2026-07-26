@@ -13,7 +13,7 @@
 
 import Foundation
 import HTTP
-import Pylon
+import Prism
 
 /// Maximum request body size, set via a Layer and read from
 /// `Request.extensions` by body-consuming extractors.

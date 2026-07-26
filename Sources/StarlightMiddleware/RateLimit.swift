@@ -15,7 +15,7 @@ import Synchronization
 import HTTP
 import StarlightCore
 import StarlightExtractors
-import Pylon
+import Prism
 
 /// Per-key request counter. Uses a fixed-window algorithm: each key
 /// (typically the client IP) gets `maxRequests` per `windowDuration`.
