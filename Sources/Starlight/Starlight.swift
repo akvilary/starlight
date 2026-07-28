@@ -38,7 +38,7 @@ import CLinuxExt
 ///     onShutdown: { await waitForShutdownSignal() }
 /// )
 /// ```
-public func serve<S: Service>(
+public func serve<S: HTTPService>(
     _ service: S,
     on host: String = "0.0.0.0",
     port: Int = 8080,
@@ -47,8 +47,7 @@ public func serve<S: Service>(
     onShutdown: @escaping @Sendable () async -> Void = {
         await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
     }
-) async throws where S.Request == HTTP.Request,
-                      S.Response == HTTP.Response {
+) async throws {
     try await StarlightServer.serve(
         host: host, port: port,
         service: service,

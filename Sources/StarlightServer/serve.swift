@@ -58,7 +58,7 @@ import Synchronization
 ///   • A monitor Task awaits `onShutdown`, then orchestrates the
 ///     drain across all workers.
 ///
-public func serve<S: Service>(
+public func serve<S: HTTPService>(
     host: String = "0.0.0.0",
     port: Int = 8080,
     service: S,
@@ -72,7 +72,7 @@ public func serve<S: Service>(
         installShutdownSignalHandlers()
         await waitForShutdownSignal()
     }
-) async throws where S.Request == Request, S.Response == Response {
+) async throws {
     // Wrap the user-provided Service in a BoxService so all worker
     // actors share the same type (no per-worker generics needed).
     let router = BoxService(service)

@@ -25,8 +25,7 @@ import HTTPPrism
 public final class TestClient: Sendable {
     public let service: BoxService<HTTP.Request, HTTP.Response>
 
-    @inlinable public init<S: Service>(_ service: S)
-    where S.Request == HTTP.Request, S.Response == HTTP.Response {
+    @inlinable public init<S: HTTPService>(_ service: S) {
         self.service = BoxService(service)
     }
 

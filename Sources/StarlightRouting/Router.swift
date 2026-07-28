@@ -405,7 +405,7 @@ public struct Router<S: Sendable>: Sendable {
 // `Router<S>` is `Service<HTTP.Request, Response = HTTP.Response>`
 // — this is the central contract that lets axum pass a `Router` to
 // `axum::serve`.
-extension Router: Service {
+extension Router: HTTPService {
     public typealias Request = HTTP.Request
     public typealias Response = HTTP.Response
 
