@@ -59,8 +59,7 @@ extension HandlerService0: Handler where S == NoState {}
 
 /// One-extractor handler — `(E0) -> IntoResponse`.
 public struct HandlerService1<E0, Fn, S, Out>: Sendable
-where E0: FromRequestParts, Fn: Sendable, S: Sendable, Out: IntoResponse,
-      E0.State == S {
+where E0: FromRequestParts, Fn: Sendable, S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, S) async throws -> Out
 
@@ -89,7 +88,7 @@ extension HandlerService1: Service {
 /// `E0` is `FromRequestParts`, `E1` may be `FromRequest` (body-consuming).
 public struct HandlerService2<E0, E1, Fn, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequest, Fn: Sendable, S: Sendable,
-      Out: IntoResponse, E0.State == S, E1.State == S {
+      Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, S) async throws -> Out
 
@@ -132,8 +131,7 @@ extension HandlerService2: Service {
 /// `E0`, `E1` are `FromRequestParts`; `E2` may be `FromRequest`.
 public struct HandlerService3<E0, E1, E2, Fn, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse,
-      E0.State == S, E1.State == S, E2.State == S {
+      Fn: Sendable, S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, S) async throws -> Out
 
@@ -184,8 +182,7 @@ extension HandlerService3: Service {
 /// `E0-E2` are `FromRequestParts`; `E3` may be `FromRequest`.
 public struct HandlerService4<E0, E1, E2, E3, Fn, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse,
-      E0.State == S, E1.State == S, E2.State == S, E3.State == S {
+      Fn: Sendable, S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, S) async throws -> Out
 
@@ -221,8 +218,7 @@ extension HandlerService4: Service {
 
 public struct HandlerService5<E0, E1, E2, E3, E4, Fn, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequestParts, E4: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse,
-      E0.State == S, E1.State == S, E2.State == S, E3.State == S, E4.State == S {
+      Fn: Sendable, S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, E4, S) async throws -> Out
 
@@ -260,8 +256,7 @@ extension HandlerService5: Service {
 
 public struct HandlerService6<E0, E1, E2, E3, E4, E5, Fn, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequestParts, E4: FromRequestParts, E5: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse,
-      E0.State == S, E1.State == S, E2.State == S, E3.State == S, E4.State == S, E5.State == S {
+      Fn: Sendable, S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, E4, E5, S) async throws -> Out
 

@@ -33,11 +33,10 @@ public struct Host: Hashable, Sendable, CustomStringConvertible {
 }
 
 extension Host: FromRequestParts {
-    public typealias State = AnySendable
 
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Host {
         // 1. Forwarded header (RFC 7239): "host=example.com; proto=https"
         if let forwarded = parts.headers.first(for: .forwarded)?.description {

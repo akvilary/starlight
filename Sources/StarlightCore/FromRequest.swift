@@ -84,19 +84,16 @@ public struct RequestParts: Sendable {
 ///
 /// Direct port of `axum_core::extract::FromRequestParts`. Implementations:
 /// `State<S>`, `Path<T>`, `Query<T>`, `HeaderMap`, `Method`, `Uri`,
-/// `Extensions`, `ConnectInfo<Addr>`, typed headers.
+/// `Extensions`, `ConnectInfo`, typed headers.
+///
+/// The `state` parameter is generic over `S: Sendable` — extractors
+/// that don't need state simply ignore it. This replaces axum's
+/// `associatedtype State` which forced every stateless extractor to
+/// commit to a single concrete `S` via `typealias State = ()`.
 public protocol FromRequestParts: Sendable {
-    /// The app state type. `AnySendable` for extractors that don't need state.
-    associatedtype State: Sendable
-
-    /// Extract from the request parts. Throws `ExtractionRejection`
-    /// on a 4xx rejection.
-    ///
-    /// The state is passed by `borrowing` — most state-less extractors
-    /// (Path, Query) ignore it; stateful ones (`State<S>`) only read it.
-    static func fromRequestParts(
+    static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing State
+        state: borrowing S
     ) async throws -> Self
 }
 
@@ -109,13 +106,9 @@ public protocol FromRequestParts: Sendable {
 /// argument of a handler; the body is moved out of the request when
 /// the extractor runs.
 public protocol FromRequest: Sendable {
-    associatedtype State: Sendable
-
-    /// Extract from the full request, consuming the body if needed.
-    /// Throws `ExtractionRejection` on a 4xx rejection.
-    static func fromRequest(
+    static func fromRequest<S: Sendable>(
         _ request: consuming Request,
-        state: borrowing State
+        state: borrowing S
     ) async throws -> Self
 }
 
@@ -123,12 +116,10 @@ public protocol FromRequest: Sendable {
 
 /// `Method` is an extractor — yields the request's method.
 extension Method: FromRequestParts {
-    public typealias State = AnySendable
-
     @inlinable
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Method {
         parts.method
     }
@@ -136,12 +127,10 @@ extension Method: FromRequestParts {
 
 /// `Uri` is an extractor — yields the request's URI.
 extension Uri: FromRequestParts {
-    public typealias State = AnySendable
-
     @inlinable
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Uri {
         parts.uri
     }
@@ -150,12 +139,10 @@ extension Uri: FromRequestParts {
 /// `HeaderMap` is an extractor — yields the request's headers
 /// (moved out of parts).
 extension HeaderMap: FromRequestParts {
-    public typealias State = AnySendable
-
     @inlinable
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> HeaderMap {
         parts.headers
     }
@@ -164,12 +151,10 @@ extension HeaderMap: FromRequestParts {
 /// `Body` is a body-consuming extractor — yields the request body
 /// (moved out of the request).
 extension Body: FromRequest {
-    public typealias State = AnySendable
-
     @inlinable
-    public static func fromRequest(
+    public static func fromRequest<S: Sendable>(
         _ request: consuming Request,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Body {
         request.body
     }
@@ -177,11 +162,9 @@ extension Body: FromRequest {
 
 /// `String` is a body-consuming extractor — UTF-8 decodes the body.
 extension String: FromRequest {
-    public typealias State = AnySendable
-
-    public static func fromRequest(
+    public static func fromRequest<S: Sendable>(
         _ request: consuming Request,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> String {
         let limit = DefaultBodyLimit.read(from: request.extensions)
         let bytes: [UInt8]
@@ -195,13 +178,4 @@ extension String: FromRequest {
         }
         return String(decoding: bytes, as: UTF8.self)
     }
-}
-
-// ── Placeholder state type ────────────────────────────────────────
-
-/// Placeholder type-erased state for stateless extractors.
-/// Real apps supply their own `State` type to `Router<AppState>`.
-@frozen
-public struct AnySendable: Sendable {
-    @inlinable public init() {}
 }

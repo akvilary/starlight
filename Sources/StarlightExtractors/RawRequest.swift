@@ -29,11 +29,10 @@ import StarlightCore
 public typealias RawRequest = Request
 
 extension Request: FromRequest {
-    public typealias State = AnySendable
 
-    public static func fromRequest(
+    public static func fromRequest<S: Sendable>(
         _ request: consuming Request,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Request {
         request
     }

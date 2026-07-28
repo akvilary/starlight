@@ -21,11 +21,10 @@ public struct Query<T: Decodable & Sendable>: Sendable {
 }
 
 extension Query: FromRequestParts {
-    public typealias State = AnySendable
 
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Query<T> {
         // Parse query string into [(String, String)] entries.
         // Empty query → empty entries → optional fields decode as nil.

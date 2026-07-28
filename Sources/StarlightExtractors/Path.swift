@@ -31,11 +31,10 @@ public struct Path<T: Decodable & Sendable>: Sendable {
 }
 
 extension Path: FromRequestParts {
-    public typealias State = AnySendable
 
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Path<T> {
         guard let matched = parts.extensions.get(MatchedPathParams.self) else {
             throw ExtractionRejection("missing matched path params", status: .internalServerError)

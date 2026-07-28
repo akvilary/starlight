@@ -36,11 +36,10 @@ public struct Form<T: Decodable & Sendable>: Sendable {
 }
 
 extension Form: FromRequest {
-    public typealias State = AnySendable
 
-    public static func fromRequest(
+    public static func fromRequest<S: Sendable>(
         _ request: consuming Request,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Form<T> {
         // Content-Type check — axum requires the exact media type.
         // We allow charset suffix (e.g. "application/x-www-form-urlencoded; charset=utf-8").

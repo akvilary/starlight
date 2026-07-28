@@ -32,11 +32,10 @@ public struct OriginalUri: Hashable, Sendable {
 }
 
 extension OriginalUri: FromRequestParts {
-    public typealias State = AnySendable
 
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> OriginalUri {
         // In our current implementation the URI is never modified
         // by middleware, so OriginalUri == parts.uri. But we still

@@ -25,7 +25,7 @@ import HTTPPrism
 /// ```swift
 /// struct Database: Hashable, Sendable { /* ... */ }
 ///
-/// let handler = HandlerService1(state: AnySendable()) { (_: Extension<Database>, _) in
+/// let handler = HandlerService1(state: NoState()) { (_: Extension<Database>, _) in
 ///     // use $0.value
 ///     return .plain("ok")
 /// }
@@ -63,11 +63,10 @@ public struct Extension<T: Hashable & Sendable>: Sendable {
 // MARK: - Extractor (FromRequestParts)
 
 extension Extension: FromRequestParts {
-    public typealias State = AnySendable
 
-    public static func fromRequestParts(
+    public static func fromRequestParts<S: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Extension<T> {
         guard let value = parts.extensions.get(T.self) else {
             throw ExtractionRejection(

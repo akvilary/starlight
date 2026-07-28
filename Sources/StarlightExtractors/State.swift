@@ -24,12 +24,20 @@ public struct State<S: Sendable>: Sendable {
 }
 
 extension State: FromRequestParts {
-    public typealias State = S
-
-    public static func fromRequestParts(
+    public static func fromRequestParts<AppState: Sendable>(
         _ parts: inout RequestParts,
-        state: borrowing S
-    ) async throws -> StarlightExtractors.State<S> {
-        StarlightExtractors.State(copy state)
+        state: borrowing AppState
+    ) async throws -> State<S> {
+        // The state passed by HandlerService is the Router's state
+        // type. If it matches our S, wrap it. If not, the handler
+        // was registered on a router with a different state type —
+        // a configuration error.
+        if let typed = copy state as? S {
+            return State(typed)
+        }
+        throw ExtractionRejection(
+            "State type mismatch: expected \(S.self)",
+            status: .internalServerError
+        )
     }
 }

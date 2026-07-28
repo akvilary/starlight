@@ -26,11 +26,10 @@ public struct Json<T: Sendable>: Sendable {
 }
 
 extension Json: FromRequest where T: Decodable {
-    public typealias State = AnySendable
 
-    public static func fromRequest(
+    public static func fromRequest<S: Sendable>(
         _ request: consuming Request,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Json<T> {
         // B2 FIX: Content-Type check BEFORE decode.
         // Missing/wrong Content-Type → 415 Unsupported Media Type.

@@ -36,7 +36,7 @@ struct CoreTests {
         var parts = RequestParts(
             Request(method: .POST, uri: Uri("/"))
         )
-        let method = try await Method.fromRequestParts(&parts, state: AnySendable())
+        let method = try await Method.fromRequestParts(&parts, state: NoState())
         #expect(method == .POST)
     }
 
@@ -47,7 +47,7 @@ struct CoreTests {
         var parts = RequestParts(
             Request(method: .GET, uri: Uri("/"), headers: headers)
         )
-        let extracted = try await HeaderMap.fromRequestParts(&parts, state: AnySendable())
+        let extracted = try await HeaderMap.fromRequestParts(&parts, state: NoState())
         #expect(extracted.first(for: .host)?.description == "example.com")
     }
 }

@@ -33,11 +33,10 @@ public struct Bytes: Sendable {
 }
 
 extension Bytes: FromRequest {
-    public typealias State = AnySendable
 
-    public static func fromRequest(
+    public static func fromRequest<S: Sendable>(
         _ request: consuming Request,
-        state: borrowing AnySendable
+        state: borrowing S
     ) async throws -> Bytes {
         let limit = DefaultBodyLimit.read(from: request.extensions)
         let bytes: [UInt8]

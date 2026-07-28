@@ -33,7 +33,7 @@ struct ExtractorTests {
             uri: Uri("/"),
             body: .buffered([0x68, 0x69])  // "hi"
         )
-        let bytes = try await Bytes.fromRequest(request, state: AnySendable())
+        let bytes = try await Bytes.fromRequest(request, state: NoState())
         #expect(String(decoding: bytes.value, as: UTF8.self) == "hi")
     }
 
@@ -68,7 +68,7 @@ struct ExtractorTests {
             let age: Int
         }
 
-        let form: Form<Login> = try await Form.fromRequest(request, state: AnySendable())
+        let form: Form<Login> = try await Form.fromRequest(request, state: NoState())
         #expect(form.value.name == "alice")
         #expect(form.value.age == 30)
     }
@@ -87,7 +87,7 @@ struct ExtractorTests {
         struct Login: Decodable, Sendable { let name: String }
 
         do {
-            _ = try await Form<Login>.fromRequest(request, state: AnySendable())
+            _ = try await Form<Login>.fromRequest(request, state: NoState())
             Issue.record("expected ExtractionRejection")
         } catch {
             // expected
@@ -113,7 +113,7 @@ struct ExtractorTests {
             let plus: String
         }
 
-        let f: Form<FormPayload> = try await Form<FormPayload>.fromRequest(request, state: AnySendable())
+        let f: Form<FormPayload> = try await Form<FormPayload>.fromRequest(request, state: NoState())
         #expect(f.value.name == "alice smith")
         #expect(f.value.greeting == "hello world")
         #expect(f.value.plus == "a+b")
@@ -132,7 +132,7 @@ struct ExtractorTests {
             extensions: extensions
         )
         var parts = RequestParts(req)
-        let info = try await ConnectInfo.fromRequestParts(&parts, state: AnySendable())
+        let info = try await ConnectInfo.fromRequestParts(&parts, state: NoState())
         #expect(info.peerAddress == "127.0.0.1:54321")
     }
 
@@ -142,7 +142,7 @@ struct ExtractorTests {
             HTTP.Request(method: .GET, uri: Uri("/"), body: .empty)
         )
         do {
-            _ = try await ConnectInfo.fromRequestParts(&parts, state: AnySendable())
+            _ = try await ConnectInfo.fromRequestParts(&parts, state: NoState())
             Issue.record("expected ExtractionRejection")
         } catch {
             // expected
@@ -167,7 +167,7 @@ struct ExtractorTests {
             method: .GET, uri: Uri("/"), body: .empty, extensions: extensions
         )
         var parts = RequestParts(req)
-        let ext: Extension<DB> = try await Extension<DB>.fromRequestParts(&parts, state: AnySendable())
+        let ext: Extension<DB> = try await Extension<DB>.fromRequestParts(&parts, state: NoState())
         #expect(ext.value.name == "prod")
     }
 
@@ -178,7 +178,7 @@ struct ExtractorTests {
             HTTP.Request(method: .GET, uri: Uri("/"), body: .empty)
         )
         do {
-            _ = try await Extension<Missing>.fromRequestParts(&parts, state: AnySendable())
+            _ = try await Extension<Missing>.fromRequestParts(&parts, state: NoState())
             Issue.record("expected ExtractionRejection")
         } catch {
             // expected
