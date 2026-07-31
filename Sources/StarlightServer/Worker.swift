@@ -298,6 +298,12 @@ public actor Worker {
             maxBodyBytes: 2 * 1024 * 1024,
             readTimeout: .seconds(30)
         )
+        // Per-EAGAIN-wait bound for response writes. Bounds a stalled
+        // reader (client that stops reading): each `awaitWritable` is
+        // failed after this, the write aborts, the connection closes.
+        // A slow-but-steady reader never stalls this long, so legit
+        // slow transfers are unaffected (only stalls are caught).
+        let writeTimeout: Duration = .seconds(30)
 
         // Per-conn encoder (response side) + write buffer — both
         // reused for every keep-alive request on this connection.
@@ -374,7 +380,7 @@ public actor Worker {
             switch encoded {
             case .noBody:
                 if !(await Self.writeAll(fd: fd, writeBuffer[...],
-                                          eventLoop: eventLoop, channelId: channelId)) {
+                                          eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                     return
                 }
             case .buffered:
@@ -395,26 +401,26 @@ public actor Worker {
                         let headerConsumed = min(done, headerCount)
                         if headerConsumed < headerCount,
                            !(await Self.writeAll(fd: fd, writeBuffer[headerConsumed...],
-                                                 eventLoop: eventLoop, channelId: channelId)) {
+                                                 eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                             return
                         }
                         let bodyConsumed = max(0, done &- headerCount)
                         if bodyConsumed < bodyBytes.count,
                            !(await Self.writeAll(fd: fd, bodyBytes[bodyConsumed...],
-                                                 eventLoop: eventLoop, channelId: channelId)) {
+                                                 eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                             return
                         }
                     }
                 } else {
                     if !(await Self.writeAll(fd: fd, writeBuffer[...],
-                                              eventLoop: eventLoop, channelId: channelId)) {
+                                              eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                         return
                     }
                 }
             case .stream:
                 // Write header, then stream chunks via chunked TE.
                 if !(await Self.writeAll(fd: fd, writeBuffer[...],
-                                          eventLoop: eventLoop, channelId: channelId)) {
+                                          eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                     return
                 }
                 do {
@@ -422,7 +428,7 @@ public actor Worker {
                         writeBuffer.removeAll(keepingCapacity: true)
                         encoder.encodeChunk(chunk, into: &writeBuffer)
                         if !(await Self.writeAll(fd: fd, writeBuffer[...],
-                                                  eventLoop: eventLoop, channelId: channelId)) {
+                                                  eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                             return
                         }
                     }
@@ -430,7 +436,7 @@ public actor Worker {
                 writeBuffer.removeAll(keepingCapacity: true)
                 encoder.encodeEndOfChunks(into: &writeBuffer)
                 if !(await Self.writeAll(fd: fd, writeBuffer[...],
-                                          eventLoop: eventLoop, channelId: channelId)) {
+                                          eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                     return
                 }
             }
@@ -528,8 +534,8 @@ public actor Worker {
     /// backpressure. Performs an optimistic `write(2)`; on `EAGAIN`
     /// arms `EPOLLOUT` via `eventLoop.awaitWritable` — suspending this
     /// Task so the loop can serve other connections — then retries.
-    /// Returns `true` iff every byte was written; `false` on error or
-    /// hangup (caller must close the connection).
+    /// Returns `true` iff every byte was written; `false` on error,
+    /// hangup, or write-stall timeout (caller must close the connection).
     ///
     /// `ArraySlice` shares its source's storage, so `buffer[range...]`
     /// allocates nothing, and ARC keeps it valid across the await (no
@@ -540,7 +546,8 @@ public actor Worker {
         fd: CInt,
         _ bytes: ArraySlice<UInt8>,
         eventLoop: PollEventLoop,
-        channelId: UInt32
+        channelId: UInt32,
+        writeTimeout: Duration
     ) async -> Bool {
         #if canImport(Glibc)
         var offset = 0
@@ -556,7 +563,13 @@ public actor Worker {
             if n == 0 { return false }
             if errno == EINTR { continue }
             if errno == EAGAIN || errno == EWOULDBLOCK {
-                if !(await eventLoop.awaitWritable(channelId: channelId, fd: fd)) {
+                // Per-EAGAIN-wait bound: a fresh absolute deadline per
+                // stall. Detects a reader that stopped reading; a
+                // slow-but-steady reader never blocks this long.
+                let deadline = ContinuousClock.now + writeTimeout
+                if !(await eventLoop.awaitWritable(
+                    channelId: channelId, fd: fd, deadline: deadline
+                )) {
                     return false
                 }
                 continue

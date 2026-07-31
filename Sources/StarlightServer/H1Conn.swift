@@ -179,6 +179,20 @@ public actor H1Conn {
     /// enforcement on streaming chunked bodies.
     var bodyBytesConsumed: Int = 0
 
+    /// Absolute deadline for the current read phase (header / body /
+    /// drain). Set at each phase entry; `readWithTimeout` passes it to
+    /// the event loop, whose timerfd sweep fails the read with `-2`
+    /// once it passes. Per-phase (not per-read) so a slow-drip client
+    /// (Slowloris) is bounded across the WHOLE phase, not just per
+    /// `read(2)`. `nil` would disable the bound; in practice it is
+    /// always set from `readTimeout`.
+    var readDeadline: ContinuousClock.Instant?
+    /// True once the body phase has started for the current generation
+    /// (first `nextBodyChunk`). Guards the lazy one-shot assignment of
+    /// the body deadline so each chunk doesn't reset it (which would
+    /// let a slow-drip evade the bound). Reset by `decodeHead`.
+    var bodyReadStarted: Bool = false
+
     enum State: Sendable {
         case readingHead
         case readingBody(remaining: Int)
@@ -226,6 +240,13 @@ public actor H1Conn {
     public func decodeHead() async throws -> DecodedHead? {
         try Task.checkCancellation()
 
+        // Header phase: a fresh deadline per request bounds the whole
+        // header parse (defends slow-drip Slowloris — a per-read bound
+        // would not, since each dripped byte arrives within the window).
+        // Also reset the body-phase marker for the new request.
+        readDeadline = ContinuousClock.now + readTimeout
+        bodyReadStarted = false
+
         while true {
             if let head = try parseHeadFromBuffer() {
                 return head
@@ -260,6 +281,15 @@ public actor H1Conn {
 
         if gen != generation {
             throw BodyError.connectionAdvanced
+        }
+
+        // Body phase starts here (lazily — excludes handler think-time
+        // before the first body read). A fresh deadline bounds the
+        // whole body read; set once per generation so a slow-drip body
+        // cannot evade it by resetting per chunk.
+        if !bodyReadStarted {
+            bodyReadStarted = true
+            readDeadline = ContinuousClock.now + readTimeout
         }
 
         // First body read on an Expect: 100-continue request sends
@@ -297,6 +327,12 @@ public actor H1Conn {
     /// request. Enforces `maxBodyBytes` — throws on overflow.
     public func drainBody() async throws {
         try Task.checkCancellation()
+
+        // Drain phase: its own fresh deadline (post-handler). Bounds
+        // the time spent discarding an unread body so a client that
+        // sends headers + slow-drip body, then never gets read by the
+        // handler, cannot hold the connection indefinitely.
+        readDeadline = ContinuousClock.now + readTimeout
 
         if pending100Continue {
             send100Continue()
@@ -771,25 +807,29 @@ public actor H1Conn {
 
     // MARK: - Buffer management
 
-    /// Read more bytes from the socket and append them to `buffer`.
-    /// Used by chunked / CL body chunk reads when the buffer is
-    /// exhausted mid-frame.
+    /// Read more bytes from the socket, bounded by the current phase
+    /// deadline (`readDeadline`). Returns `n > 0` bytes, `0` EOF,
+    /// `-1` I/O error, `-2` phase-deadline elapsed (timeout).
     ///
-    /// NOTE: read timeout (P0-5) is intentionally NOT implemented here
-    /// via `withTaskGroup` — spawning two child Tasks per `read` causes
-    /// a ~50% throughput collapse under keep-alive workloads (the
-    /// Swift Concurrency scheduler cannot keep up with N TaskGroups
-    /// per second, each spawning 2 children). The right home for read
-    /// timeouts is at the `PollEventLoop` layer (a per-channel timer
-    /// armed alongside the read interest), which will land in a
-    /// follow-up commit.
+    /// The deadline is per-phase (header / body / drain) and managed by
+    /// the caller (`decodeHead` / `nextBodyChunk` / `drainBody`), NOT
+    /// per-read — a per-read bound would let a slow-drip Slowloris evade
+    /// it (each dribbled byte arrives within the window). The event
+    /// loop's timerfd sweep enforces the absolute deadline while this
+    /// read is suspended awaiting readiness; the fast-fail below covers
+    /// an already-expired phase without suspending at all.
     @usableFromInline
     internal func readWithTimeout() async -> Int {
-        // Direct eventLoop.read — same fast path the legacy code used.
-        // The actor's executor (the eventLoop) and the driveConnection
-        // Task's executor are the same PollEventLoop, so this entire
-        // call executes inline with zero hop overhead.
-        await eventLoop.read(channelId: channelId, fd: fd)
+        // Pass the current phase's absolute deadline straight through.
+        // The event loop's timerfd sweep enforces it while this read is
+        // suspended; no per-read `now()` check here — that would cost a
+        // clock read per request for a condition (phase already expired
+        // while the loop was spinning) that the sweep already covers
+        // (the read is pending between dripped bytes, so a sweep tick
+        // lands during the pending window and fails it on the deadline).
+        await eventLoop.read(
+            channelId: channelId, fd: fd, deadline: readDeadline
+        )
     }
 
     /// Read more bytes, append to buffer, throw on EOF/error. Used by
