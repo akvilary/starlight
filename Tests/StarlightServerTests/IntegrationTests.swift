@@ -61,6 +61,7 @@ struct IntegrationTests {
             case .buffered(let b): bodySize = b.count
             case .empty: bodySize = 0
             case .stream: bodySize = -1
+            case .pull: bodySize = -1
             }
             return HTTP.Response.plain("got \(bodySize) bytes")
         }

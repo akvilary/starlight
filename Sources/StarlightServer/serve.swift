@@ -73,6 +73,24 @@ public func serve<S: HTTPService>(
         await waitForShutdownSignal()
     }
 ) async throws {
+    // ─── Ignore SIGPIPE globally ─────────────────────────────────
+    // `write(2)` to a socket whose peer has closed raises SIGPIPE,
+    // which by default kills the process. This is catastrophic for a
+    // long-running server: a single misbehaving client (or the
+    // natural end-of-connection churn) takes the whole server down.
+    //
+    // SIG_IGN makes `write(2)` return -1 with `errno == EPIPE`,
+    // which `Worker.writeAll` already handles correctly (breaks out
+    // of the write loop, the caller closes the fd). Standard practice
+    // for every production HTTP server (nginx, hyper, curl, …).
+    //
+    // Doing this here (not in the worker threads) so it applies to
+    // every thread in the process — `signal(3)` is process-wide on
+    // POSIX. Cheap: one syscall per `serve()` invocation.
+    #if canImport(Glibc)
+    signal(SIGPIPE, SIG_IGN)
+    #endif
+
     // Wrap the user-provided Service in a BoxService so all worker
     // actors share the same type (no per-worker generics needed).
     let router = BoxService(service)

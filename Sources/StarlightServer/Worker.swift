@@ -48,11 +48,13 @@ import StarlightExtractors   // ConnectInfo
 import HTTPPrism
 
 /// Per-connection state. Owned by the per-conn Task frame.
+///
+/// `H1Conn` (the actor that owns the parser + body state machine)
+/// is created by `driveConnection` from these primitives — it lives
+/// for the entire keep-alive lifetime of the TCP connection.
 struct ConnState: Sendable {
     let fd: CInt
     let channelId: UInt32
-    var decoder: H1Decoder
-    let encoder: H1Encoder
     /// Peer address string (e.g. "127.0.0.1:54321"). Obtained via
     /// getpeername(2) at accept time. Inserted into every request's
     /// extensions as `ConnectInfo` for extractors + RateLimitLayer.
@@ -168,8 +170,6 @@ public actor Worker {
         let conn = ConnState(
             fd: fd,
             channelId: channelId,
-            decoder: H1Decoder(),
-            encoder: H1Encoder(),
             peerAddress: peerAddress
         )
 
@@ -246,16 +246,43 @@ public actor Worker {
 
     /// Drive one connection through its lifetime. Non-isolated so it
     /// can run on the eventLoop Task without going through actor dispatch.
+    ///
+    /// Architecture (after P0-1 streaming fix):
+    ///
+    ///   1. `H1Conn` actor (pinned to the eventLoop via its
+    ///      `unownedExecutor`) owns the parser state machine and the
+    ///      persistent read buffer. `decodeHead` parses request
+    ///      headers only — body framing is recorded as
+    ///      `.readingBody(remaining)` / `.readingChunkedBody` state.
+    ///
+    ///   2. After head parsing, `driveConnection` wraps the body in
+    ///      `Body.pull { ... }` — a closure that captures `conn` plus
+    ///      the generation counter. The closure has zero
+    ///      `AsyncThrowingStream` overhead: `Body.collect(maxBytes:)`
+    ///      consumes it via a direct `while let chunk = try await next()`
+    ///      loop.
+    ///
+    ///   3. After the handler returns, any unread body bytes are
+    ///      drained via `conn.drainBody()` so the buffer is left
+    ///      positioned at the next pipelined request. `drainBody`
+    ///      also sends the interim `100 Continue` response if the
+    ///      handler didn't read the body and the client is still
+    ///      waiting on `Expect: 100-continue` (reverse-proxy compat).
+    ///
+    ///   4. Response is written first, body drain second — clients
+    ///      see the response without waiting for the drain to
+    ///      complete. `readTimeout` (P0-5) bounds every socket read
+    ///      inside the drain.
+    ///
     private nonisolated static func driveConnection(
         eventLoop: PollEventLoop,
         router: BoxService<Request, Response>,
         conn initialConn: ConnState,
         readBufferSize: Int
     ) async {
-        var conn = initialConn
-        let fd = conn.fd
-        let channelId = conn.channelId
-        let peerAddress = conn.peerAddress
+        let fd = initialConn.fd
+        let channelId = initialConn.channelId
+        let peerAddress = initialConn.peerAddress
         defer {
             #if canImport(Glibc)
             _ = Glibc.close(fd)
@@ -263,113 +290,124 @@ public actor Worker {
             eventLoop.cancelChannel(channelId)
         }
 
-        // Per-conn write buffer — reused for response encoding.
+        let conn = H1Conn(
+            eventLoop: eventLoop,
+            fd: fd,
+            channelId: channelId,
+            maxHeaderBytes: 64 * 1024,
+            maxBodyBytes: 2 * 1024 * 1024,
+            readTimeout: .seconds(30)
+        )
+
+        // Per-conn encoder (response side) + write buffer — both
+        // reused for every keep-alive request on this connection.
+        let encoder = H1Encoder()
         var writeBuffer: [UInt8] = []
         writeBuffer.reserveCapacity(2048)
 
         connLoop: while true {
-            // 1. Async read — eventLoop reads into its internal buffer.
-            //    No external buffer pointer crosses the await boundary.
-            //    Eliminates @unchecked on H1Decoder + ConnState.
-            let n = await eventLoop.read(channelId: channelId, fd: fd)
-            if n <= 0 { return }
-
-            // 2. Feed decoder — copy ~100 bytes from eventLoop's buffer
-            //    into decoder's [UInt8]. One memcpy (~10ns).
-            let readView = eventLoop.getReadView(channelId: channelId, count: n)
+            // 1. Parse request head (loops internally until headers
+            //    are complete, EOF, or parse error).
+            let head: DecodedHead
             do {
-                try conn.decoder.feed(readView)
+                guard let h = try await conn.decodeHead() else {
+                    // Clean EOF between requests.
+                    return
+                }
+                head = h
             } catch {
                 writeErrorAndClose(
                     fd: fd, writeBuffer: &writeBuffer,
-                    status: .badRequest, message: "Bad Request: \(error)"
+                    status: .badRequest, message: "Bad Request"
                 )
                 return
             }
 
-            // 3. Parse + dispatch all complete requests from this read.
-            reqLoop: while true {
-                let parseResult: DecodeResult
-                do {
-                    parseResult = try conn.decoder.decode()
-                } catch {
-                    writeErrorAndClose(
-                        fd: fd, writeBuffer: &writeBuffer,
-                        status: .badRequest, message: "Bad Request: \(error)"
-                    )
-                    return
+            // 2. Wire up the lazy body if the request carries one.
+            var request = head.request
+            if head.hasBody {
+                // Capture `conn` and the generation counter so stale
+                // body reads after the next keep-alive cycle throw
+                // `BodyError.connectionAdvanced` instead of corrupting
+                // the next request. The closure has zero
+                // `AsyncThrowingStream` overhead — `Body.collect`
+                // drives it via a direct `while let chunk = ...` loop.
+                let bodyConn = conn
+                let myGen = head.generation
+                request.body = .pull {
+                    try await bodyConn.nextBodyChunk(forGeneration: myGen)
                 }
-                guard case .complete(var request) = parseResult else {
-                    // Body not yet complete. If the client sent
-                    // `Expect: 100-continue`, send the interim
-                    // 100 Continue response so the client proceeds
-                    // with the body (RFC 9110 §10.1.1).
-                    if conn.decoder.pendingContinue {
-                        conn.decoder.clearPendingContinue()
+            }
+
+            // 3. Populate ConnectInfo for extractors + RateLimitLayer.
+            request.extensions.insert(ConnectInfo(peerAddress: peerAddress))
+
+            let keepAlive = head.keepAlive
+            let requestMethod = request.method
+
+            // 4. Dispatch to the router/handler. Errors propagate up
+            //    as a 500 + connection close — we don't try to drain
+            //    the body in that case (the handler already saw an
+            //    error from its extractor or threw voluntarily).
+            let response: Response
+            do {
+                response = try await router.call(request)
+            } catch {
+                writeErrorAndClose(
+                    fd: fd, writeBuffer: &writeBuffer,
+                    status: .internalServerError,
+                    message: "Internal Server Error"
+                )
+                return
+            }
+
+            // 5. Encode + write response FIRST. The client sees the
+            //    response without waiting for any post-handler body
+            //    drain (UX: responsive even when the handler ignored
+            //    a large body).
+            writeBuffer.removeAll(keepingCapacity: true)
+            let encoded = encoder.encodeHead(
+                response, keepAlive: keepAlive,
+                requestMethod: requestMethod,
+                into: &writeBuffer
+            )
+            switch encoded {
+            case .noBody:
+                _ = writeAll(fd: fd, buffer: writeBuffer)
+            case .buffered:
+                if case .buffered(let bodyBytes) = response.body, !bodyBytes.isEmpty {
+                    _ = writevHeaderBody(fd: fd, header: writeBuffer, body: bodyBytes)
+                } else {
+                    _ = writeAll(fd: fd, buffer: writeBuffer)
+                }
+            case .stream:
+                // Write header, then stream chunks via chunked TE.
+                _ = writeAll(fd: fd, buffer: writeBuffer)
+                do {
+                    for try await chunk in response.body.dataStream() {
                         writeBuffer.removeAll(keepingCapacity: true)
-                        writeBuffer.append(contentsOf: Array(
-                            "HTTP/1.1 100 Continue\r\n\r\n".utf8
-                        ))
-                        _ = writeAll(fd: fd, buffer: writeBuffer)
+                        encoder.encodeChunk(chunk, into: &writeBuffer)
+                        let written = writeAll(fd: fd, buffer: writeBuffer)
+                        if written < writeBuffer.count { return }
                     }
-                    break reqLoop
-                }
-
-                // B1 FIX: populate ConnectInfo for extractors + RateLimitLayer.
-                request.extensions.insert(ConnectInfo(peerAddress: peerAddress))
-
-                let keepAlive = shouldKeepAlive(
-                    version: request.version,
-                    explicitConnection: request.headers.first(for: .connection)
-                )
-
-                // Save method for encodeHead (HEAD responses suppress body).
-                let requestMethod = request.method
-
-                let response: Response
-                do {
-                    response = try await router.call(request)
-                } catch {
-                    writeErrorAndClose(
-                        fd: fd, writeBuffer: &writeBuffer,
-                        status: .internalServerError,
-                        message: "Internal Server Error"
-                    )
-                    return
-                }
-
+                } catch { return }
                 writeBuffer.removeAll(keepingCapacity: true)
-                let head = conn.encoder.encodeHead(
-                    response, keepAlive: keepAlive,
-                    requestMethod: requestMethod,
-                    into: &writeBuffer
-                )
-                // Write header (+ body via writev) in one syscall.
-                switch head {
-                case .noBody:
-                    _ = writeAll(fd: fd, buffer: writeBuffer)
-                case .buffered:
-                    if case .buffered(let bodyBytes) = response.body, !bodyBytes.isEmpty {
-                        _ = writevHeaderBody(fd: fd, header: writeBuffer, body: bodyBytes)
-                    } else {
-                        _ = writeAll(fd: fd, buffer: writeBuffer)
-                    }
-                case .stream:
-                    // Write header first, then stream chunks.
-                    _ = writeAll(fd: fd, buffer: writeBuffer)
-                    do {
-                        for try await chunk in response.body.dataStream() {
-                            writeBuffer.removeAll(keepingCapacity: true)
-                            conn.encoder.encodeChunk(chunk, into: &writeBuffer)
-                            let written = writeAll(fd: fd, buffer: writeBuffer)
-                            if written < writeBuffer.count { return }
-                        }
-                    } catch { return }
-                    writeBuffer.removeAll(keepingCapacity: true)
-                    conn.encoder.encodeEndOfChunks(into: &writeBuffer)
-                    _ = writeAll(fd: fd, buffer: writeBuffer)
-                }
-                if !keepAlive { return }
+                encoder.encodeEndOfChunks(into: &writeBuffer)
+                _ = writeAll(fd: fd, buffer: writeBuffer)
+            }
+
+            // 6. Connection: close — done after response is flushed.
+            if !keepAlive { return }
+
+            // 7. Drain unread request body so the buffer is left
+            //    positioned at the next pipelined request. If the
+            //    handler didn't read the body and the client sent
+            //    `Expect: 100-continue`, the drain will send the
+            //    interim 100 Continue first so reverse proxies (nginx)
+            //    proceed with body forwarding instead of retrying.
+            //    Bounded by `readTimeout` inside the actor.
+            if await !conn.isBodyDone() {
+                try? await conn.drainBody()
             }
         }
     }
@@ -510,19 +548,6 @@ public actor Worker {
         #else
         return "unknown"
         #endif
-    }
-
-    @inline(__always)
-    private nonisolated static func shouldKeepAlive(
-        version: Version,
-        explicitConnection: HeaderValue?
-    ) -> Bool {
-        if let conn = explicitConnection {
-            let lower = String(decoding: conn.bytes, as: UTF8.self).lowercased()
-            if lower.contains("close") { return false }
-            if lower.contains("keep-alive") { return true }
-        }
-        return version == .http11
     }
 
     @inline(__always)

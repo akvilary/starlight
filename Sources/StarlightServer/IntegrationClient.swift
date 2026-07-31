@@ -10,7 +10,7 @@
 //
 //  This catches the entire pipeline that `TestClient` skips:
 //    • `epoll_wait` / `accept4` / `read(2)` / `write(2)` paths
-//    • `H1Decoder` byte-by-byte parsing (including smuggling vectors)
+//    • `H1Conn` byte-by-byte parsing (including smuggling vectors)
 //    • `H1Encoder` framing (Content-Length, chunked, HEAD/204/304)
 //    • keep-alive, pipelining, partial reads, connection lifecycle
 //    • `Worker` actor + `PollEventLoop` integration

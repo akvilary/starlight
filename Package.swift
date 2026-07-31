@@ -84,28 +84,16 @@ let package = Package(
         .executable(name: "hello-world", targets: ["HelloWorld"]),
     ],
     dependencies: [
-        // mio — epoll-backed readiness I/O primitives (Poll/Registry/
-        // Token/Interest/Ready/Event/Events/Waker). Swift port of
-        // Rust's mio. https://github.com/akvilary/mio
-        .package(url: "https://github.com/akvilary/mio.git", from: "0.2.0"),
-        // pulsar — epoll event loop bridge for Swift Concurrency.
-        // SerialExecutor + TaskExecutor on top of mio.
-        // https://github.com/akvilary/pulsar
-        .package(url: "https://github.com/akvilary/pulsar.git", from: "0.1.0"),
-        // prism — Service and Layer abstractions (port of tower).
-        // https://github.com/akvilary/http-prism
-        .package(url: "https://github.com/akvilary/http-prism.git", from: "0.1.0"),
-        // http-lens — HTTP middleware (port of tower-http).
-        // https://github.com/akvilary/http-lens
-        .package(url: "https://github.com/akvilary/http-lens.git", from: "0.1.0"),
-        // http — pure HTTP message types (Request/Response/Method/
-        // StatusCode/HeaderMap/Uri/Version/Body). Swift port of the
-        // Rust `http` crate. https://github.com/akvilary/http
-        .package(url: "https://github.com/akvilary/http.git", from: "0.1.0"),
-        // hyper — HTTP/1.1 codec + connection driver (Conn/Decoder/
-        // Dispatcher/Encoder). Swift port of the Rust `hyper` crate.
-        // https://github.com/akvilary/http-codec
-        .package(url: "https://github.com/akvilary/http-codec.git", from: "0.1.0"),
+        // ─── LOCAL DEPENDENCIES (dev) ────────────────────────────
+        // All cross-package work happens via local paths during
+        // active development. Switch back to git URLs + version bumps
+        // when publishing a release.
+        .package(path: "../mio"),
+        .package(path: "../pulsar"),
+        .package(path: "../http-prism"),
+        .package(path: "../http-lens"),
+        .package(path: "../http"),
+        .package(path: "../http-codec"),
     ],
     targets: [
         // ── C wrappers for GNU-extension syscalls (accept4,
@@ -225,6 +213,9 @@ let package = Package(
                 "StarlightExtractors",
                 .product(name: "HTTP", package: "http"),
                 .product(name: "HTTPCodec", package: "http-codec"),
+                .product(name: "HTTPPrism", package: "http-prism"),
+                .product(name: "Pulsar", package: "pulsar"),
+                "CLinuxExt",
             ],
             path: "Tests/StarlightServerTests",
             swiftSettings: baseSwiftSettings
