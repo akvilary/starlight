@@ -373,27 +373,66 @@ public actor Worker {
             )
             switch encoded {
             case .noBody:
-                _ = writeAll(fd: fd, buffer: writeBuffer)
+                if !(await Self.writeAll(fd: fd, writeBuffer[...],
+                                          eventLoop: eventLoop, channelId: channelId)) {
+                    return
+                }
             case .buffered:
                 if case .buffered(let bodyBytes) = response.body, !bodyBytes.isEmpty {
-                    _ = writevHeaderBody(fd: fd, header: writeBuffer, body: bodyBytes)
+                    // Optimistic writev: header + body in one syscall.
+                    // On loopback (socket buffer >> response size) this
+                    // succeeds fully and never crosses an await — the
+                    // hot path is a single writev + one comparison.
+                    let headerCount = writeBuffer.count
+                    let total = headerCount &+ bodyBytes.count
+                    let n = Self.writevOnce(fd: fd, header: writeBuffer, body: bodyBytes)
+                    if n < total {
+                        // Partial write, EAGAIN, or error. Whatever was
+                        // already written (`max(n,0)`) is accounted for;
+                        // the remainder is flushed via the async loop,
+                        // which yields to the loop on EAGAIN.
+                        let done = max(n, 0)
+                        let headerConsumed = min(done, headerCount)
+                        if headerConsumed < headerCount,
+                           !(await Self.writeAll(fd: fd, writeBuffer[headerConsumed...],
+                                                 eventLoop: eventLoop, channelId: channelId)) {
+                            return
+                        }
+                        let bodyConsumed = max(0, done &- headerCount)
+                        if bodyConsumed < bodyBytes.count,
+                           !(await Self.writeAll(fd: fd, bodyBytes[bodyConsumed...],
+                                                 eventLoop: eventLoop, channelId: channelId)) {
+                            return
+                        }
+                    }
                 } else {
-                    _ = writeAll(fd: fd, buffer: writeBuffer)
+                    if !(await Self.writeAll(fd: fd, writeBuffer[...],
+                                              eventLoop: eventLoop, channelId: channelId)) {
+                        return
+                    }
                 }
             case .stream:
                 // Write header, then stream chunks via chunked TE.
-                _ = writeAll(fd: fd, buffer: writeBuffer)
+                if !(await Self.writeAll(fd: fd, writeBuffer[...],
+                                          eventLoop: eventLoop, channelId: channelId)) {
+                    return
+                }
                 do {
                     for try await chunk in response.body.dataStream() {
                         writeBuffer.removeAll(keepingCapacity: true)
                         encoder.encodeChunk(chunk, into: &writeBuffer)
-                        let written = writeAll(fd: fd, buffer: writeBuffer)
-                        if written < writeBuffer.count { return }
+                        if !(await Self.writeAll(fd: fd, writeBuffer[...],
+                                                  eventLoop: eventLoop, channelId: channelId)) {
+                            return
+                        }
                     }
                 } catch { return }
                 writeBuffer.removeAll(keepingCapacity: true)
                 encoder.encodeEndOfChunks(into: &writeBuffer)
-                _ = writeAll(fd: fd, buffer: writeBuffer)
+                if !(await Self.writeAll(fd: fd, writeBuffer[...],
+                                          eventLoop: eventLoop, channelId: channelId)) {
+                    return
+                }
             }
 
             // 6. Connection: close — done after response is flushed.
@@ -424,105 +463,109 @@ public actor Worker {
         let response = errorResponse(status: status, message: message)
         writeBuffer.removeAll(keepingCapacity: true)
         _ = H1Encoder().encodeHead(response, keepAlive: false, into: &writeBuffer)
-        _ = writeAll(fd: fd, buffer: writeBuffer)
+        // Best-effort, non-blocking: the connection is being torn down
+        // regardless, so a truncated error body is acceptable. Must NOT
+        // block the loop thread (the socket is non-blocking).
+        writeBestEffort(fd: fd, buffer: writeBuffer)
     }
 
-    /// Sync `write(2)` loop that handles partial writes, EINTR, and
-    /// EAGAIN. On EAGAIN (non-blocking socket buffer full), blocks via
-    /// `poll(POLLOUT)` until the socket becomes writable (up to 5 s).
-    ///
-    /// Returns total bytes written. If less than `buffer.count`, the
-    /// write was truncated (timeout, EPIPE, or other error) and the
-    /// caller should close the connection.
+    /// Best-effort non-blocking write for the error/close path. Writes
+    /// until the socket accepts no more (`EAGAIN`) or errors; never
+    /// awaits and never blocks. The socket is non-blocking, so every
+    /// `write(2)` returns immediately.
     @inline(__always)
-    private nonisolated static func writeAll(fd: CInt, buffer: [UInt8]) -> Int {
+    private nonisolated static func writeBestEffort(fd: CInt, buffer: [UInt8]) {
         #if canImport(Glibc)
-        return buffer.withUnsafeBufferPointer { ptr -> Int in
-            var remaining = ptr.count
+        buffer.withUnsafeBufferPointer { ptr in
             var offset = 0
-            while remaining > 0 {
+            while offset < ptr.count {
                 let n = Glibc.write(
-                    fd, ptr.baseAddress!.advanced(by: offset), remaining
+                    fd, ptr.baseAddress!.advanced(by: offset),
+                    ptr.count - offset
                 )
-                if n > 0 {
-                    remaining -= n
-                    offset += n
-                    continue
-                }
-                if n == 0 { break }  // shouldn't happen on socket
-                // n == -1: check errno
-                if errno == EINTR { continue }  // signal — retry
-                if errno == EAGAIN || errno == EWOULDBLOCK {
-                    // Non-blocking socket buffer full. Wait for
-                    // writability, then retry. 5 s timeout matches
-                    // typical read timeouts.
-                    var pfd = pollfd(fd: fd, events: 0x004, revents: 0)  // POLLOUT
-                    let pr = Glibc.poll(&pfd, 1, 5000)
-                    if pr > 0 && (pfd.revents & 0x004) != 0 {
-                        continue  // writable → retry write
-                    }
-                    break  // timeout or POLLERR/POLLHUP
-                }
-                break  // EPIPE, EBADF, etc.
+                if n > 0 { offset += Int(n); continue }
+                if n == 0 { return }
+                if errno == EINTR { continue }
+                return  // EAGAIN / EPIPE / ... — give up, conn closing
             }
-            return offset
         }
-        #else
-        return 0
         #endif
     }
 
-    /// Write header + body via `writev(2)` — one syscall, zero
-    /// concatenation. Direct port of hyper's vectorised write path.
-    ///
-    /// Falls back to sequential writes if writev returns partial.
+    /// Single optimistic `writev(2)` of header + body — one syscall,
+    /// zero concatenation (direct port of hyper's vectorised write
+    /// path). Returns bytes written (`0...total`) or `-1` on error
+    /// (including `EAGAIN` with nothing written). The caller handles
+    /// partial results via `writeAll`. On loopback the whole response
+    /// fits in the socket buffer, so this returns `total` and the
+    /// caller never crosses an await.
     @inline(__always)
-    private nonisolated static func writevHeaderBody(
+    private nonisolated static func writevOnce(
         fd: CInt, header: [UInt8], body: [UInt8]
     ) -> Int {
         #if canImport(Glibc)
-        return header.withUnsafeBufferPointer { hPtr in
-            body.withUnsafeBufferPointer { bPtr in
+        return header.withUnsafeBufferPointer { h in
+            body.withUnsafeBufferPointer { b in
                 var iovs: [iovec] = [
                     iovec(
-                        iov_base: UnsafeMutableRawPointer(mutating: hPtr.baseAddress!),
-                        iov_len: hPtr.count
+                        iov_base: UnsafeMutableRawPointer(mutating: h.baseAddress!),
+                        iov_len: h.count
                     ),
                     iovec(
-                        iov_base: UnsafeMutableRawPointer(mutating: bPtr.baseAddress!),
-                        iov_len: bPtr.count
+                        iov_base: UnsafeMutableRawPointer(mutating: b.baseAddress!),
+                        iov_len: b.count
                     ),
                 ]
-                let totalExpected = hPtr.count + bPtr.count
-                let n = writev(fd, &iovs, 2)
-                if n >= totalExpected {
-                    return n  // everything written in one syscall
-                }
-                if n <= 0 {
-                    return 0  // error
-                }
-                // Partial write — fall back to writeAll for the
-                // remaining bytes. writeAll handles EINTR/EAGAIN.
-                // Rare for small responses.
-                var written = n
-                let headerConsumed = min(n, hPtr.count)
-                let bodyConsumed = max(0, n - hPtr.count)
-                if headerConsumed < header.count {
-                    let rem = Array(header[headerConsumed..<header.count])
-                    let w = writeAll(fd: fd, buffer: rem)
-                    written += w
-                    if w < rem.count { return written }  // truncated
-                }
-                if bodyConsumed < body.count {
-                    let rem = Array(body[bodyConsumed..<body.count])
-                    let w = writeAll(fd: fd, buffer: rem)
-                    written += w
-                }
-                return written
+                return Int(writev(fd, &iovs, 2))
             }
         }
         #else
-        return 0
+        return -1
+        #endif
+    }
+
+    /// Async write of an `ArraySlice<UInt8>` with reactor-backed
+    /// backpressure. Performs an optimistic `write(2)`; on `EAGAIN`
+    /// arms `EPOLLOUT` via `eventLoop.awaitWritable` — suspending this
+    /// Task so the loop can serve other connections — then retries.
+    /// Returns `true` iff every byte was written; `false` on error or
+    /// hangup (caller must close the connection).
+    ///
+    /// `ArraySlice` shares its source's storage, so `buffer[range...]`
+    /// allocates nothing, and ARC keeps it valid across the await (no
+    /// raw-pointer-lifetime hazard). `withUnsafeBytes` is invoked once
+    /// per synchronous write attempt and the pointer never escapes an
+    /// await.
+    private nonisolated static func writeAll(
+        fd: CInt,
+        _ bytes: ArraySlice<UInt8>,
+        eventLoop: PollEventLoop,
+        channelId: UInt32
+    ) async -> Bool {
+        #if canImport(Glibc)
+        var offset = 0
+        let count = bytes.count
+        while offset < count {
+            let n: Int = bytes.withUnsafeBytes { rb in
+                Int(Glibc.write(
+                    fd, rb.baseAddress!.advanced(by: offset),
+                    count - offset
+                ))
+            }
+            if n > 0 { offset += n; continue }
+            if n == 0 { return false }
+            if errno == EINTR { continue }
+            if errno == EAGAIN || errno == EWOULDBLOCK {
+                if !(await eventLoop.awaitWritable(channelId: channelId, fd: fd)) {
+                    return false
+                }
+                continue
+            }
+            return false  // EPIPE / EBADF / ...
+        }
+        return true
+        #else
+        return false
         #endif
     }
 
