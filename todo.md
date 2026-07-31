@@ -40,11 +40,13 @@
   `readTimeout` хранится (`H1Conn.swift:135`), но `readWithTimeout()` (`:787`) его не применяет → Slowloris DoS. Нужен per-channel таймер (timerfd) в `PollEventLoop`, вооружаемый вместе с read-interest.
   **Готово.** Один периодический timerfd на loop + per-ФАЗНЫЕ deadlines (header/body-lazy/drain) в H1Conn (ловит slow-drip; per-call не ловил бы) + per-call writeTimeout. Sweep по тику, гонка — single-threaded claim. Регресс ~4.4% (cache-line рост PollChannelState) — под 5%-порогом.
 
-- [ ] **C4. Shutdown busy-loop.**
-  `initiateShutdown()` (`Worker.swift:220`) только ставит флаг — listener fd остаётся в epoll (level-triggered) → при непустом backlog 100% CPU. Дерегистрировать/закрывать listener fd при shutdown.
+- [x] **C4. Shutdown busy-loop.**
+  `initiateShutdown()` только ставил флаг — listener fd оставался в epoll (level-triggered) → при непустом backlog 100% CPU + утечка fd.
+  **Готово.** `initiateShutdown` зовёт новый `eventLoop.cancelWatch(fd: listenerFd)` (Pulsar: найти канал по fd + `cancelChannel` → deregister epoll + release watch-closure) и `close(listenerFd)`. Без `unsafe` (по immutабельному `listenerFd`).
 
-- [ ] **C3. `forceShutdown` обязан вызываться всегда.**
-  Сейчас только из таймера (`serve.swift:184`). При естественном дрейне loop'и не останавливаются → утечка тредов / процесс не завершается. Безусловный `forceShutdown` для всех воркеров после дрейна.
+- [x] **C3. `forceShutdown` обязан вызываться всегда.**
+  Сейчас только из таймера. При естественном дрейне loop'и не останавливаются → утечка тредов / процесс не завершается.
+  **Готово.** В `serve.swift` после `timer.cancel()` — безусловный `for worker in workers { worker.forceShutdown() }` (идемпотентно). Проверено: сервер выходит чисто за ~0.05 с по SIGTERM (раньше висел). 0% регресса (вне hot-path).
 
 - [ ] **C5. `serve()` readiness-таймаут.**
   `serve.swift:154` — ожидание `WorkerStash.count() < loopCount` без таймаута. Падение bind у одного воркера → вечный вис. Таймаут + явная ошибка.
@@ -115,3 +117,4 @@
 | 31.07.2026 | baseline | 297 467 | — | (старт) |
 | 31.07.2026 | C2 (async writes) | ~293 900 (чередованный A/B: −1,2%) | −1,2% | C2 |
 | 31.07.2026 | C1 (read/write timeouts via timerfd) | ~284 400 (6-pair A/B: −4,4%) | −4,4% | C1 |
+| 31.07.2026 | C3+C4 (clean shutdown) | ~290 800 | ~0% (вне hot-path) | C3+C4 |

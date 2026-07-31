@@ -191,6 +191,15 @@ public func serve<S: HTTPService>(
     }
 
     timer.cancel()
+
+    // Unconditionally stop every worker's event loop. Without this the
+    // loops keep blocking in epoll_wait after a natural drain (the
+    // timer's forceShutdown only fires on the timeout path), so the
+    // worker threads never exit and the process cannot shut down
+    // cleanly. forceShutdown is idempotent (atomic `stopped` store +
+    // wakeup), so on the timeout path this is a harmless repeat of
+    // what the timer already did.
+    for worker in workers { worker.forceShutdown() }
 }
 
 // MARK: - Worker stash (cross-thread hand-off)

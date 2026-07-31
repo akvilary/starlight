@@ -219,9 +219,23 @@ public actor Worker {
     /// actor from outside.
     public func initiateShutdown() {
         isShuttingDown = true
-        // No immediate effect on the listener fd — handleAccept's
-        // next invocation will return early. The listener stays
-        // open until eventLoop.run() returns.
+        // Deregister the listener from epoll (via its fd) so the kernel
+        // stops reporting it readable. Without this, a level-triggered
+        // listener with a non-empty backlog makes epoll_wait return
+        // instantly on every cycle → handleAccept runs, returns early
+        // (isShuttingDown), repeat → a 100% CPU busy-loop until the
+        // process exits. Also closes the listener fd, which was
+        // previously leaked (never closed anywhere).
+        //
+        // cancelWatch runs `cancelChannel`, which deregisters the fd
+        // and releases the stored watch closure. Safe to call from here
+        // (this actor method runs on the loop thread, the same thread
+        // `channels` is mutated on) and ordered before `close` so the
+        // deregister hits an open fd.
+        eventLoop.cancelWatch(fd: listenerFd)
+        #if canImport(Glibc)
+        _ = Glibc.close(listenerFd)
+        #endif
     }
 
     /// Wait for all in-flight connections to complete. Returns
