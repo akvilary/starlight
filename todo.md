@@ -108,7 +108,8 @@
 - [ ] **D9.** `RateLimiter` — самоэвикция.
 - [ ] **D11.** Превышение `maxConnectionsPerWorker` → 503 вместо молчаливого close.
 - [ ] **A1.** Убрать зависимость `StarlightServer → StarlightExtractors` (`Package.swift:115`).
-- [ ] **A5/A6.** `PollEventLoop` `@unchecked` — синхронизировать `onWakeup`; swap буферов в `drainJobs`.
+- [x] **A5/A6.** `PollEventLoop` `@unchecked` — синхронизировать `onWakeup`; swap буферов в `drainJobs`.
+  **Готово (pulsar).** A5: `onWakeup` → computed property над `Mutex<(@Sendable ()->Void)?>`; callback вызывается ВНЕ лока (нет реентри). A6: `drainJobs` — один persistent scratch `drainBuffer`, `loopJobs` swap'ается в него за O(1) (устраняет CoW deep-copy старого `var jobs = loopJobs; removeAll()` при shared-владении), `poolJobs` остаётся на `append-under-lock + removeAll(keepingCapacity:)` (держит capacity → нет alloc-churn на кросс-тред enqueue, в отличие от swap-в-локальную). `@unchecked` с класса не уходит (недоказуемо из-за `channels`/`events`), но реальная гонка `onWakeup` устранена. Чередованный A/B: Δ −0.2% (нейтрально); pulsar 7/7, starlight 53/53 тестов.
 
 ---
 
@@ -122,3 +123,4 @@
 | 31.07.2026 | C3+C4 (clean shutdown) | ~290 800 | ~0% (вне hot-path) | C3+C4 |
 | 01.08.2026 | (сессия: новый baseline — иное состояние машины) | ~233 000 | — | — |
 | 01.08.2026 | C5+C6 (startup robustness) | ~228 500 | ~−2% к сессии (вне hot-path, в пределах дрейфа) | C5+C6 |
+| 01.08.2026 | A5/A6 (onWakeup Mutex + drainJobs swap) | ~234 000 | ~0% (чередованный A/B: −0,2%; нейтрально) | A5/A6 |
