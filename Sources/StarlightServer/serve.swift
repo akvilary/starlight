@@ -19,12 +19,10 @@ import CLinuxExt
 #endif
 
 import Foundation
-import Synchronization
 import HTTP
 import HTTPCodec
 import Pulsar
 import HTTPPrism
-import Synchronization
 
 /// Bind N worker actors to `(host, port)` and serve `service` on
 /// every accepted connection. Blocks the caller until `onShutdown`
@@ -95,66 +93,73 @@ public func serve<S: HTTPService>(
     // actors share the same type (no per-worker generics needed).
     let router = BoxService(service)
 
-    // Spawn `loopCount` worker threads. Each owns its own listener
-    // (SO_REUSEPORT lets all of them bind the same port).
-    for cpuIndex in 0..<loopCount {
-        let hostCopy = host
-        let portCopy = port
-        let routerCopy = router
-        let cpu = CInt(cpuIndex)
+    // ── Build all workers up-front, on the caller's thread ──────────
+    //
+    // For each CPU: bind a SO_REUSEPORT listener, create its
+    // `PollEventLoop`, construct the `Worker` actor bound to that
+    // loop. Doing this here (rather than inside the worker thread)
+    // makes startup failures surface synchronously with the exact
+    // errno: a bind or loop-construction error throws *before* any
+    // worker thread is spawned, so teardown is trivial — close the
+    // listeners already bound; built loops release their epoll fds
+    // via `Poll.deinit` as they drop out of scope. No cross-thread
+    // hand-off means no readiness barrier and no hang when one
+    // worker fails (the bug C5 addresses at its root).
+    //
+    // Thread-affinity is preserved: `PollEventLoop.run()` captures
+    // `pthread_self()` on the worker thread (not in `init`), so a
+    // loop built here and run on its pinned worker is identical to
+    // one built inside the thread.
+    var builtWorkers: [Worker] = []
+    var listenerFds: [CInt] = []
+    do {
+        for cpuIndex in 0..<loopCount {
+            let fd = try starlightBindWorkerListener(host: host, port: port)
+            listenerFds.append(fd)
+            let loop = try PollEventLoop(eventsCapacity: 4096)
+            builtWorkers.append(Worker(
+                eventLoop: loop,
+                listenerFd: fd,
+                router: router,
+                cpuIndex: CInt(cpuIndex)
+            ))
+        }
+    } catch {
+        // Partial startup. Close every bound listener; built loops
+        // (held by their Workers in `builtWorkers`) are released as
+        // the array leaves scope — `Poll.deinit` closes their epoll fds.
+        #if canImport(Glibc)
+        for fd in listenerFds { _ = Glibc.close(fd) }
+        #endif
+        throw error
+    }
+    // `builtWorkers` is complete and never mutated again. Rebind to
+    // an immutable `let` so the later concurrency domains (drain
+    // timer Task, drain task group) can capture it Sendably. Array is
+    // CoW — this is a retain, not a copy.
+    let workers = builtWorkers
 
+    // ── Spawn worker threads ────────────────────────────────────────
+    //
+    // Each thread pins itself to its CPU, registers its pre-bound
+    // listener watch, then runs its pre-built loop. Nothing that can
+    // fail meaningfully happens here, so no readiness handshake is
+    // needed — `workers` is already in hand for shutdown.
+    for cpuIndex in 0..<loopCount {
+        let worker = workers[cpuIndex]
+        let loop = worker.eventLoop
+        let cpu = CInt(cpuIndex)
         let thread = Thread {
             #if canImport(Glibc)
             sl_pin_to_cpu(cpu)
             #endif
-
-            let listenerFd: CInt
-            do {
-                listenerFd = try starlightBindWorkerListener(
-                    host: hostCopy, port: portCopy
-                )
-            } catch { return }
-
-            let eventLoop: PollEventLoop
-            do {
-                eventLoop = try PollEventLoop(eventsCapacity: 4096)
-            } catch {
-                #if canImport(Glibc)
-                _ = Glibc.close(listenerFd)
-                #endif
-                return
-            }
-
-            let worker = Worker(
-                eventLoop: eventLoop,
-                listenerFd: listenerFd,
-                router: routerCopy,
-                cpuIndex: cpu
-            )
-
-            // Stash the worker so the serve() caller can orchestrate
-            // shutdown. Race-free: workers[] is mutated only from
-            // the caller's thread before any worker thread can race
-            // (worker threads haven't started yet on first iteration,
-            // and even when they do they don't touch workers[]).
-            WorkerStash.shared.set(worker, at: cpuIndex)
-
             _ = try? worker.registerListenerWatchSync()
-
-            do { try eventLoop.run() }
-            catch { /* log */ }
+            do { try loop.run() } catch { /* log */ }
         }
         thread.name = "starlight-worker-\(cpuIndex)"
         thread.stackSize = 1024 * 1024  // 1 MiB
         thread.start()
     }
-
-    // Wait for all worker actors to be constructed inside their
-    // threads. Cheap polling — typically completes within 1ms.
-    while WorkerStash.shared.count() < loopCount {
-        try? await Task.sleep(for: .milliseconds(1))
-    }
-    let workers = WorkerStash.shared.drain()
 
     // Spawn the shutdown monitor. When `onShutdown` resolves:
     //   1. Tell every worker to stop accepting new conns.
@@ -200,39 +205,6 @@ public func serve<S: HTTPService>(
     // wakeup), so on the timeout path this is a harmless repeat of
     // what the timer already did.
     for worker in workers { worker.forceShutdown() }
-}
-
-// MARK: - Worker stash (cross-thread hand-off)
-
-/// Thread-safe stash for worker actors. The worker thread creates the
-/// Worker actor and needs to hand it back to the serve() caller for
-/// shutdown orchestration. Backed by `Mutex` — Sendable without
-/// @unchecked.
-private final class WorkerStash: Sendable {
-    static let shared = WorkerStash()
-    private let workers = Mutex<[Worker?]>([])
-
-    @inline(__always)
-    func set(_ worker: Worker, at index: Int) {
-        workers.withLock { arr in
-            while arr.count <= index { arr.append(nil) }
-            arr[index] = worker
-        }
-    }
-
-    @inline(__always)
-    func count() -> Int {
-        workers.withLock { $0.compactMap { $0 }.count }
-    }
-
-    @inline(__always)
-    func drain() -> [Worker] {
-        workers.withLock { arr in
-            let result = arr.compactMap { $0 }
-            arr.removeAll()
-            return result
-        }
-    }
 }
 
 // MARK: - Bind helper

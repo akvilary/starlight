@@ -48,11 +48,13 @@
   Сейчас только из таймера. При естественном дрейне loop'и не останавливаются → утечка тредов / процесс не завершается.
   **Готово.** В `serve.swift` после `timer.cancel()` — безусловный `for worker in workers { worker.forceShutdown() }` (идемпотентно). Проверено: сервер выходит чисто за ~0.05 с по SIGTERM (раньше висел). 0% регресса (вне hot-path).
 
-- [ ] **C5. `serve()` readiness-таймаут.**
+- [x] **C5. `serve()` readiness-таймаут.**
   `serve.swift:154` — ожидание `WorkerStash.count() < loopCount` без таймаута. Падение bind у одного воркера → вечный вис. Таймаут + явная ошибка.
+  **Готово.** Убран корень проблемы: bind + `PollEventLoop` + `Worker` теперь конструируются в потоке caller'а **до** спавна тредов. Ошибка bind/loop всплывает синхронно с точным errno (`ServerError.bindFailed`) до запуска воркеров → тривиальный cleanup (close готовых listener fd; `Poll.deinit` закрывает epoll fd). `WorkerStash` и барьер готовности удалены целиком. Thread-affinity сохранён (`loopThreadId` фиксируется в `run()`, не в `init`). Hot path не тронут.
 
-- [ ] **C6. Единый default `onShutdown`.**
+- [x] **C6. Единый default `onShutdown`.**
   `Starlight.swift:47` (umbrella) блокирует навсегдо и не ставит signal-handlers, тогда как `StarlightServer.serve` (`serve.swift:67`) ставит. Унифицировать: umbrella делегирует с тем же дефолтом.
+  **Готово.** Umbrella принимает `onShutdown: (@Sendable () async -> Void)? = nil`; `nil` → вызов `StarlightServer.serve` **без** аргумента (его дефолт ставит SIGINT/SIGTERM handlers + ждёт сигнал). Single source of truth — shutdown-политика живёт в одном месте. Source-совместимо (HelloWorld без изменений).
 
 - [ ] **C7. Единая система лимитов тела + корректные коды ошибок.**
   Экстракторы ловят только `BodyError.limitExceeded`, а `H1Conn` кидает `H1ConnError.requestTooLarge` → ловится в `driveConnection` как **500** вместо 413. `DefaultBodyLimit.read` = `Int.max` без layer (axum даёт 2 MB по умолчанию). Связать `maxBodyBytes` с `DefaultBodyLimit`, вернуть 413.
@@ -118,3 +120,5 @@
 | 31.07.2026 | C2 (async writes) | ~293 900 (чередованный A/B: −1,2%) | −1,2% | C2 |
 | 31.07.2026 | C1 (read/write timeouts via timerfd) | ~284 400 (6-pair A/B: −4,4%) | −4,4% | C1 |
 | 31.07.2026 | C3+C4 (clean shutdown) | ~290 800 | ~0% (вне hot-path) | C3+C4 |
+| 01.08.2026 | (сессия: новый baseline — иное состояние машины) | ~233 000 | — | — |
+| 01.08.2026 | C5+C6 (startup robustness) | ~228 500 | ~−2% к сессии (вне hot-path, в пределах дрейфа) | C5+C6 |
