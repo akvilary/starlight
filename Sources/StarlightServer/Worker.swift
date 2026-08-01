@@ -305,9 +305,8 @@ public actor Worker {
         }
 
         let conn = H1Conn(
-            eventLoop: eventLoop,
-            fd: fd,
-            channelId: channelId,
+            io: PollEventLoopIO(eventLoop: eventLoop, fd: fd, channelId: channelId),
+            executor: eventLoop.asUnownedSerialExecutor(),
             maxHeaderBytes: 64 * 1024,
             maxBodyBytes: 2 * 1024 * 1024,
             readTimeout: .seconds(30)

@@ -11,11 +11,16 @@
 //  (Reading::Init / Continue / Body / KeepAlive / Closed) adapted to
 //  Swift's actor + async/await concurrency model.
 //
-//  Thread-safety: the actor pins itself to the connection's
-//  `PollEventLoop` via `unownedExecutor`. All mutable state is
-//  actor-isolated — no `@unchecked Sendable`. Cross-actor calls
-//  from the same executor (the normal case for `driveConnection`)
-//  execute inline through `isSameExclusiveExecutionContext`.
+//  Thread-safety: the actor pins itself to the connection's executor
+//  (injected — a pulsar `PollEventLoop` in StarlightServer) via
+//  `unownedExecutor`. All mutable state is actor-isolated — no
+//  `@unchecked Sendable`. Cross-actor calls from the same executor
+//  (the normal case for `driveConnection`) execute inline through
+//  `isSameExclusiveExecutionContext`.
+//
+//  I/O: the codec is runtime-agnostic — all socket reads/writes go
+//  through the injected `Http1ConnectionIO` (port of hyper::rt::Read/
+//  Write). `PollEventLoopIO` (in StarlightServer) adapts it to pulsar.
 //
 //  Lifetime: one `H1Conn` per TCP connection, amortised across all
 //  keep-alive requests on that connection. `generation` increments
@@ -25,14 +30,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if canImport(Glibc)
-import Glibc
-#endif
-
 import Foundation
 import HTTP
 import HTTPCodec
-import Pulsar
 
 /// Errors thrown by `H1Conn` during head parsing and body framing.
 ///
@@ -122,24 +122,31 @@ public struct DecodedHead: Sendable {
 /// connection's `PollEventLoop` (via `unownedExecutor`), so calls
 /// from `driveConnection` (which runs on the same eventLoop) execute
 /// inline — zero hop overhead on the hot path.
-public actor H1Conn {
+public actor H1Conn<IO: Http1ConnectionIO> {
 
     // MARK: - Immutable configuration (nonisolated)
 
-    public nonisolated let eventLoop: PollEventLoop
-    public nonisolated let fd: CInt
-    public nonisolated let channelId: UInt32
+    /// Runtime-supplied I/O (port of hyper::rt::Read/Write). In
+    /// StarlightServer this is a `PollEventLoopIO` over a pulsar
+    /// channel; the codec itself never touches a fd or epoll.
+    /// Generic (not existential) so calls monomorphise and the hot
+    /// read path stays inlined — same cost as the direct `eventLoop`
+    /// calls this replaced.
+    public nonisolated let io: IO
+    /// Executor the actor pins to (a pulsar `PollEventLoop` in
+    /// StarlightServer). Injected so the codec stays runtime-agnostic.
+    public nonisolated let executor: UnownedSerialExecutor
     public nonisolated let maxHeaderBytes: Int
     public nonisolated let maxBodyBytes: Int
     public nonisolated let maxHeaderCount: Int
     public nonisolated let readTimeout: Duration
 
-    /// Pin this actor to the connection's eventLoop so all method
-    /// calls execute on the loop thread. Combined with
+    /// Pin this actor to the injected executor so all method calls
+    /// execute on the connection's loop thread. Combined with
     /// `isSameExclusiveExecutionContext` this gives zero-hop inline
     /// execution for the `driveConnection` → `H1Conn` calls.
     public nonisolated var unownedExecutor: UnownedSerialExecutor {
-        eventLoop.asUnownedSerialExecutor()
+        executor
     }
 
     // MARK: - Mutable state (actor-isolated)
@@ -211,17 +218,15 @@ public actor H1Conn {
     // MARK: - Init
 
     public init(
-        eventLoop: PollEventLoop,
-        fd: CInt,
-        channelId: UInt32,
+        io: IO,
+        executor: UnownedSerialExecutor,
         maxHeaderBytes: Int = 64 * 1024,
         maxBodyBytes: Int = 2 * 1024 * 1024,
         maxHeaderCount: Int = 100,
         readTimeout: Duration = .seconds(30)
     ) {
-        self.eventLoop = eventLoop
-        self.fd = fd
-        self.channelId = channelId
+        self.io = io
+        self.executor = executor
         self.maxHeaderBytes = maxHeaderBytes
         self.maxBodyBytes = maxBodyBytes
         self.maxHeaderCount = maxHeaderCount
@@ -821,15 +826,13 @@ public actor H1Conn {
     @usableFromInline
     internal func readWithTimeout() async -> Int {
         // Pass the current phase's absolute deadline straight through.
-        // The event loop's timerfd sweep enforces it while this read is
+        // The runtime's timerfd sweep enforces it while this read is
         // suspended; no per-read `now()` check here — that would cost a
         // clock read per request for a condition (phase already expired
         // while the loop was spinning) that the sweep already covers
         // (the read is pending between dripped bytes, so a sweep tick
         // lands during the pending window and fails it on the deadline).
-        await eventLoop.read(
-            channelId: channelId, fd: fd, deadline: readDeadline
-        )
+        await io.read(deadline: readDeadline)
     }
 
     /// Read more bytes, append to buffer, throw on EOF/error. Used by
@@ -845,12 +848,12 @@ public actor H1Conn {
         try Task.checkCancellation()
     }
 
-    /// Copy bytes from the eventLoop's per-channel read buffer into
+    /// Copy bytes from the runtime's per-channel read buffer into
     /// our `[UInt8]` accumulator. One memcpy (~10 ns for 8 KB).
     private func appendReadView(count: Int) {
-        let view = eventLoop.getReadView(channelId: channelId, count: count)
-        // view is only valid on the loop thread — which we're on,
-        // because the actor's executor is the eventLoop.
+        let view = io.readView(count: count)
+        // view is only valid until the next read on the runtime's I/O
+        // handle — copy it out immediately, as every read path does.
         buffer.append(contentsOf: view)
     }
 
@@ -880,7 +883,7 @@ public actor H1Conn {
             0x43, 0x6F, 0x6E, 0x74, 0x69, 0x6E, 0x75, 0x65,         // "Continue"
             0x0D, 0x0A, 0x0D, 0x0A                                   // CRLF CRLF
         ]
-        _ = H1Conn.writeRaw(fd: fd, buffer: bytes)
+        _ = io.writeRaw(bytes)
     }
 
     // MARK: - Byte search helpers
@@ -1041,34 +1044,5 @@ public actor H1Conn {
             result = result * 16 + digit
         }
         return result
-    }
-
-    // MARK: - Raw socket write (nonisolated, for 100 Continue)
-
-    /// Raw blocking write — used by `send100Continue`. Always called
-    /// from inside the actor (loop thread), so it's safe to use the
-    /// blocking `write(2)` for tiny interim responses.
-    @inline(__always)
-    private nonisolated static func writeRaw(fd: CInt, buffer: [UInt8]) -> Int {
-        #if canImport(Glibc)
-        return buffer.withUnsafeBufferPointer { ptr -> Int in
-            var remaining = ptr.count
-            var offset = 0
-            while remaining > 0 {
-                let n = Glibc.write(fd, ptr.baseAddress!.advanced(by: offset), remaining)
-                if n > 0 {
-                    remaining -= n
-                    offset += n
-                    continue
-                }
-                if n == 0 { break }
-                if errno == EINTR { continue }
-                break
-            }
-            return offset
-        }
-        #else
-        return 0
-        #endif
     }
 }
