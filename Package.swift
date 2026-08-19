@@ -2,7 +2,7 @@
 //
 //  Starlight — high-performance HTTP framework for Swift 6.2+
 //
-//  Architectural mirror of the Rust `axum` workspace, ported to Swift:
+//  Architectural mirror of the Rust `axum` workspace, inspired by axum:
 //
 //    ┌──────────────────────┬─────────────────────────────────────┐
 //    │ Swift module         │ Rust analogue                       │

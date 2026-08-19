@@ -1,6 +1,6 @@
 # Starlight
 
-High-performance HTTP framework for Swift 6.2+, ported 1:1 from Rust's [axum](https://github.com/tokio-rs/axum).
+High-performance HTTP framework for Swift 6.2+, inspired by Rust's [axum](https://github.com/tokio-rs/axum).
 
 **~260K req/s** on a 12-core AMD 5600H (loopback, `wrk -t12 -c100 -d3s`).
 
@@ -24,7 +24,7 @@ curl http://localhost:8080/
 
 ## Features
 
-- **axum 1:1 architecture** — `Router<S>`, `Service<Request>`, `Layer`, `Handler`, extractors
+- **axum-inspired architecture** — `Router<S>`, `Service<Request>`, `Layer`, `Handler`, extractors
 - **~260K req/s** — thread-per-core, `SO_REUSEPORT`, epoll via [mio](https://github.com/akvilary/mio), driven by [pulsar](https://github.com/akvilary/pulsar)
 - **Zero-copy I/O** — `ReadBuffer` (port of `bytes::BytesMut`), `writev(2)`
 - **Streaming bodies** — `Body.stream(AsyncSequence)` + chunked Transfer-Encoding
