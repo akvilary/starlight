@@ -13,12 +13,8 @@ let app = Router(state: NoState())
     .get("/") { _ in .plain("Hello, World!") }
     .get("/health") { .plain("ok") }
 
-installShutdownSignalHandlers()
-try await serve(
-    app,
-    on: "0.0.0.0", port: 8080,
-    onShutdown: { await waitForShutdownSignal() }
-)
+// Ctrl-C / SIGTERM → graceful shutdown out of the box
+try await serve(app, on: "0.0.0.0", port: 8080)
 ```
 
 ```bash
@@ -164,7 +160,17 @@ and emits an `ETag` from the file modification time.
 
 `serve(onShutdown:)` blocks on the closure you pass; when it returns, the server
 stops accepting and drains in-flight requests (up to `drainTimeout`, default 30s)
-before exiting. Wire it to SIGINT/SIGTERM with the helpers from `StarlightServer`:
+before exiting.
+
+By default `onShutdown` already installs SIGINT/SIGTERM handlers and waits for
+Ctrl-C / `kill -TERM` — no setup needed:
+
+```swift
+try await serve(app, on: "0.0.0.0", port: 8080)   // graceful on Ctrl-C
+```
+
+Only if you pass a **custom** `onShutdown`, install the handlers yourself —
+the default (which does it for you) is replaced entirely:
 
 ```swift
 import Starlight  // StarlightServer is re-exported
