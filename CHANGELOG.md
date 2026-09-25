@@ -1,11 +1,11 @@
 # Changelog
 
-## v0.1.1 (2026-09-25)
+## v0.2.0 (2026-09-25)
 
 ### Changed
 
 - **BREAKING**: channel handles are now `ChannelId` instead of `UInt32`
-  (`TcpStream`, `Worker`, `PollEventLoopIO`), matching pulsar v0.1.1's
+  (`TcpStream`, `Worker`, `PollEventLoopIO`), matching pulsar v0.2.0's
   slab-based channel table: ids carry `(generation << 32) | slot`, so
   slot reuse under connection churn can never misattribute an epoll
   event to a recycled channel. Stale handles now trap fail-fast
