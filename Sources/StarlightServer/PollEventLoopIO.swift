@@ -27,7 +27,7 @@ import HTTPCodec
 struct PollEventLoopIO: Http1ConnectionIO {
     let eventLoop: PollEventLoop
     let fd: CInt
-    let channelId: UInt32
+    let channelId: ChannelId
 
     @inlinable
     func read(deadline: ContinuousClock.Instant?) async -> Int {

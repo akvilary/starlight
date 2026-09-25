@@ -54,7 +54,7 @@ import HTTPPrism
 /// for the entire keep-alive lifetime of the TCP connection.
 struct ConnState: Sendable {
     let fd: CInt
-    let channelId: UInt32
+    let channelId: ChannelId
     /// Peer address string (e.g. "127.0.0.1:54321"). Obtained via
     /// getpeername(2) at accept time. Inserted into every request's
     /// extensions as `ConnectInfo` for extractors + RateLimitLayer.
@@ -559,7 +559,7 @@ public actor Worker {
         fd: CInt,
         _ bytes: ArraySlice<UInt8>,
         eventLoop: PollEventLoop,
-        channelId: UInt32,
+        channelId: ChannelId,
         writeTimeout: Duration
     ) async -> Bool {
         #if canImport(Glibc)

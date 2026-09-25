@@ -26,12 +26,12 @@ public final class TcpStream: Sendable {
 
     public let fd: CInt
     public let eventLoop: PollEventLoop
-    public let channelId: UInt32
+    public let channelId: ChannelId
 
     /// Construct from an accepted fd. The caller must have already
     /// registered a fresh channel with `eventLoop.registerChannel()`.
     @inlinable
-    public init(fd: CInt, eventLoop: PollEventLoop, channelId: UInt32) {
+    public init(fd: CInt, eventLoop: PollEventLoop, channelId: ChannelId) {
         self.fd = fd
         self.eventLoop = eventLoop
         self.channelId = channelId
