@@ -31,7 +31,7 @@ struct PollEventLoopIO: Http1ConnectionIO {
 
     @inlinable
     func read(deadline: ContinuousClock.Instant?) async -> Int {
-        await eventLoop.read(channelId: channelId, fd: fd, deadline: deadline)
+        await eventLoop.read(channelId: channelId, deadline: deadline)
     }
 
     @inlinable

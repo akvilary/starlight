@@ -165,7 +165,21 @@ public actor Worker {
         }
         inFlightConns &+= 1
 
-        let channelId = eventLoop.registerChannel()
+        // Adopt the fd into the loop: pulsar dups it and owns the
+        // duplicate (cancelChannel tears the connection down precisely).
+        // Failure — e.g. EMFILE exhausting the fd quota on the dup — is
+        // clean backpressure: drop this connection instead of wedging
+        // the worker.
+        let channelId: ChannelId
+        do {
+            channelId = try eventLoop.registerChannel(fd: fd)
+        } catch {
+            #if canImport(Glibc)
+            _ = Glibc.close(fd)
+            #endif
+            inFlightConns &-= 1
+            return
+        }
         let peerAddress = Self.getPeerAddress(fd: fd)
         let conn = ConnState(
             fd: fd,
@@ -298,10 +312,14 @@ public actor Worker {
         let channelId = initialConn.channelId
         let peerAddress = initialConn.peerAddress
         defer {
+            // Pulsar owns a dup of the fd: cancelChannel deregisters and
+            // closes the loop's descriptor (precise by construction),
+            // then closing OUR fd drops the last reference — the socket
+            // is destroyed only after both.
+            eventLoop.cancelChannel(channelId)
             #if canImport(Glibc)
             _ = Glibc.close(fd)
             #endif
-            eventLoop.cancelChannel(channelId)
         }
 
         let conn = H1Conn(
@@ -581,7 +599,7 @@ public actor Worker {
                 // slow-but-steady reader never blocks this long.
                 let deadline = ContinuousClock.now + writeTimeout
                 if !(await eventLoop.awaitWritable(
-                    channelId: channelId, fd: fd, deadline: deadline
+                    channelId: channelId, deadline: deadline
                 )) {
                     return false
                 }

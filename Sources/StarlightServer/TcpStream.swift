@@ -29,7 +29,9 @@ public final class TcpStream: Sendable {
     public let channelId: ChannelId
 
     /// Construct from an accepted fd. The caller must have already
-    /// registered a fresh channel with `eventLoop.registerChannel()`.
+    /// registered a channel with `eventLoop.registerChannel(fd:)` — the
+    /// loop owns a dup of the fd; this property is the caller's own
+    /// reference (kept for direct syscalls; close it after `close()`).
     @inlinable
     public init(fd: CInt, eventLoop: PollEventLoop, channelId: ChannelId) {
         self.fd = fd
@@ -41,16 +43,16 @@ public final class TcpStream: Sendable {
     /// on error). Uses eventLoop's internal buffer — caller accesses
     /// bytes via `eventLoop.getReadView`.
     public func read() async -> Int {
-        await eventLoop.read(channelId: channelId, fd: fd)
+        await eventLoop.read(channelId: channelId)
     }
 
     /// Write from the buffer; returns bytes written (negative on error).
     public func write(from buffer: UnsafeRawBufferPointer) async -> Int {
-        await eventLoop.write(channelId: channelId, fd: fd, from: buffer)
+        await eventLoop.write(channelId: channelId, from: buffer)
     }
 
     /// Cancel any outstanding operation on this stream and close
-    /// the fd. Idempotent.
+    /// both descriptors (the loop's dup and our own). Idempotent.
     public func close() {
         eventLoop.cancelChannel(channelId)
         #if canImport(Glibc)
