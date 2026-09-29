@@ -15,6 +15,7 @@
 
 #include "CLinuxExt.h"
 #include <sched.h>
+#include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
