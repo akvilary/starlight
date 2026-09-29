@@ -555,11 +555,26 @@ public actor Worker {
             }
 
             // 6. 101 Switching Protocols: the connection leaves HTTP
-            //    semantics. Without tunnel support the only safe
-            //    continuation is flush + close — the next loop
-            //    iteration would otherwise parse protocol frames
-            //    (WebSocket, h2c, …) as HTTP garbage.
-            if response.status.code == 101 { return }
+            //    semantics. With an UpgradeHandoff extension the
+            //    handler takes over as a raw byte tunnel (the driver
+            //    stops speaking HTTP; teardown stays with this
+            //    Task's defer — single owner). Without a handoff the
+            //    only safe continuation is flush + close — the next
+            //    loop iteration would otherwise parse protocol
+            //    frames (WebSocket, h2c, …) as HTTP garbage.
+            if response.status.code == 101 {
+                if let handoff = response.extensions.get(UpgradeHandoff.self) {
+                    let leftover = await conn.takeBufferedBytes()
+                    let upgraded = UpgradedConnection(
+                        eventLoop: eventLoop,
+                        fd: fd,
+                        channelId: channelId,
+                        initialBytes: leftover
+                    )
+                    await handoff.handler(upgraded)
+                }
+                return
+            }
 
             // Connection: close — done after response is flushed.
             if !keepAliveFinal { return }
