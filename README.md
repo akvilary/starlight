@@ -59,7 +59,7 @@ starlight    → axum (Router, Handler, Extractors, serve())
 | `StarlightServer` | `hyper::server` + `tokio::net` (TcpListener, serve) |
 | `HTTPPrism` ([http-prism](https://github.com/akvilary/http-prism)) | `tower::{Service, Layer}` |
 | `HTTPLens` ([http-lens](https://github.com/akvilary/http-lens)) | `axum::middleware` + `tower-http` |
-| `HTTP` ([http](https://github.com/akvilary/http)) | `http` crate |
+| `HTTP` ([http](https://github.com/akvilary/http-model)) | `http` crate |
 | `HTTPCodec` ([http-codec](https://github.com/akvilary/http-codec)) | `hyper` H1 codec |
 | `Pulsar` ([pulsar](https://github.com/akvilary/pulsar)) | `tokio::runtime` (epoll reactor) |
 | `MIO` ([mio](https://github.com/akvilary/mio)) | `mio` (epoll primitives) |

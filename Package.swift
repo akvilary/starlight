@@ -92,7 +92,7 @@ let package = Package(
         .package(path: "../pulsar"),
         .package(path: "../http-prism"),
         .package(path: "../http-lens"),
-        .package(path: "../http"),
+        .package(path: "../http-model"),
         .package(path: "../http-codec"),
     ],
     targets: [
@@ -125,7 +125,7 @@ let package = Package(
         .target(
             name: "StarlightCore",
             dependencies: [
-                .product(name: "HTTP", package: "http"),
+                .product(name: "HTTP", package: "http-model"),
                 .product(name: "HTTPPrism", package: "http-prism"),
             ],
             path: "Sources/StarlightCore",
@@ -141,7 +141,7 @@ let package = Package(
             name: "StarlightRouting",
             dependencies: [
                 "StarlightCore",
-                .product(name: "HTTP", package: "http"),
+                .product(name: "HTTP", package: "http-model"),
                 .product(name: "HTTPPrism", package: "http-prism"),
             ],
             path: "Sources/StarlightRouting",
@@ -156,7 +156,7 @@ let package = Package(
             name: "StarlightExtractors",
             dependencies: [
                 "StarlightCore",
-                .product(name: "HTTP", package: "http"),
+                .product(name: "HTTP", package: "http-model"),
             ],
             path: "Sources/StarlightExtractors",
             swiftSettings: baseSwiftSettings
@@ -170,7 +170,7 @@ let package = Package(
             name: "Starlight",
             dependencies: [
                 "StarlightCore",
-                .product(name: "HTTP", package: "http"),
+                .product(name: "HTTP", package: "http-model"),
                 .product(name: "HTTPCodec", package: "http-codec"),
                 .product(name: "HTTPPrism", package: "http-prism"),
                 "StarlightServer",
@@ -198,7 +198,7 @@ let package = Package(
                 "StarlightExtractors",
                 .product(name: "HTTPLens", package: "http-lens"),
                 .product(name: "HTTPPrism", package: "http-prism"),
-                .product(name: "HTTP", package: "http"),
+                .product(name: "HTTP", package: "http-model"),
             ],
             path: "Tests/StarlightRoutingTests",
             swiftSettings: baseSwiftSettings
@@ -211,7 +211,7 @@ let package = Package(
                 "StarlightCore",
                 "StarlightRouting",
                 "StarlightExtractors",
-                .product(name: "HTTP", package: "http"),
+                .product(name: "HTTP", package: "http-model"),
                 .product(name: "HTTPCodec", package: "http-codec"),
                 .product(name: "HTTPPrism", package: "http-prism"),
                 .product(name: "Pulsar", package: "pulsar"),
@@ -228,7 +228,7 @@ let package = Package(
                 "Starlight",
                 "StarlightServer",
                 .product(name: "HTTPLens", package: "http-lens"),
-                .product(name: "HTTP", package: "http"),
+                .product(name: "HTTP", package: "http-model"),
                 .product(name: "HTTPCodec", package: "http-codec"),
             ],
             path: "Sources/HelloWorld",
@@ -253,7 +253,7 @@ var baseSwiftSettings: [SwiftSetting] {
 #if os(Linux)
 var serverDependencies: [Target.Dependency] {
     [
-        .product(name: "HTTP", package: "http"),
+        .product(name: "HTTP", package: "http-model"),
         .product(name: "HTTPCodec", package: "http-codec"),
         .product(name: "Pulsar", package: "pulsar"),
         "CLinuxExt",
@@ -262,7 +262,7 @@ var serverDependencies: [Target.Dependency] {
 #else
 var serverDependencies: [Target.Dependency] {
     [
-        .product(name: "HTTP", package: "http"),
+        .product(name: "HTTP", package: "http-model"),
         .product(name: "HTTPCodec", package: "http-codec"),
         .product(name: "Pulsar", package: "pulsar"),
     ]

@@ -9,7 +9,7 @@ doesn't allow a literal port.
 
 | Компонент | Статус |
 |---|---|
-| `../http` package (port of `http` crate) | ✅ 5 tests |
+| `../http-model` package (port of `http` crate) | ✅ 5 tests |
 | `../hyper` package (port of `hyper::proto::h1`) | ✅ 18 tests |
 | `Starlight` (axum umbrella) | ✅ 39 tests |
 | HTTP/1.1 end-to-end pipeline | ✅ работает |

@@ -32,7 +32,7 @@ swift run hello-world
 ### Package layout
 
 ```
-../http       = http crate (Request, Response, Method, StatusCode, Body)
+../http-model = http crate (Request, Response, Method, StatusCode, Body)
 ../hyper      = hyper crate (H1 codec: Decoder, Encoder, Conn, Dispatcher)
 ../mio        = mio crate (epoll primitives: Poll, Registry, Token, Events)
 starlight     = axum crate (Router, Handler, Extractors, Middleware, Server)

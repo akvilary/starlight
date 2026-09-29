@@ -65,7 +65,7 @@
 ### Packages
 
 - [`starlight`](https://github.com/akvilary/starlight) — axum port
-- [`http`](https://github.com/akvilary/http) — http crate port
+- [`http`](https://github.com/akvilary/http-model) — http crate port
 - [`hyper`](https://github.com/akvilary/hyper) — hyper H1 codec port
 - [`mio`](https://github.com/akvilary/mio) — mio epoll primitives port
 
