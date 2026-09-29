@@ -352,6 +352,31 @@ public actor Worker {
                     return
                 }
                 head = h
+            } catch is CancellationError {
+                // Shutdown / task cancellation — close silently.
+                return
+            } catch let e as H1ConnError {
+                // Codec error taxonomy (see H1Conn.decodeHead docs):
+                // - size limits → 413, parse errors → 400,
+                // - timeouts / truncation / I/O failure → close
+                //   silently (the socket is dead or the peer is
+                //   gone; a status line would be pointless).
+                switch e {
+                case .requestTooLarge:
+                    writeErrorAndClose(
+                        fd: fd, writeBuffer: &writeBuffer,
+                        status: .payloadTooLarge, message: "Payload Too Large"
+                    )
+                    return
+                case .timedOut, .incompleteMessage, .ioError:
+                    return
+                default:
+                    writeErrorAndClose(
+                        fd: fd, writeBuffer: &writeBuffer,
+                        status: .badRequest, message: "Bad Request"
+                    )
+                    return
+                }
             } catch {
                 writeErrorAndClose(
                     fd: fd, writeBuffer: &writeBuffer,
@@ -374,6 +399,11 @@ public actor Worker {
                 request.body = .pull {
                     try await bodyConn.nextBodyChunk(forGeneration: myGen)
                 }
+                // Chunked-body trailers: bound accessor for handlers
+                // (returns nil until the body is fully consumed).
+                request.extensions.insert(
+                    RequestTrailers(source: bodyConn, generation: myGen)
+                )
             }
 
             // 3. Populate ConnectInfo for extractors + RateLimitLayer.
@@ -398,16 +428,43 @@ public actor Worker {
                 return
             }
 
+            // Fold the response's own Connection header into the
+            // keep-alive decision: the request side dominates (it
+            // already encodes the request's tokens + version
+            // default), the response can veto with an explicit
+            // `close`. An HTTP/1.0 + `Connection: keep-alive`
+            // request therefore survives a response that doesn't
+            // mention Connection — and the encoder forwards any
+            // explicit response Connection verbatim on the wire.
+            let keepAliveFinal = ServerTransaction.shouldKeepAlive(
+                requestKeepAlive: keepAlive,
+                response: response,
+                explicitConnection: response.headers.first(for: .connection)
+            )
+
             // 5. Encode + write response FIRST. The client sees the
             //    response without waiting for any post-handler body
             //    drain (UX: responsive even when the handler ignored
             //    a large body).
             writeBuffer.removeAll(keepingCapacity: true)
-            let encoded = encoder.encodeHead(
-                response, keepAlive: keepAlive,
-                requestMethod: requestMethod,
-                into: &writeBuffer
-            )
+            let encoded: EncodedHead
+            do {
+                encoded = try encoder.encodeHead(
+                    response, keepAlive: keepAliveFinal,
+                    requestMethod: requestMethod,
+                    into: &writeBuffer
+                )
+            } catch {
+                // Invalid handler-supplied headers (response-splitting
+                // guard in the encoder, duplicate/contradictory
+                // framing headers, …) — 500 + close.
+                writeErrorAndClose(
+                    fd: fd, writeBuffer: &writeBuffer,
+                    status: .internalServerError,
+                    message: "Internal Server Error"
+                )
+                return
+            }
             switch encoded {
             case .noBody:
                 if !(await Self.writeAll(fd: fd, writeBuffer[...],
@@ -470,20 +527,66 @@ public actor Worker {
                                           eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
                     return
                 }
+            case .streamIdentity(let length):
+                // Raw identity framing delimited by the handler's own
+                // Content-Length: write chunks with NO chunk framing
+                // and abort the connection if the stream over- or
+                // under-delivers (the wire promise would be broken).
+                if !(await Self.writeAll(fd: fd, writeBuffer[...],
+                                          eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
+                    return
+                }
+                var written = 0
+                do {
+                    for try await chunk in response.body.dataStream() {
+                        if written + chunk.count > length {
+                            return  // over-delivery — abort
+                        }
+                        if !(await Self.writeAll(fd: fd, chunk[...],
+                                                  eventLoop: eventLoop, channelId: channelId, writeTimeout: writeTimeout)) {
+                            return
+                        }
+                        written += chunk.count
+                    }
+                } catch { return }
+                if written != length {
+                    return  // under-delivery — abort, do not reuse
+                }
             }
 
-            // 6. Connection: close — done after response is flushed.
-            if !keepAlive { return }
+            // 6. 101 Switching Protocols: the connection leaves HTTP
+            //    semantics. Without tunnel support the only safe
+            //    continuation is flush + close — the next loop
+            //    iteration would otherwise parse protocol frames
+            //    (WebSocket, h2c, …) as HTTP garbage.
+            if response.status.code == 101 { return }
+
+            // Connection: close — done after response is flushed.
+            if !keepAliveFinal { return }
 
             // 7. Drain unread request body so the buffer is left
-            //    positioned at the next pipelined request. If the
-            //    handler didn't read the body and the client sent
-            //    `Expect: 100-continue`, the drain will send the
-            //    interim 100 Continue first so reverse proxies (nginx)
-            //    proceed with body forwarding instead of retrying.
-            //    Bounded by `readTimeout` inside the actor.
+            //    positioned at the next pipelined request.
+            //    If the handler never touched an `Expect:
+            //    100-continue` body, the client is still waiting for
+            //    the interim response that will now never come (the
+            //    final response is already flushed, and an interim
+            //    after a final is a wire-order violation) — close
+            //    instead of stalling for the whole read deadline.
             if await !conn.isBodyDone() {
-                try? await conn.drainBody()
+                var expectUntouched = false
+                if head.expects100Continue {
+                    expectUntouched = !(await conn.hasStartedReadingBody())
+                }
+                if expectUntouched {
+                    return
+                }
+                do {
+                    try await conn.drainBody()
+                } catch {
+                    // Drain failure (bomb / EOF / timeout) — the
+                    // framing is broken, the connection is unusable.
+                    return
+                }
             }
         }
     }
@@ -499,7 +602,18 @@ public actor Worker {
     ) {
         let response = errorResponse(status: status, message: message)
         writeBuffer.removeAll(keepingCapacity: true)
-        _ = H1Encoder().encodeHead(response, keepAlive: false, into: &writeBuffer)
+        do {
+            _ = try H1Encoder().encodeHead(response, keepAlive: false, into: &writeBuffer)
+        } catch {
+            // The error response itself failed to encode (should be
+            // impossible — fixed headers) — emit a minimal hardcoded
+            // 500 so the peer at least gets a clean termination.
+            writeBuffer = Array(
+                ("HTTP/1.1 500 Internal Server Error\r\n"
+                 + "Content-Length: 0\r\n"
+                 + "Connection: close\r\n\r\n").utf8
+            )
+        }
         // Best-effort, non-blocking: the connection is being torn down
         // regardless, so a truncated error body is acceptable. Must NOT
         // block the loop thread (the socket is non-blocking).

@@ -238,11 +238,17 @@ final class IntegrationServer {
 
             // 5. Encode + write.
             var outBuf: [UInt8] = []
-            let head = encoder.encodeHead(
-                response, keepAlive: true,
-                requestMethod: reqWithBody.method,
-                into: &outBuf
-            )
+            let head: EncodedHead
+            do {
+                head = try encoder.encodeHead(
+                    response, keepAlive: true,
+                    requestMethod: reqWithBody.method,
+                    into: &outBuf
+                )
+            } catch {
+                writeBadRequest(fd: fd, encoder: &encoder)
+                return
+            }
             if case .buffered = head {
                 if case .buffered(let bytes) = response.body, !bytes.isEmpty {
                     outBuf.append(contentsOf: bytes)
@@ -282,7 +288,13 @@ final class IntegrationServer {
             body: .buffered(Array("Bad Request".utf8))
         )
         var buf: [UInt8] = []
-        _ = encoder.encodeHead(resp, keepAlive: false, into: &buf)
+        // Fixed valid headers — cannot throw; crash loudly if that
+        // invariant ever breaks.
+        buf = try! { () -> [UInt8] in
+            var b: [UInt8] = []
+            _ = try encoder.encodeHead(resp, keepAlive: false, into: &b)
+            return b
+        }()
         _ = buf.withUnsafeBufferPointer { ptr in
             Glibc.write(fd, ptr.baseAddress, ptr.count)
         }
