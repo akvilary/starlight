@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.0 (2026-09-29)
+
+### Changed
+
+- **BREAKING** (stack-wide): the `http` package was renamed to
+  [`http-model`](https://github.com/akvilary/http-model) and its
+  product/module `HTTP` to `HTTPModel`. Code that spelled
+  `import HTTP` alongside starlight must switch to
+  `import HTTPModel`; starlight's own module names (Starlight,
+  StarlightCore, …) are unchanged. Requires http-model v0.4.0,
+  http-codec v0.5.0, http-lens/http-prism v0.2.0.
+
+## v0.3.1 (2026-09-29)
+
 ## v0.2.0 (2026-09-25)
 
 ### Changed
