@@ -19,7 +19,7 @@ import CLinuxExt
 #endif
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPCodec
 import Pulsar
 import HTTPPrism

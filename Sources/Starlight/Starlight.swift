@@ -12,7 +12,7 @@ import Foundation
 
 @_exported import StarlightCore
 @_exported import StarlightExtractors
-@_exported import HTTP
+@_exported import HTTPModel
 @_exported import HTTPLens
 @_exported import Pulsar
 @_exported import StarlightRouting

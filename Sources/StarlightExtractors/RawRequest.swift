@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import StarlightCore
 
 /// Extractor that yields the whole request.

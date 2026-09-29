@@ -13,7 +13,7 @@ import Glibc
 #endif
 
 import Foundation
-import HTTP
+import HTTPModel
 import Pulsar
 
 /// An async TCP stream — the connection side of a `TcpListener::accept`.

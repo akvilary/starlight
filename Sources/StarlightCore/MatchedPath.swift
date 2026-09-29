@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 
 /// The route pattern that matched the incoming request.
 ///

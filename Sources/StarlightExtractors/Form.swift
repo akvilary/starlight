@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import StarlightCore
 
 /// Extractor for `application/x-www-form-urlencoded` request bodies.

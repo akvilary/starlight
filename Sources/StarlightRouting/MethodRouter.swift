@@ -18,7 +18,7 @@
 
 import Foundation
 import StarlightCore
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// Per-method handler dispatch for a single path.

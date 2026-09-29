@@ -17,7 +17,7 @@ import Glibc
 
 import Testing
 import Foundation
-import HTTP
+import HTTPModel
 import StarlightRouting
 import StarlightServer
 
@@ -38,7 +38,7 @@ struct IntegrationTests {
     @Test("GET / over real TCP returns 200 with body")
     func basicGet() throws {
         let server = try IntegrationServer { _ in
-            HTTP.Response.plain("hello")
+            HTTPModel.Response.plain("hello")
         }
         defer { server.stop() }
 
@@ -63,7 +63,7 @@ struct IntegrationTests {
             case .stream: bodySize = -1
             case .pull: bodySize = -1
             }
-            return HTTP.Response.plain("got \(bodySize) bytes")
+            return HTTPModel.Response.plain("got \(bodySize) bytes")
         }
         defer { server.stop() }
 
@@ -93,7 +93,7 @@ struct IntegrationTests {
         let server = try IntegrationServer { req in
             // Reflect the request path back so each response is
             // distinguishable.
-            return HTTP.Response.plain("got \(req.uri.pathString)")
+            return HTTPModel.Response.plain("got \(req.uri.pathString)")
         }
         defer { server.stop() }
 
@@ -114,7 +114,7 @@ struct IntegrationTests {
             headers.insert(.contentType, "text/plain")
             headers.insert(.contentLength, "2")
             headers.insert(.connection, "close")
-            return HTTP.Response(
+            return HTTPModel.Response(
                 status: .ok,
                 headers: headers,
                 body: .buffered(Array("hi".utf8))
@@ -140,7 +140,7 @@ struct IntegrationTests {
     func headRequest() throws {
         let server = try IntegrationServer { _ in
             // Handler returns a body that the codec MUST strip for HEAD.
-            HTTP.Response.plain("this is a long body that must not be sent for HEAD")
+            HTTPModel.Response.plain("this is a long body that must not be sent for HEAD")
         }
         defer { server.stop() }
 
@@ -156,7 +156,7 @@ struct IntegrationTests {
     @Test("404 path returns Not Found status")
     func notFound() throws {
         let server = try IntegrationServer { _ in
-            HTTP.Response(status: .notFound, body: .empty)
+            HTTPModel.Response(status: .notFound, body: .empty)
         }
         defer { server.stop() }
 
@@ -175,7 +175,7 @@ struct IntegrationTests {
 
     @Test("Header value with bare LF is rejected with 400 (A17)")
     func bareLfInHeaderValue() throws {
-        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
+        let server = try IntegrationServer { _ in HTTPModel.Response.plain("ok") }
         defer { server.stop() }
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
@@ -191,7 +191,7 @@ struct IntegrationTests {
 
     @Test("CL + TE both present — codec must reject with 400 (A26)")
     func clPlusTeConflict() throws {
-        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
+        let server = try IntegrationServer { _ in HTTPModel.Response.plain("ok") }
         defer { server.stop() }
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
@@ -208,7 +208,7 @@ struct IntegrationTests {
 
     @Test("Transfer-Encoding: xchunked must NOT be treated as chunked (A17)")
     func teSubstringNoMatch() throws {
-        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
+        let server = try IntegrationServer { _ in HTTPModel.Response.plain("ok") }
         defer { server.stop() }
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
@@ -228,7 +228,7 @@ struct IntegrationTests {
 
     @Test("Chunked body with trailers parses correctly (A18)")
     func chunkedWithTrailers() throws {
-        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
+        let server = try IntegrationServer { _ in HTTPModel.Response.plain("ok") }
         defer { server.stop() }
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }
@@ -246,7 +246,7 @@ struct IntegrationTests {
 
     @Test("HTTP/1.1 without Host header returns 400 (A25)")
     func missingHost() throws {
-        let server = try IntegrationServer { _ in HTTP.Response.plain("ok") }
+        let server = try IntegrationServer { _ in HTTPModel.Response.plain("ok") }
         defer { server.stop() }
         let client = try IntegrationClient(port: server.port)
         defer { client.close() }

@@ -10,7 +10,7 @@
 
 import Testing
 import Foundation
-import HTTP
+import HTTPModel
 import Synchronization
 import StarlightCore
 import StarlightExtractors
@@ -26,15 +26,15 @@ fileprivate func fixed(_ s: String) -> HandlerEndpoint {
 }
 
 fileprivate func call(_ router: Router<NoState>, path: String) async throws -> String {
-    let req = HTTP.Request(method: .GET, uri: Uri(path))
+    let req = HTTPModel.Request(method: .GET, uri: Uri(path))
     let resp = try await router.call(req)
     return if case .buffered(let b) = resp.body {
         String(decoding: b, as: UTF8.self)
     } else { "" }
 }
 
-fileprivate func call(_ router: Router<NoState>, method: Method, path: String) async throws -> HTTP.Response {
-    let req = HTTP.Request(method: method, uri: Uri(path))
+fileprivate func call(_ router: Router<NoState>, method: Method, path: String) async throws -> HTTPModel.Response {
+    let req = HTTPModel.Request(method: method, uri: Uri(path))
     return try await router.call(req)
 }
 
@@ -136,7 +136,7 @@ struct LayerTests {
     @Test("route_layer applies to all routes registered so far")
     func routeLayerScoping() async throws {
         let counter = Counter()
-        let authLayer = Layer<HTTP.Request, HTTP.Response> { inner in
+        let authLayer = Layer<HTTPModel.Request, HTTPModel.Response> { inner in
             BoxService { req in
                 _ = counter.increment()
                 return try await inner.call(req)

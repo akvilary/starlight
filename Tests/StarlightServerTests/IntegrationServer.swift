@@ -29,7 +29,7 @@ import Glibc
 #endif
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPCodec  // H1Encoder for response encoding
 import StarlightServer
 import Synchronization
@@ -63,7 +63,7 @@ final class IntegrationServer {
     /// Connections are keep-alive: the loop reads another request
     /// after each response until the client closes or sends malformed
     /// input.
-    init(handler: @escaping @Sendable (HTTP.Request) -> HTTP.Response) throws {
+    init(handler: @escaping @Sendable (HTTPModel.Request) -> HTTPModel.Response) throws {
         #if canImport(Glibc)
         let fd = Glibc.socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         if fd < 0 { throw IntegrationError.socketFailed(errno: errno) }
@@ -134,7 +134,7 @@ final class IntegrationServer {
     private static func acceptLoop(
         listenerFd: CInt,
         stopRef: StopFlag,
-        handler: @Sendable @escaping (HTTP.Request) -> HTTP.Response
+        handler: @Sendable @escaping (HTTPModel.Request) -> HTTPModel.Response
     ) {
         while !stopRef.value.load(ordering: .acquiring) {
             let clientFd = Glibc.accept(listenerFd, nil, nil)
@@ -164,7 +164,7 @@ final class IntegrationServer {
     /// passed into a `Task.detached` under `NonisolatedNonsendingByDefault`.
     private static func handleConnection(
         fd: CInt,
-        handler: @Sendable (HTTP.Request) -> HTTP.Response
+        handler: @Sendable (HTTPModel.Request) -> HTTPModel.Response
     ) {
         #if canImport(Glibc)
         defer { _ = Glibc.close(fd) }
@@ -197,7 +197,7 @@ final class IntegrationServer {
             }
 
             // 2. Parse request line + headers.
-            let request: HTTP.Request
+            let request: HTTPModel.Request
             let contentLength: Int
             do {
                 (request, contentLength) = try parseRequestHeaders(
@@ -282,7 +282,7 @@ final class IntegrationServer {
     @inline(__always)
     private static func writeBadRequest(fd: CInt, encoder: inout H1Encoder) {
         #if canImport(Glibc)
-        let resp = HTTP.Response(
+        let resp = HTTPModel.Response(
             status: .badRequest,
             headers: HeaderMap(),
             body: .buffered(Array("Bad Request".utf8))
@@ -342,7 +342,7 @@ final class IntegrationServer {
     /// plus the parsed Content-Length (0 if absent).
     private static func parseRequestHeaders(
         buffer: [UInt8], headerEnd: Int
-    ) throws -> (request: HTTP.Request, contentLength: Int) {
+    ) throws -> (request: HTTPModel.Request, contentLength: Int) {
         var pos = 0
 
         // ── Request line: METHOD SP TARGET SP HTTP/1.x CRLF ──────
@@ -471,7 +471,7 @@ final class IntegrationServer {
         // Strip hop-by-hop (handler shouldn't see them).
         headers.entries.removeAll { (n, _) in n.isHopByHop() }
 
-        let request = HTTP.Request(
+        let request = HTTPModel.Request(
             method: method,
             uri: uri,
             version: version,

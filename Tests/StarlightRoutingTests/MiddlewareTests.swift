@@ -9,7 +9,7 @@
 
 import Testing
 import Foundation
-import HTTP
+import HTTPModel
 import Synchronization
 import StarlightCore
 import StarlightExtractors
@@ -37,7 +37,7 @@ struct MiddlewareTests {
             .get("/", fixed("ok"))
             .layer(TraceLayer(config: config).asLayer())
 
-        let req = HTTP.Request(method: .GET, uri: Uri("/"))
+        let req = HTTPModel.Request(method: .GET, uri: Uri("/"))
         _ = try await router.call(req)
 
         // onRequest + onResponse = 2 calls
@@ -48,7 +48,7 @@ struct MiddlewareTests {
 
     @Test("TimeoutLayer returns 504 when handler exceeds duration")
     func timeoutExceeded() async throws {
-        let slowService: HandlerEndpoint = BoxService { (_: HTTP.Request) -> HTTP.Response in
+        let slowService: HandlerEndpoint = BoxService { (_: HTTPModel.Request) -> HTTPModel.Response in
             try? await Task.sleep(for: .seconds(10))
             return .plain("done")
         }
@@ -56,7 +56,7 @@ struct MiddlewareTests {
         let layered = TimeoutLayer(duration: .milliseconds(50)).asLayer()
             .layer(slowService)
 
-        let req = HTTP.Request(method: .GET, uri: Uri("/"))
+        let req = HTTPModel.Request(method: .GET, uri: Uri("/"))
         let response = try await layered.call(req)
         #expect(response.status == StatusCode.gatewayTimeout)
     }
@@ -64,13 +64,13 @@ struct MiddlewareTests {
     @Test("TimeoutLayer passes through when handler is fast")
     func timeoutPassThrough() async throws {
         let fastService: HandlerEndpoint = BoxService { _ in
-            HTTP.Response.plain("fast")
+            HTTPModel.Response.plain("fast")
         }
 
         let layered = TimeoutLayer(duration: .seconds(10)).asLayer()
             .layer(fastService)
 
-        let req = HTTP.Request(method: .GET, uri: Uri("/"))
+        let req = HTTPModel.Request(method: .GET, uri: Uri("/"))
         let response = try await layered.call(req)
         #expect(response.status == StatusCode.ok)
         if case .buffered(let b) = response.body {
@@ -89,7 +89,7 @@ struct MiddlewareTests {
         var headers = HeaderMap()
         headers.insert(.origin, "https://example.com")
         headers.insert(.accessControlRequestMethod, "DELETE")
-        let req = HTTP.Request(
+        let req = HTTPModel.Request(
             method: .OPTIONS, uri: Uri("/api"), headers: headers
         )
         let response = try await service.call(req)
@@ -107,7 +107,7 @@ struct MiddlewareTests {
         // not a preflight → forwarded to Router → 405 (no OPTIONS handler).
         var headers = HeaderMap()
         headers.insert(.origin, "https://example.com")
-        let req = HTTP.Request(method: .OPTIONS, uri: Uri("/api"), headers: headers)
+        let req = HTTPModel.Request(method: .OPTIONS, uri: Uri("/api"), headers: headers)
         let response = try await service.call(req)
         // NOT 204 (preflight) — proves the request reached the Router.
         #expect(response.status != .noContent)
@@ -119,7 +119,7 @@ struct MiddlewareTests {
             .get("/api", fixed("data"))
         let service = CorsLayer().asLayer().layer(BoxService(router))
 
-        let req = HTTP.Request(method: .GET, uri: Uri("/api"))
+        let req = HTTPModel.Request(method: .GET, uri: Uri("/api"))
         let response = try await service.call(req)
         let vary = response.headers.first(for: .vary)?.description ?? ""
         #expect(vary.contains("Origin"))
@@ -135,7 +135,7 @@ struct MiddlewareTests {
         var headers = HeaderMap()
         headers.insert(.origin, "https://evil.com")
         headers.insert(.accessControlRequestMethod, "DELETE")
-        let req = HTTP.Request(method: .OPTIONS, uri: Uri("/api"), headers: headers)
+        let req = HTTPModel.Request(method: .OPTIONS, uri: Uri("/api"), headers: headers)
         let response = try await service.call(req)
         #expect(response.status == .forbidden)
         #expect(response.headers.first(for: .accessControlAllowMethods) == nil)
@@ -151,14 +151,14 @@ struct MiddlewareTests {
         // Allowed origin
         var headers = HeaderMap()
         headers.insert(.origin, "https://allowed.com")
-        let req1 = HTTP.Request(method: .GET, uri: Uri("/api"), headers: headers)
+        let req1 = HTTPModel.Request(method: .GET, uri: Uri("/api"), headers: headers)
         let resp1 = try await service.call(req1)
         #expect(resp1.headers.first(for: .accessControlAllowOrigin)?.description == "https://allowed.com")
 
         // Disallowed origin
         var headers2 = HeaderMap()
         headers2.insert(.origin, "https://evil.com")
-        let req2 = HTTP.Request(method: .GET, uri: Uri("/api"), headers: headers2)
+        let req2 = HTTPModel.Request(method: .GET, uri: Uri("/api"), headers: headers2)
         let resp2 = try await service.call(req2)
         #expect(resp2.headers.first(for: .accessControlAllowOrigin) == nil)
     }
@@ -193,7 +193,7 @@ struct MiddlewareTests {
         ).asLayer().layer(BoxService(router))
 
         // First two requests OK
-        let req = HTTP.Request(method: .GET, uri: Uri("/"))
+        let req = HTTPModel.Request(method: .GET, uri: Uri("/"))
         let resp1 = try await service.call(req)
         #expect(resp1.status == StatusCode.ok)
         let resp2 = try await service.call(req)

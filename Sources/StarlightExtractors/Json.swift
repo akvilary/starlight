@@ -9,7 +9,7 @@
 
 import Foundation
 import StarlightCore
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// Extractor for a JSON request body, plus a response wrapper.

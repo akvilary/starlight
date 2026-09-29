@@ -9,7 +9,7 @@
 
 import Foundation
 import StarlightCore
-import HTTP
+import HTTPModel
 
 /// Extractor for URL query parameters.
 ///

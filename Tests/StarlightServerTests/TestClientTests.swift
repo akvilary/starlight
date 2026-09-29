@@ -7,7 +7,7 @@
 
 import Testing
 import Foundation
-import HTTP
+import HTTPModel
 import StarlightCore
 import StarlightExtractors
 import StarlightRouting

@@ -28,7 +28,7 @@ import Starlight
 import StarlightServer
 import HTTPLens
 import HTTPPrism
-import HTTP
+import HTTPModel
 import HTTPCodec
 
 // MARK: - SSE chunk source
@@ -72,7 +72,7 @@ let app = Router(state: NoState())
         var headers = HeaderMap()
         headers.insert(.contentType, "application/json; charset=utf-8")
         headers.insert(.contentLength, String(json.utf8.count))
-        return HTTP.Response(
+        return HTTPModel.Response(
             status: .ok, headers: headers, body: .buffered(Array(json.utf8))
         )
     }

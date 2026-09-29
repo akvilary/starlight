@@ -14,7 +14,7 @@ import CLinuxExt
 #endif
 
 import Foundation
-import HTTP
+import HTTPModel
 import Pulsar
 
 /// A TCP listener bound to a `(host, port)`.

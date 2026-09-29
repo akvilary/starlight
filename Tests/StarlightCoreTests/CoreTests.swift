@@ -7,7 +7,7 @@
 
 import Testing
 import StarlightCore
-import HTTP
+import HTTPModel
 
 @Suite("Extractors + IntoResponse")
 struct CoreTests {

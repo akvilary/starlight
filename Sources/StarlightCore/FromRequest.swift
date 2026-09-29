@@ -31,7 +31,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// Thrown by extractors on a 4xx rejection. Carries the `Response`

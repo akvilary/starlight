@@ -20,7 +20,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 
 /// A type that contributes parts of an HTTP response (status, headers,
 /// extensions) without owning the body.

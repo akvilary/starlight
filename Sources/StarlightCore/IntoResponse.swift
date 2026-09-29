@@ -9,7 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 
 /// Anything convertible to an HTTP response.
 ///

@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// Maximum request body size, set via a Layer and read from
@@ -32,7 +32,7 @@ public struct DefaultBodyLimit: Hashable, Sendable {
     /// Create a Layer that inserts this limit into every request's
     /// extensions. Applied via `Router.layer` or `ServiceBuilder`.
     public static func layer(_ limit: DefaultBodyLimit = .default_)
-        -> Layer<HTTP.Request, HTTP.Response>
+        -> Layer<HTTPModel.Request, HTTPModel.Response>
     {
         let l = limit
         return Layer { inner in

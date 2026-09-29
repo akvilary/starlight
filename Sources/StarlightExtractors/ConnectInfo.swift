@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import StarlightCore
 
 extension ConnectInfo: FromRequestParts {

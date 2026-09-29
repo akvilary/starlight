@@ -17,13 +17,13 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// In-process test client. Calls a Service<Request> directly,
 /// without TCP. Direct port of `axum::test::TestClient`.
 public final class TestClient: Sendable {
-    public let service: BoxService<HTTP.Request, HTTP.Response>
+    public let service: BoxService<HTTPModel.Request, HTTPModel.Response>
 
     @inlinable public init<S: HTTPService>(_ service: S) {
         self.service = BoxService(service)
@@ -32,27 +32,27 @@ public final class TestClient: Sendable {
     // MARK: - Convenience request builders
 
     /// Send a GET request to `path`.
-    public func get(_ path: String, headers: HeaderMap = HeaderMap()) async throws -> HTTP.Response {
+    public func get(_ path: String, headers: HeaderMap = HeaderMap()) async throws -> HTTPModel.Response {
         try await request(method: .GET, path: path, headers: headers, body: .empty)
     }
 
     /// Send a POST request with a body.
-    public func post(_ path: String, body: Body = .empty, headers: HeaderMap = HeaderMap()) async throws -> HTTP.Response {
+    public func post(_ path: String, body: Body = .empty, headers: HeaderMap = HeaderMap()) async throws -> HTTPModel.Response {
         try await request(method: .POST, path: path, headers: headers, body: body)
     }
 
     /// Send a PUT request with a body.
-    public func put(_ path: String, body: Body = .empty, headers: HeaderMap = HeaderMap()) async throws -> HTTP.Response {
+    public func put(_ path: String, body: Body = .empty, headers: HeaderMap = HeaderMap()) async throws -> HTTPModel.Response {
         try await request(method: .PUT, path: path, headers: headers, body: body)
     }
 
     /// Send a DELETE request.
-    public func delete(_ path: String, headers: HeaderMap = HeaderMap()) async throws -> HTTP.Response {
+    public func delete(_ path: String, headers: HeaderMap = HeaderMap()) async throws -> HTTPModel.Response {
         try await request(method: .DELETE, path: path, headers: headers, body: .empty)
     }
 
     /// Send a PATCH request with a body.
-    public func patch(_ path: String, body: Body = .empty, headers: HeaderMap = HeaderMap()) async throws -> HTTP.Response {
+    public func patch(_ path: String, body: Body = .empty, headers: HeaderMap = HeaderMap()) async throws -> HTTPModel.Response {
         try await request(method: .PATCH, path: path, headers: headers, body: body)
     }
 
@@ -62,8 +62,8 @@ public final class TestClient: Sendable {
         path: String,
         headers: HeaderMap = HeaderMap(),
         body: Body = .empty
-    ) async throws -> HTTP.Response {
-        let request = HTTP.Request(
+    ) async throws -> HTTPModel.Response {
+        let request = HTTPModel.Request(
             method: method,
             uri: Uri(path),
             version: .http11,
@@ -80,7 +80,7 @@ public final class TestClient: Sendable {
         _ path: String,
         _ value: T,
         headers: HeaderMap = HeaderMap()
-    ) async throws -> HTTP.Response {
+    ) async throws -> HTTPModel.Response {
         let data = try JSONEncoder().encode(value)
         var hdrs = headers
         hdrs.insert(.contentType, "application/json")
@@ -90,7 +90,7 @@ public final class TestClient: Sendable {
 
 // MARK: - Response helpers
 
-extension HTTP.Response {
+extension HTTPModel.Response {
     /// Collect the body as a UTF-8 String. Convenience for tests.
     public func bodyString() async -> String {
         let bytes = (try? await body.collect()) ?? []

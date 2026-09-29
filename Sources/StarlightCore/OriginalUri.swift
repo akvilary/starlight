@@ -11,7 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 
 /// The original URI of the request, before any middleware
 /// modifications (e.g. prefix stripping).

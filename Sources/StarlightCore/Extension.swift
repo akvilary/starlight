@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// Extractor and layer for sharing state via request extensions.
@@ -48,7 +48,7 @@ public struct Extension<T: Hashable & Sendable>: Sendable {
 
     /// Create a Layer that inserts `value` into every request's
     /// extensions. Direct port of `Extension<T> as tower::Layer`.
-    public static func layer(_ value: T) -> Layer<HTTP.Request, HTTP.Response> {
+    public static func layer(_ value: T) -> Layer<HTTPModel.Request, HTTPModel.Response> {
         let v = value
         return Layer { inner in
             BoxService { request in
@@ -81,12 +81,12 @@ extension Extension: FromRequestParts {
 // MARK: - IntoResponse
 
 extension Extension: IntoResponse {
-    public func intoResponse() -> HTTP.Response {
+    public func intoResponse() -> HTTPModel.Response {
         // Insert value into response extensions — matches axum's
         // IntoResponse impl which puts T into res.extensions_mut().
         var headers = HeaderMap()
         headers.insert(.contentLength, "0")
-        var response = HTTP.Response(status: .ok, headers: headers, body: .empty)
+        var response = HTTPModel.Response(status: .ok, headers: headers, body: .empty)
         response.extensions.insert(value)
         return response
     }

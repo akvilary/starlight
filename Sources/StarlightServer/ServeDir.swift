@@ -17,7 +17,7 @@ import CLinuxExt
 #endif
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// MIME type detection from file extension.
@@ -79,8 +79,8 @@ public enum MimeType {
 /// by `realpath` — a symlink inside root that points outside will
 /// resolve to the outside path and fail the prefix check.
 public struct ServeDir: Service, Sendable {
-    public typealias Request = HTTP.Request
-    public typealias Response = HTTP.Response
+    public typealias Request = HTTPModel.Request
+    public typealias Response = HTTPModel.Response
 
     public let root: String
     public let maxFileSize: Int
@@ -99,7 +99,7 @@ public struct ServeDir: Service, Sendable {
         #endif
     }
 
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         #if canImport(Glibc)
         let rawPath = request.uri.pathString
 
@@ -224,7 +224,7 @@ public struct ServeDir: Service, Sendable {
         }
     }
 
-    private func serveFile(path: String, st: stat) -> HTTP.Response {
+    private func serveFile(path: String, st: stat) -> HTTPModel.Response {
         let size = Int(st.st_size)
 
         // Security: don't serve files larger than maxFileSize.
@@ -263,7 +263,7 @@ public struct ServeDir: Service, Sendable {
         let etag = "\"\(st.st_mtim.tv_sec)-\(size)\""
         headers.insert(.etag, etag)
 
-        return HTTP.Response(
+        return HTTPModel.Response(
             status: .ok,
             headers: headers,
             body: .buffered(bytes)
@@ -272,11 +272,11 @@ public struct ServeDir: Service, Sendable {
     #endif
 
     @inline(__always)
-    private func errorResponse(_ status: StatusCode, _ message: String) -> HTTP.Response {
+    private func errorResponse(_ status: StatusCode, _ message: String) -> HTTPModel.Response {
         var headers = HeaderMap()
         headers.insert(.contentType, "text/plain; charset=utf-8")
         headers.insert(.contentLength, String(message.utf8.count))
-        return HTTP.Response(status: status, headers: headers, body: .buffered(Array(message.utf8)))
+        return HTTPModel.Response(status: status, headers: headers, body: .buffered(Array(message.utf8)))
     }
 }
 

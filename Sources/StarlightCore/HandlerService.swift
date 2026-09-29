@@ -16,7 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import HTTP
+import HTTPModel
 import HTTPPrism
 
 /// Errors surfaced by the handler dispatcher when extraction fails.
@@ -31,7 +31,7 @@ public enum HandlerError: Error, Sendable {
     case bodyAlreadyConsumed
     /// Rejection from an extractor — already wrapped in its
     /// `intoResponse()` form so the dispatcher just returns it.
-    case rejection(HTTP.Response)
+    case rejection(HTTPModel.Response)
 }
 
 /// Zero-extractor handler — `() -> IntoResponse`.
@@ -50,7 +50,7 @@ where Fn: Sendable, S: Sendable, Out: IntoResponse {
 
 extension HandlerService0: Service {
 
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         try await f(state).intoResponse()
     }
 }
@@ -72,7 +72,7 @@ where E0: FromRequestParts, Fn: Sendable, S: Sendable, Out: IntoResponse {
 
 extension HandlerService1: Service {
 
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         var parts = RequestParts(request)
         let e0: E0
         do {
@@ -101,7 +101,7 @@ where E0: FromRequestParts, E1: FromRequest, Fn: Sendable, S: Sendable,
 
 extension HandlerService2: Service {
 
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         var parts = RequestParts(request)
         let e0: E0
         do {
@@ -112,7 +112,7 @@ extension HandlerService2: Service {
         guard let remainingBody = parts.body else {
             throw HandlerError.bodyAlreadyConsumed
         }
-        let remaining = HTTP.Request(
+        let remaining = HTTPModel.Request(
             method: parts.method, uri: parts.uri, version: parts.version,
             headers: parts.headers, body: remainingBody,
             extensions: parts.extensions
@@ -144,7 +144,7 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequest,
 
 extension HandlerService3: Service {
 
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         var parts = RequestParts(request)
         let e0: E0
         let e1: E1
@@ -161,7 +161,7 @@ extension HandlerService3: Service {
         guard let remainingBody = parts.body else {
             throw HandlerError.bodyAlreadyConsumed
         }
-        let remaining = HTTP.Request(
+        let remaining = HTTPModel.Request(
             method: parts.method, uri: parts.uri, version: parts.version,
             headers: parts.headers, body: remainingBody,
             extensions: parts.extensions
@@ -194,7 +194,7 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: From
 }
 
 extension HandlerService4: Service {
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         var parts = RequestParts(request)
         let e0: E0, e1: E1, e2: E2
         do { e0 = try await E0.fromRequestParts(&parts, state: state) }
@@ -204,7 +204,7 @@ extension HandlerService4: Service {
         do { e2 = try await E2.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
         guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
-        let req = HTTP.Request(method: parts.method, uri: parts.uri,
+        let req = HTTPModel.Request(method: parts.method, uri: parts.uri,
             version: parts.version, headers: parts.headers, body: body,
             extensions: parts.extensions)
         let e3: E3
@@ -230,7 +230,7 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: From
 }
 
 extension HandlerService5: Service {
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         var parts = RequestParts(request)
         let e0: E0, e1: E1, e2: E2, e3: E3
         do { e0 = try await E0.fromRequestParts(&parts, state: state) }
@@ -242,7 +242,7 @@ extension HandlerService5: Service {
         do { e3 = try await E3.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
         guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
-        let req = HTTP.Request(method: parts.method, uri: parts.uri,
+        let req = HTTPModel.Request(method: parts.method, uri: parts.uri,
             version: parts.version, headers: parts.headers, body: body,
             extensions: parts.extensions)
         let e4: E4
@@ -268,7 +268,7 @@ where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: From
 }
 
 extension HandlerService6: Service {
-    public func call(_ request: consuming HTTP.Request) async throws -> HTTP.Response {
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
         var parts = RequestParts(request)
         let e0: E0, e1: E1, e2: E2, e3: E3, e4: E4
         do { e0 = try await E0.fromRequestParts(&parts, state: state) }
@@ -282,7 +282,7 @@ extension HandlerService6: Service {
         do { e4 = try await E4.fromRequestParts(&parts, state: state) }
         catch let r as ExtractionRejection { return r.response }
         guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
-        let req = HTTP.Request(method: parts.method, uri: parts.uri,
+        let req = HTTPModel.Request(method: parts.method, uri: parts.uri,
             version: parts.version, headers: parts.headers, body: body,
             extensions: parts.extensions)
         let e5: E5
