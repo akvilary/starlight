@@ -29,7 +29,7 @@ doesn't allow a literal port.
 | Tier 1 bug fixes (B1-B5) | ✅ |
 | Tier 2 API parity (with_state, Handler4-6, IntoResponseParts) | ✅ |
 | Tier 3 axum parity (Sse, DefaultBodyLimit, Host) | ✅ |
-| Бенчмарк | ~234K req/s (release, 12-core, wrk -t12 -c100 -d3s) |
+| Бенчмарк | ~285K req/s (release, 12-core, wrk -t12 -c100 -d3s) |
 | CompressionLayer (gzip via zlib) | ✅ |
 | Static file serving (ServeDir) | ✅ |
 | Sse<Stream> structured helper | ✅ |

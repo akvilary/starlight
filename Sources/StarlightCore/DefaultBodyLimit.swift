@@ -45,8 +45,13 @@ public struct DefaultBodyLimit: Hashable, Sendable {
     }
 
     /// Read the limit from request extensions, if set.
-    /// Returns Int.max if no limit is configured.
+    ///
+    /// Falls back to the 2 MB default (matching axum and the server's
+    /// own `maxBodyBytes`), NOT `Int.max` — an unconfigured app must
+    /// not buffer unbounded bodies. Raise it explicitly via
+    /// `DefaultBodyLimit.layer(.init(maxBytes: n))` when a route
+    /// legitimately needs more.
     public static func read(from extensions: Extensions) -> Int {
-        extensions.get(DefaultBodyLimit.self)?.maxBytes ?? Int.max
+        extensions.get(DefaultBodyLimit.self)?.maxBytes ?? default_.maxBytes
     }
 }

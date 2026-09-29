@@ -10,7 +10,7 @@
 4. **Regression threshold**: > 5% drop = investigate before committing
 5. **Record the number** in the commit message
 
-Current baseline: **~260K req/s** (release, loopback, 12-core AMD 5600H)
+Current baseline: **~285K req/s** (release, loopback, 12-core AMD 5600H, v0.5.0)
 
 ### Build commands
 

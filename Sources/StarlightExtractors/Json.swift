@@ -52,7 +52,8 @@ extension Json: FromRequest where T: Decodable {
             )
         }
         do {
-            let decoded = try JSONDecoder().decode(T.self, from: Data(bytes))
+            let decoded = try JsonConfig.resolve(from: request.extensions)
+                .decoder.decode(T.self, from: Data(bytes))
             return Json(decoded)
         } catch {
             throw ExtractionRejection(
@@ -66,7 +67,7 @@ extension Json: FromRequest where T: Decodable {
 extension Json: IntoResponse where T: Encodable {
     public func intoResponse() -> Response {
         do {
-            let data = try JSONEncoder().encode(value)
+            let data = try JsonConfig.default.encoder.encode(value)
             var headers = HeaderMap()
             headers.insert(.contentType, "application/json; charset=utf-8")
             headers.insert(.contentLength, String(data.count))

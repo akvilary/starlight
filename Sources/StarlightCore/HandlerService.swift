@@ -36,8 +36,8 @@ public enum HandlerError: Error, Sendable {
 
 /// Zero-extractor handler — `() -> IntoResponse`.
 /// axum analogue: `impl Handler<(), S> for F`.
-public struct HandlerService0<Fn, S, Out>: Sendable
-where Fn: Sendable, S: Sendable, Out: IntoResponse {
+public struct HandlerService0<S, Out>: Sendable
+where S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (S) async throws -> Out
 
@@ -58,8 +58,8 @@ extension HandlerService0: Service {
 extension HandlerService0: Handler where S == NoState {}
 
 /// One-extractor handler — `(E0) -> IntoResponse`.
-public struct HandlerService1<E0, Fn, S, Out>: Sendable
-where E0: FromRequestParts, Fn: Sendable, S: Sendable, Out: IntoResponse {
+public struct HandlerService1<E0, S, Out>: Sendable
+where E0: FromRequestParts, S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, S) async throws -> Out
 
@@ -86,8 +86,8 @@ extension HandlerService1: Service {
 
 /// Two-extractor handler — `(E0, E1) -> IntoResponse`.
 /// `E0` is `FromRequestParts`, `E1` may be `FromRequest` (body-consuming).
-public struct HandlerService2<E0, E1, Fn, S, Out>: Sendable
-where E0: FromRequestParts, E1: FromRequest, Fn: Sendable, S: Sendable,
+public struct HandlerService2<E0, E1, S, Out>: Sendable
+where E0: FromRequestParts, E1: FromRequest, S: Sendable,
       Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, S) async throws -> Out
@@ -129,9 +129,9 @@ extension HandlerService2: Service {
 
 /// Three-extractor handler — `(E0, E1, E2) -> IntoResponse`.
 /// `E0`, `E1` are `FromRequestParts`; `E2` may be `FromRequest`.
-public struct HandlerService3<E0, E1, E2, Fn, S, Out>: Sendable
+public struct HandlerService3<E0, E1, E2, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse {
+      S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, S) async throws -> Out
 
@@ -180,9 +180,9 @@ extension HandlerService3: Service {
 
 /// Four-extractor handler — `(E0, E1, E2, E3) -> IntoResponse`.
 /// `E0-E2` are `FromRequestParts`; `E3` may be `FromRequest`.
-public struct HandlerService4<E0, E1, E2, E3, Fn, S, Out>: Sendable
+public struct HandlerService4<E0, E1, E2, E3, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse {
+      S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, S) async throws -> Out
 
@@ -216,9 +216,9 @@ extension HandlerService4: Service {
 
 // MARK: - HandlerService5 (5 extractors)
 
-public struct HandlerService5<E0, E1, E2, E3, E4, Fn, S, Out>: Sendable
+public struct HandlerService5<E0, E1, E2, E3, E4, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequestParts, E4: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse {
+      S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, E4, S) async throws -> Out
 
@@ -254,9 +254,9 @@ extension HandlerService5: Service {
 
 // MARK: - HandlerService6 (6 extractors)
 
-public struct HandlerService6<E0, E1, E2, E3, E4, E5, Fn, S, Out>: Sendable
+public struct HandlerService6<E0, E1, E2, E3, E4, E5, S, Out>: Sendable
 where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequestParts, E4: FromRequestParts, E5: FromRequest,
-      Fn: Sendable, S: Sendable, Out: IntoResponse {
+      S: Sendable, Out: IntoResponse {
     @usableFromInline internal let state: S
     @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, E4, E5, S) async throws -> Out
 
@@ -289,5 +289,138 @@ extension HandlerService6: Service {
         do { e5 = try await E5.fromRequest(req, state: state) }
         catch let r as ExtractionRejection { return r.response }
         return try await f(e0, e1, e2, e3, e4, e5, state).intoResponse()
+    }
+}
+
+// MARK: - PartsHandlerService (parts-only handlers)
+//
+// Variants where EVERY extractor is `FromRequestParts` — no
+// body-consuming argument. This covers handlers like
+// `(State, Path<Id>, Query<Filters>)` that previously could not be
+// expressed (the arity adapters above require the last extractor to
+// be `FromRequest`). The body is never reassembled into a `Request`
+// and never consumed; the server drains it after the response is
+// written, exactly as for closure-style handlers that ignore it.
+
+/// Two-extractor parts-only handler — `(E0, E1) -> IntoResponse`.
+public struct PartsHandlerService2<E0, E1, S, Out>: Sendable
+where E0: FromRequestParts, E1: FromRequestParts, S: Sendable,
+      Out: IntoResponse {
+    @usableFromInline internal let state: S
+    @usableFromInline internal let f: @Sendable (E0, E1, S) async throws -> Out
+
+    @inlinable
+    public init(state: S, _ f: @Sendable @escaping (E0, E1, S) async throws -> Out) {
+        self.state = state
+        self.f = f
+    }
+}
+
+extension PartsHandlerService2: Service {
+
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
+        var parts = RequestParts(request)
+        let e0: E0, e1: E1
+        do { e0 = try await E0.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e1 = try await E1.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        return try await f(e0, e1, state).intoResponse()
+    }
+}
+
+/// Three-extractor parts-only handler — `(E0, E1, E2) -> IntoResponse`.
+public struct PartsHandlerService3<E0, E1, E2, S, Out>: Sendable
+where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts,
+      S: Sendable, Out: IntoResponse {
+    @usableFromInline internal let state: S
+    @usableFromInline internal let f: @Sendable (E0, E1, E2, S) async throws -> Out
+
+    @inlinable
+    public init(state: S, _ f: @Sendable @escaping (E0, E1, E2, S) async throws -> Out) {
+        self.state = state
+        self.f = f
+    }
+}
+
+extension PartsHandlerService3: Service {
+
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
+        var parts = RequestParts(request)
+        let e0: E0, e1: E1, e2: E2
+        do { e0 = try await E0.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e1 = try await E1.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e2 = try await E2.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        return try await f(e0, e1, e2, state).intoResponse()
+    }
+}
+
+/// Four-extractor parts-only handler — `(E0, E1, E2, E3) -> IntoResponse`.
+public struct PartsHandlerService4<E0, E1, E2, E3, S, Out>: Sendable
+where E0: FromRequestParts, E1: FromRequestParts, E2: FromRequestParts, E3: FromRequestParts,
+      S: Sendable, Out: IntoResponse {
+    @usableFromInline internal let state: S
+    @usableFromInline internal let f: @Sendable (E0, E1, E2, E3, S) async throws -> Out
+
+    @inlinable
+    public init(state: S, _ f: @Sendable @escaping (E0, E1, E2, E3, S) async throws -> Out) {
+        self.state = state
+        self.f = f
+    }
+}
+
+extension PartsHandlerService4: Service {
+
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
+        var parts = RequestParts(request)
+        let e0: E0, e1: E1, e2: E2, e3: E3
+        do { e0 = try await E0.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e1 = try await E1.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e2 = try await E2.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        do { e3 = try await E3.fromRequestParts(&parts, state: state) }
+        catch let r as ExtractionRejection { return r.response }
+        return try await f(e0, e1, e2, e3, state).intoResponse()
+    }
+}
+
+/// Body-only handler — `(E0) -> IntoResponse` where `E0` consumes the
+/// request body (`Json<T>`, `Bytes`, `Form<T>`, …) and no parts
+/// extractors are needed. The body-consuming extractor is the first
+/// and only argument, followed by state.
+public struct BodyHandlerService1<E0, S, Out>: Sendable
+where E0: FromRequest, S: Sendable, Out: IntoResponse {
+    @usableFromInline internal let state: S
+    @usableFromInline internal let f: @Sendable (E0, S) async throws -> Out
+
+    @inlinable
+    public init(state: S, _ f: @Sendable @escaping (E0, S) async throws -> Out) {
+        self.state = state
+        self.f = f
+    }
+}
+
+extension BodyHandlerService1: Service {
+
+    public func call(_ request: consuming HTTPModel.Request) async throws -> HTTPModel.Response {
+        var parts = RequestParts(request)
+        guard let body = parts.body else { throw HandlerError.bodyAlreadyConsumed }
+        let remaining = HTTPModel.Request(
+            method: parts.method, uri: parts.uri, version: parts.version,
+            headers: parts.headers, body: body,
+            extensions: parts.extensions
+        )
+        let e0: E0
+        do {
+            e0 = try await E0.fromRequest(remaining, state: state)
+        } catch let r as ExtractionRejection {
+            return r.response
+        }
+        return try await f(e0, state).intoResponse()
     }
 }

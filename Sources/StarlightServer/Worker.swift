@@ -367,6 +367,10 @@ public actor Worker {
                         fd: fd, writeBuffer: &writeBuffer,
                         status: .payloadTooLarge, message: "Payload Too Large"
                     )
+                    // The client is likely mid-upload — a plain
+                    // close() with unread bytes sends RST and destroys
+                    // the 413 we just wrote. Linger instead.
+                    await Self.lingerDrain(fd: fd, eventLoop: eventLoop, channelId: channelId)
                     return
                 case .timedOut, .incompleteMessage, .ioError:
                     return
@@ -397,7 +401,22 @@ public actor Worker {
                 let bodyConn = conn
                 let myGen = head.generation
                 request.body = .pull {
-                    try await bodyConn.nextBodyChunk(forGeneration: myGen)
+                    do {
+                        return try await bodyConn.nextBodyChunk(forGeneration: myGen)
+                    } catch let e as H1ConnError {
+                        // Translate codec errors into the `BodyError`
+                        // contract so body consumers see a uniform
+                        // error surface: limit overruns become
+                        // `limitExceeded` (→ extractor 413) instead of
+                        // surfacing as an opaque 500. Connection-level
+                        // failures become `ioError`. `BodyError`
+                        // itself (e.g. `connectionAdvanced` from the
+                        // stale-generation guard) passes through.
+                        switch e {
+                        case .requestTooLarge: throw BodyError.limitExceeded
+                        default: throw BodyError.ioError
+                        }
+                    }
                 }
                 // Chunked-body trailers: bound accessor for handlers
                 // (returns nil until the body is fully consumed).
@@ -425,6 +444,9 @@ public actor Worker {
                     status: .internalServerError,
                     message: "Internal Server Error"
                 )
+                // Mid-upload body may still be in flight — linger so
+                // the error response actually reaches the peer.
+                await Self.lingerDrain(fd: fd, eventLoop: eventLoop, channelId: channelId)
                 return
             }
 
@@ -579,6 +601,17 @@ public actor Worker {
             // Connection: close — done after response is flushed.
             if !keepAliveFinal { return }
 
+            // The codec hit a terminal state mid-request (body
+            // overrun, malformed framing, bomb defence): keep-alive
+            // is impossible — decodeHead would see body garbage.
+            // Linger instead of closing hard: in-flight client bytes
+            // would turn close() into an RST that destroys the
+            // response this connection just wrote.
+            if await conn.isClosed() {
+                await Self.lingerDrain(fd: fd, eventLoop: eventLoop, channelId: channelId)
+                return
+            }
+
             // 7. Drain unread request body so the buffer is left
             //    positioned at the next pipelined request.
             //    If the handler never touched an `Expect:
@@ -600,6 +633,10 @@ public actor Worker {
                 } catch {
                     // Drain failure (bomb / EOF / timeout) — the
                     // framing is broken, the connection is unusable.
+                    // Linger first: unread in-flight bytes would turn
+                    // our close() into an RST, destroying the response
+                    // the client should still be able to read.
+                    await Self.lingerDrain(fd: fd, eventLoop: eventLoop, channelId: channelId)
                     return
                 }
             }
@@ -654,6 +691,38 @@ public actor Worker {
                 if errno == EINTR { continue }
                 return  // EAGAIN / EPIPE / ... — give up, conn closing
             }
+        }
+        #endif
+    }
+
+    /// Lingering close (the nginx `lingering_close` technique).
+    ///
+    /// Called after an error response (or a failed body drain) when the
+    /// client may still be sending: `close(2)` on a socket with unread
+    /// bytes in the receive buffer sends RST, which DESTROYS the
+    /// already-queued response bytes — the peer never gets to read the
+    /// 4xx/5xx we just wrote and sees a connection reset instead.
+    ///
+    /// Sequence: half-close our write side (FIN after the flushed
+    /// response — well-behaved peers stop sending), then discard
+    /// incoming bytes until EOF / error / a bounded timeout / a byte
+    /// cap. Both bounds are strict: this must never wedge a worker on
+    /// a hostile peer.
+    private nonisolated static func lingerDrain(
+        fd: CInt,
+        eventLoop: PollEventLoop,
+        channelId: ChannelId,
+        timeout: Duration = .seconds(1),
+        maxBytes: Int = 4 * 1024 * 1024
+    ) async {
+        #if canImport(Glibc)
+        _ = Glibc.shutdown(fd, Int32(SHUT_WR))
+        let deadline = ContinuousClock.now + timeout
+        var drained = 0
+        while drained < maxBytes {
+            let n = await eventLoop.read(channelId: channelId, deadline: deadline)
+            if n <= 0 { break }  // EOF / error / timeout
+            drained += n
         }
         #endif
     }
